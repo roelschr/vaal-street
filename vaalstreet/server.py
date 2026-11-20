@@ -14,7 +14,6 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -22,7 +21,7 @@ import numpy as np
 
 from vaalstreet import archive, backtest, db, items
 from vaalstreet.desk import Desk, _num
-from vaalstreet.ingest import ANCHORS, ingest
+from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, Ledger
 from vaalstreet.paths import data_dir, icons_dir

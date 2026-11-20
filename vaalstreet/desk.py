@@ -16,6 +16,7 @@ patient orders fill - check the in-game book before committing size.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -109,8 +110,6 @@ class Desk:
             leg_fv = pricing.fair_value(price, vol * price)
             with np.errstate(divide="ignore", invalid="ignore"):
                 dev = np.log(price[-SWING_WINDOW:] / prior)
-            import warnings
-
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 low, high = np.nanmedian(lo[-DAY:], axis=0), np.nanmedian(hi[-DAY:], axis=0)
@@ -188,8 +187,6 @@ class Desk:
             """Move over `back` hours between two 3-hour medians, so one odd print cannot fake a trend."""
             if T <= back + 3:
                 return np.full(fair.shape[1], np.nan)
-            import warnings
-
             with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 return np.nanmedian(fair[-3:], axis=0) / np.nanmedian(fair[-3 - back : -back], axis=0) - 1
@@ -264,12 +261,8 @@ class Desk:
         better evidence than the published extremes. For every item and leg pair
         the patience level with the highest expected profit is kept.
         """
-        import warnings
-
         p = self.panel
         fair = self.fv.fair[-1]
-        plans = []
-        r, b = self.legs["r"], self.legs["b"]
         n_obs = {key: np.sum(~np.isnan(leg.dev), axis=0) for key, leg in self.legs.items()}
         best: dict[tuple[str, int], dict] = {}
         for kind, buy_key, sell_key in (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b")):

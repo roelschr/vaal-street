@@ -8,6 +8,7 @@ item did not trade that hour, so "no print" stays distinguishable from a price.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import duckdb
@@ -144,8 +145,6 @@ def rolling(a: np.ndarray, window: int, fn, min_count: int = 1) -> np.ndarray:
 
     Row t summarises rows (t-window, t]. Rows with fewer than `min_count` observations are NaN.
     """
-    import warnings
-
     view = _windows(a, window)
     counts = np.sum(~np.isnan(view), axis=-1)
     with warnings.catch_warnings():
