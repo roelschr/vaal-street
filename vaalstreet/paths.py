@@ -21,5 +21,17 @@ def markets_dir(root: Path) -> Path:
     return root / "parquet" / "markets"
 
 
+def prices_dir(root: Path) -> Path:
+    return root / "parquet" / "prices"
+
+
 def items_file(root: Path, realm: str) -> Path:
     return root / "items" / f"{realm}.json"
+
+
+def icons_dir(root: Path) -> Path:
+    return root / "icons"
+
+
+def ledger_file(root: Path) -> Path:
+    return root / "desk.sqlite"

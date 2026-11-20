@@ -1,9 +1,9 @@
 data/
-*.sqlite*
-node_modules/
 .env
 
 __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
+build/
+dist/

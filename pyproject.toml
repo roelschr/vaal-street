@@ -4,10 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaalstreet"
-version = "0.1.0"
-description = "Research layer for Path of Exile currency-exchange history"
+version = "2.0.0"
+description = "Pricing models, flips, arbitrage, league-start analytics and backtests for the Path of Exile Currency Exchange"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["duckdb>=1.0", "pyarrow>=15"]
+dependencies = ["duckdb>=1.1", "pyarrow>=15", "numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -18,5 +20,9 @@ vaal = "vaalstreet.cli:main"
 [tool.setuptools]
 packages = ["vaalstreet"]
 
+[tool.setuptools.package-data]
+vaalstreet = ["web/*", "web/fonts/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning"]
