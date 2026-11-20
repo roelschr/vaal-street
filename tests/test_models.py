@@ -153,9 +153,67 @@ def test_cross_market_flip_captures_the_divine_premium(desk):
     assert cross["replay"]["sales"] > 5 and cross["replay"]["return"] > 0.05
 
 
+def test_small_bankroll_gets_whole_lot_orders_it_can_post(desk):
+    assert pricing.fit_ratio(3.07, 40) == (40, 13)
+    assert pricing.fit_ratio(3.07, 5) == (3, 1), "the closest order that still fits five Chaos"
+    assert pricing.fit_ratio(250, 40) is None, "one unit costs more than the purse"
+    assert pricing.fit_ratio(0.024, 40) == (3, 125)
+    assert pricing.fit_ratio(0.024, 1) == (1, 42)
+    assert pricing.fit_ratio(10.4, 400, max_items=2) == (21, 2), "cannot sell more units than it can hold"
+
+    everything = desk.flips(share=0.1, min_margin=0.01)
+    assert {p["kind"] for p in everything} >= {"chaos", "cross"}
+    small = desk.flips(share=0.1, min_margin=0.01, bankroll=30)
+    assert small and {p["kind"] for p in small} == {"chaos"}, "a Divine costs over 100: no Divine orders"
+    for plan in small:
+        buy, sell = plan["buy_order"], plan["sell_order"]
+        assert buy["currency_units"] <= 30 and plan["lot_cost"] <= 30
+        assert sell["item_units"] * plan["buy"] <= 30 + 1e-9, "can afford the units one sell order needs"
+        # The margin is what the whole-number orders really state, not the ideal levels.
+        assert plan["margin"] == pytest.approx(
+            (sell["currency_units"] / sell["item_units"]) / (buy["currency_units"] / buy["item_units"]) - 1, abs=1e-3)
+        assert plan["profit_per_hour"] <= plan["margin"] * 15 + 1e-3, "30 Chaos cannot turn over faster than this"
+    assert desk.flips(min_margin=0.01, bankroll=1) == []
+
+
+def test_recipes_chain_through_tiers_and_loops_use_side_markets(desk, archive_root):
+    from vaalstreet import items
+
+    meta = items.build({
+        "Metadata/Items/Currency/CurrencyEssenceWoe5": {"name": "Screaming Essence of Woe", "tags": ["essence"], "properties": {"stack_size": 9}},
+        "Metadata/Items/Currency/CurrencyEssenceWoe6": {"name": "Shrieking Essence of Woe", "tags": ["essence"], "properties": {"stack_size": 9}},
+        "Metadata/Items/Currency/CurrencyEssenceWoe7": {"name": "Deafening Essence of Woe", "tags": ["essence"], "properties": {"stack_size": 9}},
+        "Metadata/Items/Currency/Mushrune6": {"name": "Azure Oil", "tags": ["mushrune"], "properties": {"stack_size": 10}},
+        "Metadata/Items/Currency/Mushrune6b": {"name": "Indigo Oil", "tags": ["mushrune"], "properties": {"stack_size": 10}},
+        "Metadata/Items/Currency/CurrencyAfflictionShard": {"name": "Simulacrum Splinter", "tags": [], "properties": {"stack_size": 300}},
+        "Metadata/Items/Currency/CurrencyAfflictionFragment": {"name": "Simulacrum", "tags": [], "properties": {"stack_size": 1}},
+    })
+    recipe = lambda name: next(v.get("set") for v in meta.values() if v["name"] == name)
+    assert recipe("Screaming Essence of Woe") == {"need": 3, "gives": 1, "reward": "Shrieking Essence of Woe", "how": "vendor"}
+    assert recipe("Deafening Essence of Woe") is None, "top tier"
+    assert recipe("Azure Oil")["reward"] == "Indigo Oil"
+    assert recipe("Simulacrum Splinter") == {"need": 300, "gives": 1, "reward": "Simulacrum", "how": "stack"}
+
+    # In the fixture five cards make one orb. Pretend three orbs then make one shard: the chain is 15 cards.
+    desk.meta = dict(desk.meta) | {ITEM: desk.meta[ITEM] | {"set": {"need": 3, "gives": 1, "reward": "Test Shard"}}}
+    chain = {(r["name"], r["steps"]): r for r in desk.conversions()}
+    two = chain[("Test Card", 2)]
+    assert (two["need"], two["gives"], two["reward"]) == (15, 1, "Test Shard")
+    assert two["cost"] == pytest.approx(15 * 1.5, rel=0.01) and two["proceeds"] == pytest.approx(2.0, rel=0.01)
+
+    # Side market: 1 orb fetches 3 shards. Buying shards (2c), swapping 3 for an orb and selling it is the loop.
+    loop = desk.loops(chaos_only=True)[0]
+    assert [x["id"] for x in loop["path"]] == [OTHER, ITEM]
+    orb_chaos = desk.legs["r"].fair[-1, desk.panel.index(ITEM)]
+    assert loop["edge"] == pytest.approx(orb_chaos / 6 - 1, rel=0.02)
+    assert loop["first_swap"] == {"give": 3, "get": 1} and loop["lot_cost"] == pytest.approx(6, rel=0.02)
+    richer = desk.loops(chaos_only=False)[0]
+    assert richer["edge"] > loop["edge"], "with Divines in hand the orb sells in the dearer market"
+
+
 def test_set_conversion_compares_cost_with_reward(desk):
     rows = desk.conversions()
-    card = next(r for r in rows if r["id"] == CARD)
+    card = next(r for r in rows if r["id"] == CARD and r["steps"] == 1)
     assert (card["need"], card["gives"], card["reward"]) == (5, 1, "Test Orb")
     assert card["cost"] == pytest.approx(7.5, rel=0.01)
     assert card["margin"] == pytest.approx(desk.fair(ITEM) / 7.5 - 1, rel=0.01)

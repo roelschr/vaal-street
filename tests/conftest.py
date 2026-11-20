@@ -90,7 +90,7 @@ def archive_root(tmp_path_factory):
     })
     target = root / "items" / "poe1.json"
     target.parent.mkdir(parents=True)
-    target.write_text(json.dumps(meta))
+    target.write_text(json.dumps({"version": items.VERSION, "items": meta}))
     items.load.cache_clear()
     ingest(root, log=None)
     return root

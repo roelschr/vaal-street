@@ -21,6 +21,7 @@ SOURCES = {
     "poe1": "https://repoe-fork.github.io/base_items.min.json",
     "poe2": "https://repoe-fork.github.io/poe2/base_items.min.json",
 }
+VERSION = 2  # bump when `build` learns something new; older files on disk are then refreshed
 ICON_URL = "https://web.poecdn.com/image/{art}.png"
 
 _TAG_CATEGORIES = [
@@ -100,6 +101,48 @@ def build(export: dict) -> dict[str, dict]:
             if reward and props.get("stack_size"):
                 entry["set"] = {"need": props["stack_size"], "gives": reward[0], "reward": reward[1]}
         out[item_id] = entry
+    _add_recipes(out)
+    return out
+
+
+OIL_TIERS = ("1", "2", "3", "4", "5", "6", "6b", "7", "8", "9", "10", "11", "12")
+_ESSENCE_ID = re.compile(r"^(.*/CurrencyEssence[A-Za-z]+)([1-7])$")
+_OIL_ID = re.compile(r"^(.*/Mushrune)(\d+b?)$")
+# Splinters that combine into a named item once a full stack is collected: (name pattern, reward name).
+_SPLINTER_REWARDS = (
+    (re.compile(r"^Timeless (.+?)(?: Empire)? Splinter$"), "Timeless {} Emblem"),
+    (re.compile(r"^Splinter of (.+)$"), "{}'s Breachstone"),
+    (re.compile(r"^(Simulacrum) Splinter$"), "{}"),
+    (re.compile(r"^(Ritual) Splinter$"), "{} Vessel"),
+    (re.compile(r"^(Crescent) Splinter$"), "The Maven's Writ"),
+)
+
+
+def _add_recipes(out: dict[str, dict]) -> None:
+    """Fixed conversions the game offers, as `set` entries: {need, gives, reward}.
+
+    Shards and splinters combine when a full stack is collected; three essences or three oils of
+    one tier sell to a vendor for one of the next tier. Tiers are read from the item IDs.
+    """
+    names = {entry["name"] for entry in out.values()}
+    for item_id, entry in out.items():
+        if "set" in entry:
+            continue
+        essence, oil = _ESSENCE_ID.match(item_id), _OIL_ID.match(item_id)
+        if essence and int(essence[2]) < 7:
+            upgrade = out.get(f"{essence[1]}{int(essence[2]) + 1}")
+            if upgrade:
+                entry["set"] = {"need": 3, "gives": 1, "reward": upgrade["name"], "how": "vendor"}
+        elif oil and oil[2] in OIL_TIERS[:-1]:
+            upgrade = out.get(f"{oil[1]}{OIL_TIERS[OIL_TIERS.index(oil[2]) + 1]}")
+            if upgrade:
+                entry["set"] = {"need": 3, "gives": 1, "reward": upgrade["name"], "how": "vendor"}
+        elif entry.get("stack") and entry["stack"] > 1:
+            for pattern, reward in _SPLINTER_REWARDS:
+                match = pattern.match(entry["name"])
+                if match and reward.format(match[1]) in names:
+                    entry["set"] = {"need": entry["stack"], "gives": 1, "reward": reward.format(match[1]), "how": "stack"}
+                    break
     # Shards: 20 make the orb they are named after.
     by_name = {entry["name"]: item_id for item_id, entry in out.items() if "/Currency/" in item_id}
     for item_id, entry in out.items():
@@ -110,7 +153,6 @@ def build(export: dict) -> dict[str, dict]:
             if target in by_name:
                 entry["set"] = {"need": 20, "gives": 1, "reward": target}
                 break
-    return out
 
 
 def download(root: Path, realm: str) -> int:
@@ -122,16 +164,30 @@ def download(root: Path, realm: str) -> int:
     target = items_file(root, realm)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".part")
-    tmp.write_text(json.dumps(reduced, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps({"version": VERSION, "items": reduced}, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, target)
     load.cache_clear()
     return len(reduced)
 
 
 @lru_cache(maxsize=8)
-def load(root: Path, realm: str) -> dict[str, dict]:
+def _read(root: Path, realm: str) -> dict:
     path = items_file(root, realm)
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    # Files written before versioning were the bare item mapping.
+    return data if "items" in data and "version" in data else {"version": 1 if data else 0, "items": data}
+
+
+def load(root: Path, realm: str) -> dict[str, dict]:
+    return _read(root, realm)["items"]
+
+
+load.cache_clear = _read.cache_clear  # type: ignore[attr-defined]
+
+
+def is_current(root: Path, realm: str) -> bool:
+    """Whether the metadata on disk was built by this version of the code."""
+    return _read(root, realm)["version"] == VERSION
 
 
 def describe(root: Path, realm: str, item_id: str) -> dict:

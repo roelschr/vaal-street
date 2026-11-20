@@ -77,6 +77,11 @@ class Leg:
     bid_value: np.ndarray  # [N] reference-currency value bidding for the item (latest known)
 
 
+def kind_currency(plan: dict, side: str) -> bool:
+    """Whether a plan's buy or sell order is denominated in the bridge currency (Divine)."""
+    return plan[f"{side}_order"]["currency"] != "Chaos"
+
+
 def _age(price: np.ndarray) -> np.ndarray:
     """Hours since each column last had a value (a large number if it never did)."""
     printed = ~np.isnan(price)
@@ -263,7 +268,43 @@ class Desk:
         return {"currency": "Divine" if in_divine else "Chaos", "currency_units": pay, "item_units": get,
                 "price": _num(pay / get * unit)}
 
-    def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5) -> list[dict]:
+    def _fit(self, plan: dict, bankroll: float, min_margin: float) -> dict | None:
+        """Re-cut a plan's orders to whole numbers a purse of `bankroll` can actually post.
+
+        The exchange trades whole lots: "64 decks for 1 Divine" cannot be sold by someone holding
+        ten decks. Returns the plan with affordable orders, its margin recomputed from the prices
+        those orders really state, and the smallest stake that runs it - or None if nothing fits.
+        """
+        buy_unit = self.bridge if plan["kind"] == "divine" else 1.0
+        sell_unit = self.bridge if plan["kind"] != "chaos" else 1.0
+        buy = pricing.fit_ratio(plan["buy"] / buy_unit, bankroll / buy_unit)
+        if not buy:
+            return None
+        buy_price = buy[0] / buy[1] * buy_unit
+        sell = pricing.fit_ratio(plan["sell"] / sell_unit, 400, max_items=bankroll / buy_price)
+        if not sell:
+            return None
+        sell_price = sell[0] / sell[1] * sell_unit
+        margin = sell_price / buy_price - 1
+        if margin < min_margin:
+            return None
+        flow_value = plan["units_per_hour"] * buy_price
+        return plan | {
+            "buy": _num(buy_price), "sell": _num(sell_price), "margin": _num(margin, 4),
+            "buy_order": {"currency": "Divine" if buy_unit != 1 else "Chaos", "currency_units": buy[0],
+                          "item_units": buy[1], "price": _num(buy_price)},
+            "sell_order": {"currency": "Divine" if sell_unit != 1 else "Chaos", "currency_units": sell[0],
+                           "item_units": sell[1], "price": _num(sell_price)},
+            # Enough to post the buy order, and to hold a full sell lot.
+            "lot_cost": _num(max(buy[0] * buy_unit, sell[1] * buy_price), 4),
+            "flow_value": _num(flow_value, 4),
+            "capital": _num(min(plan["capital"], bankroll), 4),
+            # The purse turns over at most once per buy-then-sell (two hours at this data's resolution).
+            "profit_per_hour": _num(margin * min(flow_value, bankroll / 2), 4),
+        }
+
+    def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5,
+              bankroll: float | None = None) -> list[dict]:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
 
         Each plan buys on one leg and sells on another (or the same) at levels the
@@ -273,6 +314,10 @@ class Desk:
         Volume went through those levels, which is what makes them better evidence
         than the published extremes. For every item and leg pair the patience level
         with the highest expected profit is kept.
+
+        With `bankroll` set, every plan is re-cut to whole-number orders that purse can post
+        (see `_fit`), plans that cannot be run with it are dropped, and profit is capped by how
+        fast so little capital can turn over.
         """
         p = self.panel
         fair = self.fv.fair[-1]
@@ -322,6 +367,12 @@ class Desk:
         plans = list(best.values())
         for plan in plans:
             plan["profit_per_hour"] = _num(plan["profit_per_hour"], 4)
+            plan["flow_value"] = _num((plan["units_per_hour"] or 0) * (plan["buy"] or 0), 4)
+            plan["lot_cost"] = _num(max(
+                plan["buy_order"]["currency_units"] * (self.bridge if kind_currency(plan, "buy") else 1.0),
+                plan["sell_order"]["item_units"] * (plan["buy"] or 0)), 4)
+        if bankroll:
+            plans = [fitted for plan in plans if (fitted := self._fit(plan, bankroll, min_margin))]
         plans.sort(key=lambda plan: -(plan["profit_per_hour"] or 0))
         return plans
 
@@ -352,51 +403,140 @@ class Desk:
         return out
 
     # ------------------------------------------------------------- arbitrage
+    @staticmethod
+    def _quotable(leg: Leg, i: int) -> bool:
+        """Whether one of an item's markets trades often and recently enough to quote a price from."""
+        return bool(leg.active[i] >= 0.25 and leg.age[i] < 6 and math.isfinite(leg.fair[-1, i]))
+
+    def _recipe_chain(self, item_id: str, by_name: dict[str, int], max_steps: int = 3) -> list[tuple[int, int, int, int]]:
+        """Follow an item's recipe, then the reward's own recipe, and so on.
+
+        Returns [(need, gives, reward index or -1 for the reference currency, steps)], one entry per
+        chain length: 3 essences make 1 of the next tier, so 9 make 1 of the tier after that.
+        """
+        ref_name = self.meta.get(ANCHORS[self.realm][0], {}).get("name", "Chaos Orb")
+        chain, need, gives, current = [], 1, 1, item_id
+        for step in range(1, max_steps + 1):
+            recipe = self.meta.get(current, {}).get("set")
+            if not recipe:
+                break
+            # Scale up until this step consumes a whole number of what the previous steps produced.
+            k = math.lcm(gives, recipe["need"])
+            need, gives = need * k // gives, k // recipe["need"] * recipe["gives"]
+            if recipe["reward"] == ref_name:
+                chain.append((need, gives, -1, step))
+                break
+            if recipe["reward"] not in by_name:
+                break
+            j = by_name[recipe["reward"]]
+            chain.append((need, gives, j, step))
+            current = self.panel.items[j]
+        return chain
+
     def conversions(self, share: float = 0.1) -> list[dict]:
-        """Full sets (divination cards, shards) against what they turn into."""
+        """Fixed conversions against what they produce: divination card sets, shards and splinters
+        that combine into their item, and three-to-one vendor upgrades of essences and oils -
+        including chains of them (nine of one tier for one of the tier two above)."""
         p = self.panel
         by_name = {name: i for i, name in enumerate(p.names)}
-        ref_name = self.meta.get(ANCHORS[self.realm][0], {}).get("name", "Chaos Orb")
-        r = self.legs["r"]
+        r, quick = self.legs["r"], self.legs["b"]
         fair = self.fv.fair[-1]
         value_24h = np.nansum(p["value"][-DAY:], axis=0)
         age = self._age()
         out = []
         for i, item_id in enumerate(p.items):
-            recipe = self.meta.get(item_id, {}).get("set")
-            if not recipe or not math.isfinite(fair[i]) or age[i] >= DAY:
+            if not math.isfinite(fair[i]) or age[i] >= DAY:
                 continue
-            if recipe["reward"] == ref_name:
-                reward_fair, reward_sell, j = 1.0, 1.0, None
-            elif recipe["reward"] in by_name:
-                j = by_name[recipe["reward"]]
-                if not math.isfinite(fair[j]) or age[j] >= DAY:
+            # Buying through the Divine market is the quick entry; never assume better than fair value.
+            buy_now = float(quick.fair[-1, i]) if self._quotable(quick, i) else float(fair[i])
+            for need, gives, j, steps in self._recipe_chain(item_id, by_name):
+                if j < 0:
+                    reward_fair = reward_sell = 1.0
+                elif math.isfinite(fair[j]) and age[j] < DAY:
+                    reward_fair = float(fair[j])
+                    # Selling into the Chaos market is the quick exit.
+                    reward_sell = float(r.fair[-1, j]) if self._quotable(r, j) else reward_fair
+                else:
                     continue
-                reward_fair = float(fair[j])
-                # Selling into the Chaos market is the quick exit.
-                reward_sell = float(r.fair[-1, j]) if r.age[j] < 6 and math.isfinite(r.fair[-1, j]) else reward_fair
-            else:
-                continue
-            cost = recipe["need"] * float(fair[i])
-            # Buying through the Divine market is the quick entry.
-            quick = self.legs["b"]
-            buy_now = float(quick.fair[-1, i]) if quick.age[i] < 6 and math.isfinite(quick.fair[-1, i]) else float(fair[i])
-            cost_now = recipe["need"] * max(buy_now, float(fair[i]))
-            out_fair = recipe["gives"] * reward_fair
-            flow = (r.flow[i] + self.legs["b"].flow[i])
-            sets = share * flow / recipe["need"]
-            out.append({
-                "id": item_id, "name": p.names[i], "need": recipe["need"], "gives": recipe["gives"],
-                "reward": recipe["reward"], "reward_id": p.items[j] if j is not None else ANCHORS[self.realm][0],
-                "cost": _num(cost), "proceeds": _num(out_fair),
-                "margin": _num(out_fair / cost - 1, 4),
-                # Pay the richer market for the cards and dump the reward in the cheaper one.
-                "margin_now": _num(recipe["gives"] * min(reward_sell, reward_fair) / cost_now - 1, 4),
-                "sets_per_hour": _num(sets, 4),
-                "profit_per_hour": _num(sets * (out_fair - cost), 4),
-                "value_24h": _num(value_24h[i]),
-            })
+                cost, out_fair = need * float(fair[i]), gives * reward_fair
+                sets = share * (r.flow[i] + quick.flow[i]) / need
+                recipe = self.meta[item_id]["set"]
+                out.append({
+                    "id": item_id, "name": p.names[i], "need": need, "gives": gives, "steps": steps,
+                    "how": recipe.get("how", "set"),
+                    "reward": p.names[j] if j >= 0 else recipe["reward"],
+                    "reward_id": p.items[j] if j >= 0 else ANCHORS[self.realm][0],
+                    "cost": _num(cost), "proceeds": _num(out_fair),
+                    "margin": _num(out_fair / cost - 1, 4),
+                    # Pay the richer market for the inputs and dump the reward in the cheaper one.
+                    "margin_now": _num(gives * min(reward_sell, reward_fair) / (need * max(buy_now, float(fair[i]))) - 1, 4),
+                    "sets_per_hour": _num(sets, 4),
+                    "profit_per_hour": _num(sets * (out_fair - cost), 4),
+                    "value_24h": _num(value_24h[i]),
+                    "reward_value_24h": _num(value_24h[j]) if j >= 0 else None,
+                })
         out.sort(key=lambda row: -(row["profit_per_hour"] or 0))
+        return out
+
+    def loops(self, min_edge: float = 0.03, min_value: float = 200.0, chaos_only: bool = False,
+              share: float = 0.1) -> list[dict]:
+        """Round trips through item-for-item markets: buy A, swap A for B (and B for C), sell.
+
+        Each hop uses that market's typical traded rate over the last day; entry is the cheaper of
+        an item's own markets and exit the dearer (with `chaos_only`, both are the Chaos market,
+        for purses too small to deal in Divines). `edge` is what comes back per unit put in.
+        Side markets are thin: a big edge usually means one stale order, so `value_24h` - the
+        value that actually went through the thinnest hop - matters as much as the edge.
+        """
+        r, b = self.legs["r"], self.legs["b"]
+        index = self.panel._by_id
+
+        def quote(item_id: str) -> tuple[float, float] | None:
+            """(entry cost, exit proceeds) for one unit, in reference currency."""
+            i = index.get(item_id)
+            if i is None:
+                return None
+            options = [float(leg.fair[-1, i]) for leg in ((r,) if chaos_only else (r, b)) if self._quotable(leg, i)]
+            return (min(options), max(options)) if options else None
+
+        edges: dict[str, list[tuple[str, float, float, int]]] = {}
+        for m in self.cross:  # both directions of every side market
+            pa = self.fair(m["item"])
+            if not pa:
+                continue
+            value = m["volume"] * pa
+            edges.setdefault(m["item"], []).append((m["quote"], m["rate"], value, m["hours"]))
+            edges.setdefault(m["quote"], []).append((m["item"], 1 / m["rate"], value, m["hours"]))
+
+        out = []
+
+        def emit(path: list[str], rates: list[float], value: float, hours: int) -> None:
+            start, end = quote(path[0]), quote(path[-1])
+            if not start or not end or value < min_value:
+                return
+            units = math.prod(rates)
+            edge = units * end[1] / start[0] - 1
+            if edge < min_edge:
+                return
+            give, get = pricing.nice_ratio(1 / rates[0], max_units=200)  # first swap: `give` of A for `get` of B
+            out.append({
+                "path": [{"id": item_id, "name": self._name(item_id)} for item_id in path],
+                "rates": [_num(rate) for rate in rates],
+                "buy": _num(start[0]), "sell": _num(end[1]), "edge": _num(edge, 4),
+                "first_swap": {"give": give, "get": get},
+                "lot_cost": _num(give * start[0], 4),
+                "value_24h": _num(value), "hours": int(hours),
+                # If you took `share` of what went through the thinnest hop at these rates.
+                "profit_per_day": _num(share * value * edge, 4),
+            })
+
+        for a, firsts in edges.items():
+            for b_id, rate_ab, value_ab, hours_ab in firsts:
+                emit([a, b_id], [rate_ab], value_ab, hours_ab)
+                for c, rate_bc, value_bc, hours_bc in edges.get(b_id, []):
+                    if c != a:
+                        emit([a, b_id, c], [rate_ab, rate_bc], min(value_ab, value_bc), min(hours_ab, hours_bc))
+        out.sort(key=lambda row: -(row["profit_per_day"] or 0))
         return out
 
     def triangles(self, min_value: float = 500.0) -> list[dict]:

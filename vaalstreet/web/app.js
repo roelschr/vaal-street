@@ -17,6 +17,7 @@ async function api(path, body) {
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
+const bankQuery = () => (+state.filters.capital > 0 ? { bankroll: +state.filters.capital } : {});
 const withLeague = (path, extra = {}) => {
   const q = new URLSearchParams({ ...(state.league ? { league: state.league } : {}), ...extra });
   return `${path}?${q}`;
@@ -74,7 +75,7 @@ function table(cols, rows, { sort = null, desc = true, onRow = null, limit = 200
     if (!data.length) { wrap.innerHTML = `<div class="empty">${empty}</div>`; return; }
     wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th class="${c.l ? 'l ' : ''}${c.s ? 'sort ' : ''}${i === sort ? 'sorted' : ''}" data-i="${i}" title="${esc(c.title || '')}">${c.h}${i === sort ? (desc ? ' ↓' : ' ↑') : ''}</th>`).join('')}</tr></thead>
       <tbody>${data.slice(0, shown).map((r, n) => `<tr class="${onRow ? 'click' : ''}" data-n="${n}">${cols.map(c => `<td class="${c.l ? 'l' : 'num'}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table>
-      ${data.length > shown ? `<div class="empty"><button class="btn" data-more>Show ${Math.min(200, data.length - shown)} more of ${data.length}</button></div>` : ''}`;
+      ${data.length > shown ? `<div class="empty"><button class="btn" data-more>Show ${Math.min(200, data.length - shown)} more (${data.length} in all)</button></div>` : ''}`;
     wrap.querySelectorAll('th.sort').forEach(th => th.onclick = () => { const i = +th.dataset.i; if (sort === i) desc = !desc; else { sort = i; desc = true; } render(); });
     if (onRow) wrap.querySelectorAll('tbody tr').forEach(tr => tr.onclick = e => { if (!e.target.closest('button,a,input')) onRow(data[+tr.dataset.n]); });
     const more = wrap.querySelector('[data-more]'); if (more) more.onclick = () => { shown += 200; render(); };
@@ -129,7 +130,7 @@ async function loadDesk() {
 }
 
 async function viewDesk(main) {
-  const [d, f, a, lg] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 40 })), api(withLeague('/api/arbitrage', { share: state.share })), api(withLeague('/api/league', { horizon: 7, unit: 'divine' }))]);
+  const [d, f, a, lg] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 40, ...bankQuery() })), api(withLeague('/api/arbitrage', { share: state.share, ...bankQuery() })), api(withLeague('/api/league', { horizon: 7, unit: 'divine' }))]);
   renderTop();
   const s = d.summary, liquid = d.market.filter(r => r.value_24h > 20000 && r.active > 0.8 && r.change_24h != null);
   const movers = [...liquid].sort((x, y) => y.change_24h - x.change_24h);
@@ -143,7 +144,7 @@ async function viewDesk(main) {
     </div><div class="grid" id="g"></div>`;
   const g = $('#g', main);
 
-  const flips = panel('Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
+  const flips = panel(+state.filters.capital > 0 ? `Best flips for ${fmt(+state.filters.capital)} c` : 'Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
   flips.append(table([
     { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
     { h: 'Buy order', f: r => order(r.buy_order, true), title: 'Currency you pay, for how many items' },
@@ -153,11 +154,11 @@ async function viewDesk(main) {
   ], f.flips.slice(0, 8), { onRow: r => openItem(r.id), empty: 'No market is liquid enough for a plan yet.' }));
   g.append(flips);
 
-  const sets = panel('Sets worth completing', 'c5', '<a href="#/arbitrage">All conversions →</a>');
+  const sets = panel(+state.filters.capital > 0 ? `Conversions within ${fmt(+state.filters.capital)} c` : 'Sets worth completing', 'c5', '<a href="#/arbitrage">All conversions →</a>');
   sets.append(table([
     { h: 'Set', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`) },
     { h: 'Cost', f: r => money(r.cost) }, { h: 'Worth', f: r => money(r.proceeds) }, { h: 'Margin', f: r => pct(r.margin) },
-  ], a.conversions.filter(r => r.margin > 0.02).slice(0, 8), { onRow: r => openItem(r.id), empty: 'No set is currently cheaper than its reward.' }));
+  ], a.conversions.filter(r => r.margin > 0.02 && (r.value_24h || 0) >= 2000 && (r.reward_value_24h ?? Infinity) >= 2000 && (!(+state.filters.capital > 0) || r.cost <= +state.filters.capital)).sort((x, y) => (+state.filters.capital > 0 ? y.margin - x.margin : y.profit_per_hour - x.profit_per_hour)).slice(0, 8), { onRow: r => openItem(r.id), empty: 'No set is currently cheaper than its reward.' }));
   g.append(sets);
 
   const mv = (title, rows) => {
@@ -253,7 +254,7 @@ const flipCols = () => [
 async function viewFlips(main) {
   const f = state.filters;
   if (!state.summary) await loadDesk();
-  const d = await api(withLeague('/api/flips', { share: state.share, min_margin: f.minMargin }));
+  const d = await api(withLeague('/api/flips', { share: state.share, min_margin: f.minMargin, ...bankQuery() }));
   state.bridge = d.summary.bridge; renderTop();
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
     <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore Gold fees and who is ahead of you in the queue; check the in-game book before sizing up.</p>
@@ -272,19 +273,20 @@ async function viewFlips(main) {
     const bank = +f.capital, host = $('#plan', main);
     host.replaceChildren();
     if (!(bank > 0)) return;
-    // Each item gets at most a quarter of the bankroll; plans are taken in order of what that stake earns,
-    // and only if the same rule sold and made money over the last week.
-    const perItem = bank / 4, taken = new Set(), picks = [];
+    // Plans are taken in order of what the stake earns, and only if the same rule sold and made money last week.
+    // Each item gets a quarter of the bankroll - or one whole lot, if a lot is more than that.
+    const taken = new Set(), picks = [];
     let left = bank;
-    const sized = rows.filter(r => r.capital > 0 && r.replay && r.replay.return > 0 && r.replay.sales >= 2)
-      .map(r => { const stake = Math.min(r.capital, perItem); return { ...r, stake, est: r.profit_per_hour * stake / r.capital }; })
-      .sort((a, b) => b.est - a.est);
+    const earns = (r, stake) => r.margin * Math.min(r.flow_value ?? Infinity, stake / 2);
+    const sized = rows.filter(r => r.lot_cost > 0 && r.lot_cost <= bank && r.replay && r.replay.return > 0 && r.replay.sales >= 2)
+      .map(r => { const stake = Math.max(r.lot_cost, bank / 4); return { ...r, stake, est: earns(r, stake) }; })
+      .sort((a, b) => b.est / b.stake - a.est / a.stake || b.est - a.est);  // most earned per Chaos tied up
     for (const r of sized) {
-      if (left < bank * 0.02 || picks.length >= 12) break;
-      if (taken.has(r.id)) continue;
+      if (picks.length >= 12) break;
+      if (taken.has(r.id) || r.lot_cost > left) continue;
       const stake = Math.min(r.stake, left);
       taken.add(r.id); left -= stake;
-      picks.push({ ...r, stake, est: r.est * stake / r.stake });
+      picks.push({ ...r, stake, est: earns(r, stake) });
     }
     const total = picks.reduce((a, r) => a + r.est, 0);
     const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(bank - left)} deployed</span>`);
@@ -292,7 +294,8 @@ async function viewFlips(main) {
     p.append(table([
       { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
       { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
-      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => money(r.stake), title: 'Chaos to keep working in this item (at most a quarter of the bankroll)' },
+      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => money(r.stake), title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
+      { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
       { h: 'Est. / hour', f: r => money(r.est) },
       { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
     ], picks, { onRow: r => openItem(r.id), empty: 'No plan fits this bankroll with the current filters.' }));
@@ -302,40 +305,54 @@ async function viewFlips(main) {
   $('#share', main).oninput = e => { $('#shareL', main).textContent = plainPct(+e.target.value); };
   $('#share', main).onchange = e => { state.share = +e.target.value; localStorage.share = state.share; route(); };
   $('#mm', main).onchange = e => { f.minMargin = (+e.target.value || 0) / 100; route(); };
-  $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; draw(); };
+  $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#q', main).oninput = e => { f.q = e.target.value; draw(); };
   draw();
 }
 
+const HOW = { set: 'Card set', vendor: 'Vendor 3-for-1', stack: 'Full stack' };
 async function viewArbitrage(main) {
   if (!state.summary) await loadDesk();
-  const d = await api(withLeague('/api/arbitrage', { share: state.share }));
+  const f = state.filters, purse = +f.capital > 0 ? +f.capital : 0;
+  const d = await api(withLeague('/api/arbitrage', { share: state.share, ...bankQuery() }));
   state.bridge = d.summary.bridge; renderTop();
-  main.innerHTML = `<div class="head"><div><h1>Arbitrage</h1><p>Prices that disagree with each other: full sets against what they turn into, and item-for-item markets against the items' own prices.</p></div></div><div class="grid" id="g"></div>`;
-  const sets = panel('Set conversions', 'c12');
-  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">“Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the set in the dearer market and dumps the reward in the cheaper one; when that is still positive the conversion pays even without waiting for fills.</p></div>`;
+  main.innerHTML = `<div class="head"><div><h1>Arbitrage</h1><p>Prices that disagree with each other: things that turn into something dearer, and round trips through item-for-item markets.</p></div></div>
+    <div class="bar">
+      <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 40" min="0" step="10"></label>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px"><input type="checkbox" id="fit" ${f.fit !== false ? 'checked' : ''} ${purse ? '' : 'disabled'}> Only what my bankroll can start</label>
+      <label class="f">Min. traded / 24h (c)<input type="number" id="liq" value="${f.arbLiquidity ?? 2000}" min="0" step="500"></label>
+    </div><div class="grid" id="g"></div>`;
+  const fits = cost => !purse || f.fit === false || cost <= purse;
+  const liquid = f.arbLiquidity ?? 2000;
+  const sets = panel('Conversions', 'c12');
+  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once). “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk.</p></div>`;
   sets.append(table([
     { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
-    { h: 'Set cost', f: r => money(r.cost), s: r => r.cost },
-    { h: 'Reward worth', f: r => money(r.proceeds), s: r => r.proceeds },
+    { h: 'How', l: 1, f: r => `<span class="tag">${HOW[r.how] || r.how}${r.steps > 1 ? ` × ${r.steps}` : ''}</span>`, s: r => r.how, title: 'A number after × means the recipe is applied that many tiers in a row' },
+    { h: 'Cost', f: r => money(r.cost), s: r => r.cost, title: 'Fair value of everything you need to buy for one conversion' },
+    { h: 'Worth', f: r => money(r.proceeds), s: r => r.proceeds },
     { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
     { h: 'In a hurry', f: r => pct(r.margin_now), s: r => r.margin_now },
-    { h: 'Sets / hour', f: r => fmt(r.sets_per_hour), s: r => r.sets_per_hour, title: `At ${plainPct(state.share)} of the item's traded volume` },
-    { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
-    { h: 'Traded 24h', f: r => money(r.value_24h), s: r => r.value_24h },
-  ], d.conversions, { sort: 6, onRow: r => openItem(r.id), empty: 'No convertible set is trading right now.' }));
-  const swaps = panel('Item-for-item markets out of line', 'c12');
-  swaps.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Small side markets where one item trades directly for another. “Edge” is how much more the side market gives than selling one item and buying the other at fair value would. These markets are thin: treat a large edge as a stale order to check, not a certainty.</p></div>`;
-  swaps.append(table([
-    { h: 'Give', l: 1, f: r => itemCell({ id: r.give, name: r.give_name }), s: r => r.give_name },
-    { h: 'Get', l: 1, f: r => itemCell({ id: r.get, name: r.get_name }), s: r => r.get_name },
-    { h: 'Market rate', f: r => fmt(r.rate), s: r => r.rate, title: 'Units received per unit given, median of the last day' },
-    { h: 'Fair rate', f: r => fmt(r.implied_rate), s: r => r.implied_rate },
-    { h: 'Edge', f: r => pct(r.edge), s: r => r.edge },
-    { h: 'Traded 24h', f: r => money(r.value_24h), s: r => r.value_24h },
+    { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour, title: `At ${plainPct(state.share)} of the input's traded volume` },
+    { h: 'Input traded 24h', f: r => money(r.value_24h), s: r => r.value_24h },
+    { h: 'Result traded 24h', f: r => money(r.reward_value_24h), s: r => r.reward_value_24h, title: 'How much of the result changes hands: can you sell it?' },
+  ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
+  { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
+  const loops = panel('Round trips through item-for-item markets', 'c12');
+  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, swap it along the path in the small markets where items trade directly for each other, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. Rates are what those markets typically traded at over the last day. These markets are thin and the data cannot say which side was waiting: a large edge may be a few careless trades you can only catch with a resting order. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
+  loops.append(table([
+    { h: 'Path', l: 1, f: r => r.path.map(x => `<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join(' <span class="dim">→</span> ') },
+    { h: 'First swap', f: r => `${r.first_swap.give} <span class="dim">for</span> ${r.first_swap.get}`, title: 'Units of the first item you give, for units of the second' },
+    { h: 'Buy at', f: r => money(r.buy), s: r => r.buy }, { h: 'Sell at', f: r => money(r.sell), s: r => r.sell },
+    { h: 'Edge', f: r => r.edge > 3 ? `<span class="up">×${(1 + r.edge).toFixed(1)}</span>` : pct(r.edge, 0), s: r => r.edge },
+    { h: 'Est. / day', f: r => money(r.profit_per_day), s: r => r.profit_per_day },
+    { h: 'Went through 24h', f: r => money(r.value_24h), s: r => r.value_24h, title: 'Value traded in the thinnest step of the path' },
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
-  ], d.swaps, { sort: 5, empty: 'No side market traded steadily in the last day.' }));
-  $('#g', main).append(sets, swaps);
+  ], d.loops.filter(r => fits(r.lot_cost)), { sort: 5, limit: 15, empty: 'No round trip traded steadily in the last day.' }));
+  $('#g', main).append(sets, loops);
+  $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
+  $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
+  $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
 }
 
 const unitOf = f => f(1).trim().slice(-1);
@@ -589,7 +606,7 @@ function closeDrawer() { $('#drawer').hidden = true; $('#drawer').innerHTML = ''
 
 // ----------------------------------------------------------------- hideout
 async function viewHideout(main) {
-  const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12 }))]);
+  const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
   main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
   const fp = panel('Flips', '');

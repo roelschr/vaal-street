@@ -204,6 +204,38 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
     return best
 
 
+def fit_ratio(price: float, max_currency: float, max_items: float = 5000) -> tuple[int, int] | None:
+    """The whole-number (currency, items) order closest to `price` that a small purse can post.
+
+    `max_currency` caps the currency side and `max_items` the item side. Returns None when even
+    the smallest order does not fit (one item costs more than the purse holds).
+    """
+    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
+        return None
+    best, best_err = None, np.inf
+    if price >= 1:
+        for items in range(1, int(min(max_items, 400)) + 1):
+            currency = max(1, round(price * items))
+            if currency > max_currency:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    else:
+        for currency in range(1, int(min(max_currency, 400)) + 1):
+            items = max(1, round(currency / price))
+            if items > max_items:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    return best
+
+
 def forward_vwap(price: np.ndarray, value: np.ndarray, horizon: int) -> np.ndarray:
     """Value-weighted mean log price over the `horizon` hours after each row: [T, N], NaN if none traded."""
     seen = np.isfinite(price) & (price > 0)

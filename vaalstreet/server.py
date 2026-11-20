@@ -156,7 +156,7 @@ class App:
             return
         state.update(running=True, error=None)
         try:
-            if not items.load(self.root, REALM):
+            if not items.is_current(self.root, REALM):
                 state["message"] = "Downloading item names"
                 items.download(self.root, REALM)
             newest = archive.latest_published()
@@ -252,13 +252,17 @@ class App:
 
     def api_flips(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
-        plans = desk.flips(share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)))
+        bankroll = float(q["bankroll"]) if q.get("bankroll") else None
+        plans = desk.flips(share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)),
+                           bankroll=bankroll if bankroll and bankroll > 0 else None)
         return {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))]}
 
     def api_arbitrage(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
+        bankroll = float(q["bankroll"]) if q.get("bankroll") else 0.0
+        poor = 0 < bankroll < desk.bridge  # cannot hold a single Divine: stay in the Chaos markets
         return {"summary": desk.summary(), "conversions": desk.conversions(share=float(q.get("share", 0.1))),
-                "swaps": desk.triangles()[:60]}
+                "loops": desk.loops(chaos_only=poor, share=float(q.get("share", 0.1)))[:80], "chaos_only": poor}
 
     def api_league(self, q: dict) -> dict:
         book = self.book()

@@ -55,7 +55,7 @@ def _sync(args: argparse.Namespace) -> None:
     root = data_dir()
     base_url = os.environ.get("ARCHIVE_BASE_URL", archive.DEFAULT_BASE_URL)
     for realm in args.realm or ["poe1"]:
-        if not items.load(root, realm):
+        if not items.is_current(root, realm):
             print(f"[{realm}] {items.download(root, realm):,} item names saved")
         start = None if args.all else archive.latest_published() - args.days * 24 * HOUR
         archive.archive_realm(root, realm, start=start, base_url=base_url, delay=args.delay, workers=args.workers)

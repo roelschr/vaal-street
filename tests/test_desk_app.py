@@ -82,7 +82,11 @@ def test_api_serves_every_desk_page(server):
     assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 4
     assert call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
     arb = call(f"{server}/api/arbitrage")[1]
-    assert arb["conversions"][0]["reward"] == "Test Orb" and arb["swaps"]
+    assert arb["conversions"][0]["reward"] == "Test Orb" and arb["loops"] and not arb["chaos_only"]
+    poor = call(f"{server}/api/arbitrage?bankroll=30")[1]
+    assert poor["chaos_only"], "a purse smaller than one Divine stays in the Chaos markets"
+    small = call(f"{server}/api/flips?min_margin=0.01&bankroll=30")[1]["flips"]
+    assert small and {p["kind"] for p in small} == {"chaos"} and all(p["lot_cost"] <= 30 for p in small)
     league = call(f"{server}/api/league?unit=chaos&horizon=3")[1]
     assert league["precedents"] == ["Old"] and league["playbook"]["horizon"] == 3 and "New" in league["divine"]
     item = call(f"{server}/api/item?id=Test%20Orb&hours=24")[1]
