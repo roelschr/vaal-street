@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0d1013">
+  <title>Vaal Street · Trading Terminal</title>
+  <link rel="icon" href="/mark.svg" type="image/svg+xml">
+  <link rel="preload" as="font" type="font/woff2" href="/fonts/geist.woff2" crossorigin>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to workspace</a>
+  <aside id="sidebar" aria-label="Terminal navigation"></aside>
+  <div id="shell">
+    <header id="topbar"></header>
+    <main id="main" tabindex="-1"><div class="loading">Initializing local terminal…</div></main>
+    <footer id="foot"></footer>
+  </div>
+  <dialog id="modal"></dialog>
+  <div id="toasts" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
