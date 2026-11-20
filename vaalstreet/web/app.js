@@ -339,13 +339,14 @@ async function viewArbitrage(main) {
   ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
   { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
   const loops = panel('Round trips through item-for-item markets', 'c12');
-  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, swap it along the path in the small markets where items trade directly for each other, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. Rates are what those markets typically traded at over the last day. These markets are thin and the data cannot say which side was waiting: a large edge may be a few careless trades you can only catch with a resting order. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
+  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, swap it along the path in the small markets where items trade directly for each other, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
   loops.append(table([
     { h: 'Path', l: 1, f: r => r.path.map(x => `<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join(' <span class="dim">→</span> ') },
     { h: 'First swap', f: r => `${r.first_swap.give} <span class="dim">for</span> ${r.first_swap.get}`, title: 'Units of the first item you give, for units of the second' },
     { h: 'Buy at', f: r => money(r.buy), s: r => r.buy }, { h: 'Sell at', f: r => money(r.sell), s: r => r.sell },
     { h: 'Edge', f: r => r.edge > 3 ? `<span class="up">×${(1 + r.edge).toFixed(1)}</span>` : pct(r.edge, 0), s: r => r.edge },
     { h: 'Est. / day', f: r => money(r.profit_per_day), s: r => r.profit_per_day },
+    { h: 'Waiting now', f: r => r.resting_value > 0 ? money(r.resting_value) : '<span class="dim">nothing</span>', s: r => r.resting_value, title: 'Value of orders resting on the other side of the thinnest swap in the latest hour: what you could take immediately' },
     { h: 'Went through 24h', f: r => money(r.value_24h), s: r => r.value_24h, title: 'Value traded in the thinnest step of the path' },
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
   ], d.loops.filter(r => fits(r.lot_cost)), { sort: 5, limit: 15, empty: 'No round trip traded steadily in the last day.' }));

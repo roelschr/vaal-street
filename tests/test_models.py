@@ -207,6 +207,8 @@ def test_recipes_chain_through_tiers_and_loops_use_side_markets(desk, archive_ro
     orb_chaos = desk.legs["r"].fair[-1, desk.panel.index(ITEM)]
     assert loop["edge"] == pytest.approx(orb_chaos / 6 - 1, rel=0.02)
     assert loop["first_swap"] == {"give": 3, "get": 1} and loop["lot_cost"] == pytest.approx(6, rel=0.02)
+    # The fixture leaves 500 orbs resting in that market: they are there to be taken.
+    assert loop["resting_value"] == pytest.approx(500 * desk.fair(ITEM), rel=0.01)
     richer = desk.loops(chaos_only=False)[0]
     assert richer["edge"] > loop["edge"], "with Divines in hand the orb sells in the dearer market"
 

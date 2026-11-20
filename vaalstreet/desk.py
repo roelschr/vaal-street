@@ -139,7 +139,8 @@ class Desk:
         ref, bridge = ANCHORS[realm]
         cross = con.execute(
             """
-            SELECT item, quote, sum(volume) AS volume, median(volume_quote / volume) AS rate, count(*) AS hours
+            SELECT item, quote, sum(volume) AS volume, median(volume_quote / volume) AS rate, count(*) AS hours,
+                   arg_max(stock_lo, hour) AS item_resting, arg_max(quote_stock_lo, hour) AS quote_resting
             FROM legs
             WHERE league = $league AND hour > to_timestamp($since) AND volume > 0 AND volume_quote > 0
               AND item NOT IN ($ref, $bridge) AND quote NOT IN ($ref, $bridge) AND item < quote
@@ -151,7 +152,7 @@ class Desk:
         root = root or data_dir()
         return cls(
             league, realm, panel, fv, legs, premium, item_meta.load(root, realm),
-            [dict(zip(("item", "quote", "volume", "rate", "hours"), row)) for row in cross],
+            [dict(zip(("item", "quote", "volume", "rate", "hours", "item_resting", "quote_resting"), row)) for row in cross],
         )
 
     # ------------------------------------------------------------- shortcuts
@@ -485,8 +486,8 @@ class Desk:
         Each hop uses that market's typical traded rate over the last day; entry is the cheaper of
         an item's own markets and exit the dearer (with `chaos_only`, both are the Chaos market,
         for purses too small to deal in Divines). `edge` is what comes back per unit put in.
-        Side markets are thin: a big edge usually means one stale order, so `value_24h` - the
-        value that actually went through the thinnest hop - matters as much as the edge.
+        Side markets are thin, so `value_24h` - what actually went through the thinnest hop - matters
+        as much as the edge, and `resting_value` says whether orders are waiting there to be taken now.
         """
         r, b = self.legs["r"], self.legs["b"]
         index = self.panel._by_id
@@ -499,18 +500,22 @@ class Desk:
             options = [float(leg.fair[-1, i]) for leg in ((r,) if chaos_only else (r, b)) if self._quotable(leg, i)]
             return (min(options), max(options)) if options else None
 
-        edges: dict[str, list[tuple[str, float, float, int]]] = {}
+        # An edge is (item received, units received per unit given, value traded in a day, hours active,
+        # value of the received item resting on offer in the latest hour - what a swap could take at once).
+        edges: dict[str, list[tuple[str, float, float, int, float]]] = {}
         for m in self.cross:  # both directions of every side market
-            pa = self.fair(m["item"])
-            if not pa:
+            pa, pb = self.fair(m["item"]), self.fair(m["quote"])
+            if not pa or not pb:
                 continue
             value = m["volume"] * pa
-            edges.setdefault(m["item"], []).append((m["quote"], m["rate"], value, m["hours"]))
-            edges.setdefault(m["quote"], []).append((m["item"], 1 / m["rate"], value, m["hours"]))
+            edges.setdefault(m["item"], []).append(
+                (m["quote"], m["rate"], value, m["hours"], float(m.get("quote_resting") or 0) * pb))
+            edges.setdefault(m["quote"], []).append(
+                (m["item"], 1 / m["rate"], value, m["hours"], float(m.get("item_resting") or 0) * pa))
 
         out = []
 
-        def emit(path: list[str], rates: list[float], value: float, hours: int) -> None:
+        def emit(path: list[str], rates: list[float], value: float, hours: int, resting: float) -> None:
             start, end = quote(path[0]), quote(path[-1])
             if not start or not end or value < min_value:
                 return
@@ -526,16 +531,19 @@ class Desk:
                 "first_swap": {"give": give, "get": get},
                 "lot_cost": _num(give * start[0], 4),
                 "value_24h": _num(value), "hours": int(hours),
+                # Orders already waiting on the other side of the thinnest swap, at the latest hour's low point.
+                "resting_value": _num(resting, 4),
                 # If you took `share` of what went through the thinnest hop at these rates.
                 "profit_per_day": _num(share * value * edge, 4),
             })
 
         for a, firsts in edges.items():
-            for b_id, rate_ab, value_ab, hours_ab in firsts:
-                emit([a, b_id], [rate_ab], value_ab, hours_ab)
-                for c, rate_bc, value_bc, hours_bc in edges.get(b_id, []):
+            for b_id, rate_ab, value_ab, hours_ab, rest_ab in firsts:
+                emit([a, b_id], [rate_ab], value_ab, hours_ab, rest_ab)
+                for c, rate_bc, value_bc, hours_bc, rest_bc in edges.get(b_id, []):
                     if c != a:
-                        emit([a, b_id, c], [rate_ab, rate_bc], min(value_ab, value_bc), min(hours_ab, hours_bc))
+                        emit([a, b_id, c], [rate_ab, rate_bc], min(value_ab, value_bc), min(hours_ab, hours_bc),
+                             min(rest_ab, rest_bc))
         out.sort(key=lambda row: -(row["profit_per_day"] or 0))
         return out
 
