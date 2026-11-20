@@ -115,8 +115,36 @@ class App:
     def _sync_loop(self) -> None:
         while not self._stop.is_set():
             self.sync_once()
+            if self._reach_league_start():
+                continue  # keep going back, a fortnight at a time, until the live league's first hour is on disk
             self._wake.wait(timeout=300)
             self._wake.clear()
+
+    def _reach_league_start(self) -> bool:
+        """Download a further fortnight of history if the live league started before the archive does."""
+        try:
+            league = self.default_league()
+            info = next((l for l in self.book().leagues() if l["league"] == league), None)
+        except Exception:
+            return False
+        if not info or not info["truncated"] or self.sync_state["error"]:
+            return False
+        earliest = min(archive.have(self.root, REALM))
+        todo = archive.missing(self.root, REALM, earliest - 14 * 24 * HOUR, earliest)
+        if not todo:
+            return False
+        self.sync_state.update(running=True, message=f"Reaching back to the start of {league}")
+        try:
+            archive.archive_hours(self.root, REALM, todo, log=None, stop=self._stop)
+            ingest(self.root, log=None)
+            self._invalidate()
+            self.sync_state["message"] = "Up to date"
+        except Exception as err:
+            self.sync_state.update(error=str(err), message="Sync failed")
+            return False
+        finally:
+            self.sync_state.update(running=False)
+        return not self._stop.is_set()
 
     def request_sync(self, backfill: bool = False) -> None:
         if backfill:

@@ -91,11 +91,11 @@ python -m vaalstreet sql "SELECT league, kind, hours FROM leagues ORDER BY first
 A strategy is a class with `step(ctx)`. It sees only what was published up to the current hour.
 
 ```python
-# my_strategy.py
+# examples/cheap_vs_divine.py (shortened)
 import numpy as np
 
 class CheapVsDivine:
-    """Buy liquid items in the Chaos market, offer them 8% higher in the Divine market."""
+    """Buy liquid items under fair value in the Chaos market, offer them 8% up in the Divine market."""
 
     def step(self, ctx):
         if ctx.t < 48:
@@ -109,7 +109,8 @@ class CheapVsDivine:
 ```
 
 ```sh
-python -m vaalstreet backtest my_strategy.py:CheapVsDivine --league Allflame
+python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --league Allflame
+python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --params '{"markup": 0.12}'
 ```
 
 `ctx` offers `fair`, `z` (how surprising this hour's print was), `history(column, hours)`, `swing(leg, reach)`, `position`, `average_cost`, `cash`, `bankroll`, and `quote_buys` / `quote_sells` / `buy` / `sell`. Built-in strategies (`hold`, `swing`, `reversion`, `momentum`) are in `vaalstreet/backtest.py` and are short enough to read as examples.

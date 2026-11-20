@@ -167,6 +167,12 @@ async function viewDesk(main) {
   };
   g.append(mv('Rising (24h)', movers.slice(0, 7)), mv('Falling (24h)', movers.slice(-7).reverse()));
 
+  const watched = d.market.filter(r => r.watched);
+  const w = panel('Watchlist', 'c4');
+  w.append(table([{ h: 'Item', l: 1, f: r => itemCell(r) }, { h: 'Price', f: r => money(r.price) }, { h: '24h', f: r => pct(r.change_24h) }], watched,
+    { onRow: r => openItem(r.id), empty: 'Star an item in Markets to pin it here and in Hideout mode.' }));
+  g.append(w);
+
   const pb = lg.playbook.items.filter(r => r.traded_now && (r.value_now || 0) >= 5000);
   if (pb.length && !lg.truncated) {
     const cols = [
@@ -180,12 +186,6 @@ async function viewDesk(main) {
     down.append(table(cols, pb.filter(r => r.median < 0).reverse().slice(0, 6), { onRow: r => openItem(r.id) }));
     g.append(up, down);
   }
-
-  const watched = d.market.filter(r => r.watched);
-  const w = panel('Watchlist', 'c4');
-  w.append(table([{ h: 'Item', l: 1, f: r => itemCell(r) }, { h: 'Price', f: r => money(r.price) }, { h: '24h', f: r => pct(r.change_24h) }], watched,
-    { onRow: r => openItem(r.id), empty: 'Star an item in Markets to pin it here and in Hideout mode.' }));
-  g.append(w);
 
   if (d.events.length) {
     const ev = panel('Alerts fired', 'c12');
