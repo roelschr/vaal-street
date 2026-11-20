@@ -146,6 +146,8 @@ data/icons/                                item icons, cached on first view
 data/desk.sqlite                           your ledger, watchlist, alerts — the only file worth backing up
 ```
 
+To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
+
 Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification string sent with exchange requests). The server binds to `127.0.0.1` and refuses requests from other sites.
 
 ```

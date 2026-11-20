@@ -165,7 +165,7 @@ def ingest_month(con: duckdb.DuckDBPyConnection, root: Path, realm: str, month_d
     month = month_dir.name
     markets = markets_dir(root) / f"realm={realm}" / f"month={month}" / "data.parquet"
     prices = prices_dir(root) / f"realm={realm}" / f"month={month}" / "data.parquet"
-    raw = {int(p.name.split(".")[0]): p for p in month_dir.glob("*.json.gz")}
+    raw = {int(p.name.split(".")[0]): p for p in month_dir.glob("*.json.gz")} if month_dir.is_dir() else {}
     done = _ingested_hours(con, markets)
     new = sorted(set(raw) - done)
     if new:
@@ -195,10 +195,13 @@ def ingest(root: Path, log: Callable[[str], None] | None = print) -> dict[str, i
     try:
         for realm in REALMS:
             realm_dir = raw_dir(root) / realm
-            if not realm_dir.is_dir():
+            # Months known from raw digests, plus months restored as Parquet only (their prices may need deriving).
+            months = {p.name for p in realm_dir.iterdir() if p.is_dir()} if realm_dir.is_dir() else set()
+            months |= {p.name.removeprefix("month=") for p in (markets_dir(root) / f"realm={realm}").glob("month=*")}
+            if not months:
                 continue
             total = 0
-            for month_dir in sorted(p for p in realm_dir.iterdir() if p.is_dir()):
+            for month_dir in (realm_dir / month for month in sorted(months)):
                 count = ingest_month(con, root, realm, month_dir)
                 total += count
                 if count and log:

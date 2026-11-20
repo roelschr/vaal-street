@@ -27,7 +27,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from vaalstreet.paths import raw_dir
+from vaalstreet.paths import markets_dir, raw_dir
 
 HOUR = 3600
 DEFAULT_BASE_URL = "https://web.poecdn.com/api/currency-exchange"
@@ -78,11 +78,15 @@ def latest_published(now: float | None = None) -> int:
 
 
 def have(root: Path, realm: str) -> set[int]:
-    """Hour starts already on disk for a realm."""
+    """Hour starts already on disk for a realm: as raw digests, or already indexed into Parquet
+    (an archive restored from a snapshot has the Parquet without the raw files)."""
+    hours: set[int] = set()
     realm_dir = raw_dir(root) / realm
-    if not realm_dir.is_dir():
-        return set()
-    return {int(p.name.split(".")[0]) for p in realm_dir.glob("*/*.json.gz")}
+    if realm_dir.is_dir():
+        hours.update(int(p.name.split(".")[0]) for p in realm_dir.glob("*/*.json.gz"))
+    for sidecar in (markets_dir(root) / f"realm={realm}").glob("month=*/hours.json"):
+        hours.update(json.loads(sidecar.read_text()))
+    return hours
 
 
 def missing(root: Path, realm: str, start: int, end: int) -> list[int]:

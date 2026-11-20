@@ -151,3 +151,22 @@ def test_item_metadata_reads_sets_and_categories():
     assert meta["Metadata/Items/Currency/CurrencyEssenceWoe7"]["category"] == "Essences"
     assert "Metadata/Items/Currency/Hidden" not in meta
     assert items.fallback_name("Metadata/Items/Currency/CurrencyRerollRare") == "Reroll Rare"
+
+
+def test_snapshot_restores_the_archive_without_raw_files(archive_root, tmp_path, monkeypatch):
+    from vaalstreet import cli
+    from vaalstreet.db import connect
+
+    parts, restored = tmp_path / "parts", tmp_path / "restored"
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["snapshot", str(parts), "--part-mb", "1"])
+    assert list(parts.glob("vaal-markets.tar.000"))
+    monkeypatch.setenv("VAAL_DATA_DIR", str(restored))
+    cli.main(["restore", str(parts)])
+    assert not (restored / "raw").exists()
+    old, new = connect(archive_root), connect(restored)
+    query = "SELECT count(*), round(sum(price), 6) FROM prices"
+    assert new.execute(query).fetchall() == old.execute(query).fetchall(), "prices re-derived identically"
+    # Restored hours count as on disk, so a sync only fetches what came after them.
+    assert archive.missing(restored, "poe1", H0, H0 + 5 * HOUR) == []
+    assert archive.have(restored, "poe1") == archive.have(archive_root, "poe1")

@@ -75,6 +75,49 @@ def _ingest(args: argparse.Namespace) -> None:
         print("Parquet is already up to date.")
 
 
+def _snapshot(args: argparse.Namespace) -> None:
+    """Pack the indexed market history into upload-sized parts."""
+    import tarfile
+    from pathlib import Path
+
+    from vaalstreet.paths import markets_dir
+
+    out = Path(args.folder)
+    out.mkdir(parents=True, exist_ok=True)
+    tar_path = out / "vaal-markets.tar"
+    with tarfile.open(tar_path, "w") as tar:
+        tar.add(markets_dir(data_dir()), arcname="parquet/markets")
+    size = args.part_mb * 1024 * 1024
+    count = 0
+    with tar_path.open("rb") as src:
+        while chunk := src.read(size):
+            (out / f"vaal-markets.tar.{count:03d}").write_bytes(chunk)
+            count += 1
+    tar_path.unlink()
+    print(f"{count} parts written to {out}. Restore with: python -m vaalstreet restore {out}")
+
+
+def _restore(args: argparse.Namespace) -> None:
+    """Rebuild the archive from snapshot parts: the indexed history, without re-downloading it."""
+    import io
+    import tarfile
+    from pathlib import Path
+
+    parts = sorted(Path(args.folder).glob("vaal-markets.tar.[0-9][0-9][0-9]"))
+    if not parts:
+        sys.exit(f"No vaal-markets.tar.NNN parts in {args.folder}")
+    root = data_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(b"".join(p.read_bytes() for p in parts))) as tar:
+        for member in tar.getmembers():  # refuse anything that would land outside the data directory
+            if member.name.startswith(("/", "..")) or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
+                sys.exit(f"Unexpected entry in snapshot: {member.name}")
+        tar.extractall(root)
+    print(f"Restored {len(parts)} parts into {root}. Deriving prices...")
+    ingest(root)
+    print("Done. `python -m vaalstreet serve` picks up from here and downloads only the hours since.")
+
+
 def _serve(args: argparse.Namespace) -> None:
     from vaalstreet.server import serve
 
@@ -219,6 +262,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--delay", type=float, default=0.5, help="pause after each request, per worker (default 0.5s)")
     p.add_argument("--workers", type=int, default=2)
     p.set_defaults(run=_sync)
+
+    p = commands.add_parser("snapshot", help="pack the indexed history into parts small enough to upload")
+    p.add_argument("folder")
+    p.add_argument("--part-mb", type=int, default=9)
+    p.set_defaults(run=_snapshot)
+
+    p = commands.add_parser("restore", help="rebuild the archive from snapshot parts instead of downloading")
+    p.add_argument("folder")
+    p.set_defaults(run=_restore)
 
     commands.add_parser("items", help="refresh item names and metadata").set_defaults(run=_items)
     commands.add_parser("ingest", help="index raw hours already on disk").set_defaults(run=_ingest)
