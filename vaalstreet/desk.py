@@ -33,6 +33,9 @@ from vaalstreet.paths import data_dir
 DAY = 24
 SWING_WINDOW = 48  # hours of prints used to learn where each market trades relative to fair value
 PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of hours an order level is expected to be reached
+PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
+REPLAY_DAYS = 7
+REPLAY_STAKE = 1000.0
 
 
 def _num(x: Any, digits: int = 6) -> float | None:
@@ -85,6 +88,7 @@ class Desk:
     premium: np.ndarray  # [N] latest trailing-median log(Divine leg / Chaos leg)
     meta: dict[str, dict] = field(default_factory=dict)
     cross: list[dict] = field(default_factory=list)  # item-vs-item markets, trailing day
+    _replays: dict = field(default_factory=dict, repr=False)
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -265,7 +269,8 @@ class Desk:
         fair = self.fv.fair[-1]
         n_obs = {key: np.sum(~np.isnan(leg.dev), axis=0) for key, leg in self.legs.items()}
         best: dict[tuple[str, int], dict] = {}
-        for kind, buy_key, sell_key in (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b")):
+        replay = self.replay(share)
+        for kind, buy_key, sell_key in PLAN_LEGS:
             buy_leg, sell_leg = self.legs[buy_key], self.legs[sell_key]
             usable = (
                 (n_obs[buy_key] >= 12) & (n_obs[sell_key] >= 12) & np.isfinite(fair)
@@ -303,12 +308,39 @@ class Desk:
                         "capital": _num(units[i] * buy[i] * 6, 4),  # about six hours of buying held as inventory
                         "range_low": _num(buy_leg.low[i]), "range_high": _num(sell_leg.high[i]),
                         "bid_queue_hours": _num(bid_queue, 3), "ask_queue_hours": _num(ask_queue, 3),
+                        "replay": replay.get((kind, p.items[i])),
                     }
         plans = list(best.values())
         for plan in plans:
             plan["profit_per_hour"] = _num(plan["profit_per_hour"], 4)
         plans.sort(key=lambda plan: -(plan["profit_per_hour"] or 0))
         return plans
+
+    def replay(self, share: float = 0.1, days: int = REPLAY_DAYS) -> dict[tuple[str, str], dict]:
+        """How each kind of plan would have done on each item over the last `days` days.
+
+        The flip rule is replayed through the backtest simulator with the same stake on every
+        item, visiting every four hours. Returns {(kind, item id): {"return": profit as a share
+        of the stake, "sales": hours with a sale}}. A plan that looks good now but lost money
+        all week is telling you something.
+        """
+        key = (round(share, 4), days)
+        if key in self._replays:
+            return self._replays[key]
+        from vaalstreet import backtest  # backtest imports nothing from here; keep the dependency one-way
+
+        window = self.panel.window(-(days * DAY + SWING_WINDOW))
+        n = len(window.items)
+        out: dict[tuple[str, str], dict] = {}
+        for kind, buy_leg, sell_leg in PLAN_LEGS:
+            sim = backtest.Simulation(window, capital=REPLAY_STAKE * n, participation=share, attention=4)
+            sim.run(backtest.Swing(top=n, per_item=1 / n, buy_leg=buy_leg, sell_leg=sell_leg, min_margin=0.02))
+            profit = sim.profit()
+            for i, item_id in enumerate(window.items):
+                if sim.sales[i] or sim.position[i] > 0:
+                    out[(kind, item_id)] = {"return": _num(profit[i] / REPLAY_STAKE, 3), "sales": int(sim.sales[i])}
+        self._replays[key] = out
+        return out
 
     # ------------------------------------------------------------- arbitrage
     def conversions(self, share: float = 0.1) -> list[dict]:

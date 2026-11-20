@@ -274,8 +274,13 @@ class Simulation:
         self._mark = ffill(self.fair)
         self._swing: dict[tuple[str, float], np.ndarray] = {}
         self.fills = 0
+        self.sales = np.zeros(n, dtype=np.int64)  # hours in which each item sold
         self.bought = 0.0
         self.sold = 0.0
+
+    def profit(self, t: int = -1) -> np.ndarray:
+        """Profit per item so far: realised, plus what is still held marked at fair value."""
+        return self.realized + self.position * np.nan_to_num(self._mark[t]) - self.cost
 
     def swing(self, leg: str, reach: float, window: int = 48) -> np.ndarray:
         """Causal rolling quantile of log(leg VWAP / prior fair): [T, N]."""
@@ -315,6 +320,7 @@ class Simulation:
                 self.cash += float(proceeds.sum())
                 self.sold += float(proceeds.sum())
                 self.fills += int(hit.sum())
+                self.sales += hit
                 book.sell_units = book.sell_units - units
 
             want = np.minimum(book.buy_units, cap)
@@ -404,48 +410,45 @@ class Hold:
 class Swing:
     """Make markets the way the flip board suggests.
 
-    Every hour, for the most liquid items: rest a buy in the Chaos market at the
-    level its hourly average dipped to in `reach` of recent hours, and offer the
-    inventory at the level the `sell_leg` market's average rose to in `reach` of
-    hours - but never below cost plus `min_margin`. `sell_leg="b"` sells into the
-    Divine market (the cross-market plan), `"r"` stays in the Chaos market.
-    Inventory that has not sold after `stop_days` is dumped at market.
+    For the most liquid items: rest a buy in the `buy_leg` market at the level
+    its hourly average dipped to in `reach` of recent hours, and offer the
+    inventory in the `sell_leg` market at the level that market's average rose to
+    in `reach` of hours - but never below cost plus `min_margin`. Legs are "r"
+    (against Chaos) and "b" (against Divine); the default buys for Chaos and
+    sells for Divine. Inventory still unsold after `stop_days` is dumped at market.
     """
 
     reach: float = 0.25
     top: int = 40
     sell_leg: str = "b"
+    buy_leg: str = "r"
     min_margin: float = 0.03
-    per_item: float = 0.05  # max share of equity held in one item
-    stop_days: float = 2.0  # dump inventory held this long without a sale, at market
+    per_item: float = 0.05  # max share of the bankroll held in one item
+    stop_days: float = 2.0
     warmup: int = 48
 
     def step(self, ctx: Context) -> None:
         if ctx.t < self.warmup:
             return
         fair = ctx.fair
-        buy = fair * np.exp(ctx.swing("r", self.reach))
+        buy = fair * np.exp(ctx.swing(self.buy_leg, self.reach))
         sell = fair * np.exp(ctx.swing(self.sell_leg, 1 - self.reach))
         with np.errstate(divide="ignore", invalid="ignore"):
             margin = sell / buy - 1
         want = _liquid(ctx, self.top) & np.isfinite(margin) & (margin >= self.min_margin)
         with np.errstate(divide="ignore", invalid="ignore"):
             room = np.maximum(self.per_item * ctx.bankroll - ctx.position * np.nan_to_num(fair), 0) / buy
-        ctx.quote_buys("r", np.where(want, buy, np.nan), np.where(want, room, 0.0))
+        ctx.quote_buys(self.buy_leg, np.where(want, buy, np.nan), np.where(want, room, 0.0))
 
         held = ctx.position > 0
-        age = ctx.state.setdefault("age", np.zeros(ctx.n_items))
-        age[:] = np.where(held, age + 1, 0)
-        stale = held & (age > self.stop_days * 24)
+        opened = ctx.state.setdefault("opened", np.full(ctx.n_items, -1))
+        opened[:] = np.where(held, np.where(opened < 0, ctx.t, opened), -1)
+        stale = held & (ctx.t - opened > self.stop_days * 24)
         # Like a human flipper: do not offer below what the inventory cost plus the margin worth having.
         # A position that still has not sold after `stop_days` is cut at market instead.
         floor = np.nan_to_num(ctx.average_cost) * (1 + self.min_margin)
         limit = np.where(held, np.maximum(np.where(np.isfinite(sell), sell, fair), floor), np.nan)
-        if self.sell_leg == "r":
-            ctx.quote_sells("r", np.where(stale, 0.0, limit), np.where(held, ctx.position, 0.0))
-        else:
-            ctx.quote_sells(self.sell_leg, limit, np.where(held & ~stale, ctx.position, 0.0))
-            ctx.quote_sells("r", np.where(stale, 0.0, np.nan), np.where(stale, ctx.position, 0.0))
+        ctx.quote_sells(self.sell_leg, np.where(stale, 0.0, limit), np.where(held, ctx.position, 0.0))
 
 
 @dataclass

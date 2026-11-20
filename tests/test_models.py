@@ -125,6 +125,8 @@ def test_cross_market_flip_captures_the_divine_premium(desk):
     assert 0.02 < chaos["margin"] < cross["margin"], "the same-market swing is smaller than the cross-market gap"
     assert all(p["margin"] >= 0.01 for p in plans.values())
     json.dumps(list(plans.values()), allow_nan=False)
+    # Each plan carries its own week: the cross-market rule sold and made money, on a fixed stake.
+    assert cross["replay"]["sales"] > 5 and cross["replay"]["return"] > 0.05
 
 
 def test_set_conversion_compares_cost_with_reward(desk):
