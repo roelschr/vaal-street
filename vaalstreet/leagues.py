@@ -205,6 +205,16 @@ class LeagueBook:
         items.sort(key=lambda row: -(row["score"] or 0))
         return {"league": current, "day": day, "horizon": horizon, "unit": unit, "precedents": past, "items": items}
 
+    def divine_outlook(self, current: str, horizons: tuple[int, ...] = (3, 7, 14, 30)) -> list[dict]:
+        """What the Divine price (in Chaos) did from today's league day in past leagues, per horizon."""
+        out = []
+        for horizon in horizons:
+            pb = self.playbook(current, horizon, unit="chaos", min_leagues=1, min_value=0)
+            row = next((r for r in pb["items"] if r["id"] == self.bridge), None)
+            if row:
+                out.append({"horizon": horizon, **{k: row[k] for k in ("n", "median", "worst", "best", "by_league")}})
+        return out
+
     # ------------------------------------------------------------- standing
     def standing(self, current: str, *, unit: str = "divine", min_leagues: int = 2, min_value: float = 2000.0) -> dict:
         """Today's price of each item against the same league day in past leagues."""

@@ -271,6 +271,7 @@ class App:
         out["playbook"] = book.playbook(league, int(q.get("horizon", 7)), unit=unit,
                                         day=int(q["day"]) if q.get("day") else None)
         out["standing"] = book.standing(league, unit=unit)
+        out["divine_outlook"] = book.divine_outlook(league)
         return out
 
     def api_curve(self, q: dict) -> dict:

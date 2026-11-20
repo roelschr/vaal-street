@@ -192,6 +192,9 @@ def test_playbook_reports_what_past_leagues_did_next(con):
     in_divine = book.playbook(NEW, horizon=7, unit="divine", min_value=0)
     orb_d = next(r for r in in_divine["items"] if r["id"] == ITEM)
     assert orb_d["median"] < orb["median"], "Divine rose too, so the move is smaller in Divine"
+    outlook = book.divine_outlook(NEW, horizons=(7,))
+    # Divine gains 0.25 Chaos an hour: ~141.9 averaged over days 6-7, ~186.8 over days 13-15.
+    assert outlook[0]["horizon"] == 7 and outlook[0]["median"] == pytest.approx(186.8 / 141.9 - 1, abs=0.01)
     standing = book.standing(NEW, unit="chaos", min_value=0)
     orb_s = next(r for r in standing["items"] if r["id"] == ITEM)
     assert orb_s["vs_typical"] == pytest.approx(1 / 1.65 - 1, abs=0.03)

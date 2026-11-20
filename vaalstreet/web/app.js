@@ -363,7 +363,8 @@ async function viewLeague(main) {
   const g = $('#g', main);
   if ($('#bf', main)) $('#bf', main).onclick = async e => { e.target.disabled = true; e.target.textContent = 'Downloading…'; await api('/api/sync', { backfill: true }); toast('Downloading the full history in the background. Pages refresh as leagues arrive.'); };
   const dv = panel('Divine Orb in Chaos, by league day', 'c12');
-  dv.innerHTML += `<div class="body"><div id="lg"></div><div id="dvc"></div></div>`;
+  const outlook = d.truncated ? '' : (d.divine_outlook || []).map(o => `<span style="margin-right:18px">next ${o.horizon} days: <b class="num">${pct(o.median, 0)}</b> <span class="dim">(${(o.worst * 100).toFixed(0)}% to ${o.best > 0 ? '+' : ''}${(o.best * 100).toFixed(0)}%, ${o.n} league${o.n === 1 ? '' : 's'})</span></span>`).join('');
+  dv.innerHTML += `<div class="body">${outlook ? `<div class="muted" style="margin-bottom:10px">From day ${d.day} in past leagues, a Divine went on to cost — ${outlook}</div>` : ''}<div id="lg"></div><div id="dvc"></div></div>`;
   g.append(dv);
   $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), d.divine, d.league, 'price', x => fmt(x) + ' c');
 
