@@ -80,6 +80,26 @@ def test_prices_combine_both_markets_and_convert_the_divine_leg(con):
     assert r_price < price < b_price
 
 
+def test_a_joke_trade_in_one_market_does_not_move_the_headline_price(tmp_path):
+    from conftest import market
+    from vaalstreet.archive import hour_path
+    from vaalstreet.db import connect
+
+    body = {"next_change_id": H0 + HOUR, "markets": [
+        market("L", CHAOS, DIVINE, 4000, 40),
+        market("L", ITEM, CHAOS, 500, 250),  # 0.5 Chaos each, 500 units
+        market("L", ITEM, DIVINE, 6, 60),  # six units "sold" at 10 Divine = 1000 Chaos each
+    ]}
+    path = hour_path(tmp_path, "poe1", H0)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(gzip.compress(json.dumps(body).encode()))
+    ingest(tmp_path, log=None)
+    price, volume, r_price, b_price = connect(tmp_path).execute(
+        "SELECT price, volume, r_price, b_price FROM prices WHERE item = ?", [ITEM]).fetchall()[0]
+    assert (price, volume) == (0.5, 500), "the market that moved the units sets the price"
+    assert r_price == 0.5 and b_price == 1000, "both markets stay visible as published"
+
+
 def test_divine_is_priced_and_dead_markets_are_dropped(con):
     assert con.execute("SELECT count(*) FROM prices WHERE item = ?", [DIVINE]).fetchall()[0][0] > 0
     assert con.execute("SELECT count(*) FROM prices WHERE item = ?", [CHAOS]).fetchall()[0][0] == 0

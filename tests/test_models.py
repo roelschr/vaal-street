@@ -45,10 +45,20 @@ def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
     spiked[300, 0] *= 50
     spiked[100:140, 1] = np.nan
     fv = pricing.fair_value(spiked)
-    assert abs(math.log(fv.fair[300, 0] / fv.fair[299, 0])) < 0.2
+    assert fv.fair[300, 0] == fv.fair[299, 0], "a lone far-out print is set aside"
     assert fv.z[300, 0] > 5
     assert np.isfinite(fv.fair[100:140, 1]).all() and np.isnan(fv.z[100:140, 1]).all()
     assert (fv.sd[139, 1] > fv.sd[99, 1]), "uncertainty grows while an item does not print"
+
+
+def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
+    _, seen = noisy_walk(noise=0.02)
+    crashed = seen.copy()
+    crashed[300:, 0] *= 0.03  # the item really did lose 97% of its value
+    fv = pricing.fair_value(crashed)
+    assert fv.fair[300, 0] == fv.fair[299, 0], "not believed on the first print"
+    assert fv.fair[301, 0] == pytest.approx(crashed[301, 0]), "believed on the second"
+    assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
 
 
 def test_nice_ratio_gives_small_whole_number_orders():

@@ -55,9 +55,10 @@ function ago(t) {
 }
 const icon = id => `<img loading="lazy" alt="" src="/icon?id=${encodeURIComponent(id)}" onerror="this.outerHTML='<span class=ph></span>'">`;
 const itemCell = (r, sub) => `<div class="item">${icon(r.id)}<div style="min-width:0"><b>${esc(r.name)}</b>${sub ? `<span class="sub">${sub}</span>` : ''}</div></div>`;
+// "29 Chaos for 9" (what you pay for how many) / "64 for 1 Divine" (how many you give for what).
 const order = (o, buying) => buying
-  ? `${o.currency_units} ${o.currency} <span class="dim">→</span> ${o.item_units}`
-  : `${o.item_units} <span class="dim">→</span> ${o.currency_units} ${o.currency}`;
+  ? `${o.currency_units} ${o.currency} <span class="dim">for</span> ${o.item_units}`
+  : `${o.item_units} <span class="dim">for</span> ${o.currency_units} ${o.currency}`;
 const KIND = { chaos: 'Chaos market', divine: 'Divine market', cross: 'Chaos → Divine' };
 
 // A sortable table. cols: [{h, f(row)->html, s(row)->sortable value, l: left-aligned, title}]
@@ -128,7 +129,7 @@ async function loadDesk() {
 }
 
 async function viewDesk(main) {
-  const [d, f, a] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 40 })), api(withLeague('/api/arbitrage', { share: state.share }))]);
+  const [d, f, a, lg] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 40 })), api(withLeague('/api/arbitrage', { share: state.share })), api(withLeague('/api/league', { horizon: 7, unit: 'divine' }))]);
   renderTop();
   const s = d.summary, liquid = d.market.filter(r => r.value_24h > 20000 && r.active > 0.8 && r.change_24h != null);
   const movers = [...liquid].sort((x, y) => y.change_24h - x.change_24h);
@@ -145,8 +146,8 @@ async function viewDesk(main) {
   const flips = panel('Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
   flips.append(table([
     { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
-    { h: 'Buy order', f: r => order(r.buy_order, true), title: 'What you pay → what you get' },
-    { h: 'Sell order', f: r => order(r.sell_order, false), title: 'What you give → what you get' },
+    { h: 'Buy order', f: r => order(r.buy_order, true), title: 'Currency you pay, for how many items' },
+    { h: 'Sell order', f: r => order(r.sell_order, false), title: 'Items you give, for how much currency' },
     { h: 'Margin', f: r => pct(r.margin) },
     { h: 'Est. / hour', f: r => money(r.profit_per_hour) },
   ], f.flips.slice(0, 8), { onRow: r => openItem(r.id), empty: 'No market is liquid enough for a plan yet.' }));
@@ -165,6 +166,20 @@ async function viewDesk(main) {
     return p;
   };
   g.append(mv('Rising (24h)', movers.slice(0, 7)), mv('Falling (24h)', movers.slice(-7).reverse()));
+
+  const pb = lg.playbook.items.filter(r => r.traded_now && (r.value_now || 0) >= 5000);
+  if (pb.length && !lg.truncated) {
+    const cols = [
+      { h: 'Item', l: 1, f: r => itemCell(r) },
+      { h: 'Typical move', f: r => pct(r.median, 0), title: 'Median over the next 7 days in past leagues, priced in Divine' },
+      { h: 'Rose in', f: r => `${Math.round(r.up_share * r.n)} of ${r.n}` },
+    ];
+    const hint = `<a href="#/league">Day ${lg.day} playbook →</a>`;
+    const up = panel('Past leagues: rose from here', 'c6', hint), down = panel('Past leagues: fell from here', 'c6', hint);
+    up.append(table(cols, pb.filter(r => r.median > 0).slice(0, 6), { onRow: r => openItem(r.id) }));
+    down.append(table(cols, pb.filter(r => r.median < 0).reverse().slice(0, 6), { onRow: r => openItem(r.id) }));
+    g.append(up, down);
+  }
 
   const watched = d.market.filter(r => r.watched);
   const w = panel('Watchlist', 'c4');
@@ -223,8 +238,8 @@ async function viewMarkets(main) {
 
 const flipCols = () => [
   { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`), s: r => r.name },
-  { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'What you pay → what you get' },
-  { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'What you give → what you get' },
+  { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
+  { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Reached', f: r => plainPct(r.reach) + ' of hours', s: r => r.reach, title: 'Share of recent hours in which the market averaged at or beyond each order level' },
   { h: 'Units / hour', f: r => fmt(r.units_per_hour), s: r => r.units_per_hour },
@@ -236,8 +251,9 @@ const flipCols = () => [
 
 async function viewFlips(main) {
   const f = state.filters;
+  if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/flips', { share: state.share, min_margin: f.minMargin }));
-  state.summary = { ...state.summary, ...d.summary }; state.bridge = d.summary.bridge; renderTop();
+  state.bridge = d.summary.bridge; renderTop();
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
     <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to, in the stated share of recent hours — so real volume traded there. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore Gold fees and who is ahead of you in the queue; check the in-game book before sizing up.</p>
     <div class="bar">
@@ -262,6 +278,7 @@ async function viewFlips(main) {
 }
 
 async function viewArbitrage(main) {
+  if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/arbitrage', { share: state.share }));
   state.bridge = d.summary.bridge; renderTop();
   main.innerHTML = `<div class="head"><div><h1>Arbitrage</h1><p>Prices that disagree with each other: full sets against what they turn into, and item-for-item markets against the items' own prices.</p></div></div><div class="grid" id="g"></div>`;
@@ -424,8 +441,8 @@ async function viewLab(main) {
 }
 
 async function viewLedger(main) {
+  if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger'));
-  if (!state.market) await loadDesk();
   state.bridge = d.bridge; renderTop();
   const t = d.totals, names = state.market.map(r => r.name);
   main.innerHTML = `<div class="head"><div><h1>Ledger</h1><p>Record what you actually bought and sold; positions are marked at fair value. Stored only on this machine.</p></div></div>
@@ -518,7 +535,7 @@ async function openItem(id, hours = 168) {
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
-      <div class="num small">Buy&nbsp; ${order(p.buy_order, true)}<br>Sell ${order(p.sell_order, false)}</div>
+      <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
       <div class="muted small" style="margin-top:5px">Levels reached in ${plainPct(p.reach)} of recent hours · ${fmt(p.units_per_hour)} units/hour</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
@@ -546,7 +563,7 @@ async function viewHideout(main) {
   main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
   const fp = panel('Flips', '');
   fp.append(table([
-    { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">${order(r.buy_order, true)} · ${order(r.sell_order, false)}</span>` },
+    { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">Buy ${order(r.buy_order, true)}</span><span class="sub">Sell ${order(r.sell_order, false)}</span>` },
     { h: 'Margin', f: r => pct(r.margin, 0) }, { h: '/ hour', f: r => money(r.profit_per_hour) },
   ], f.flips.slice(0, 10)));
   const wp = panel('Watchlist', '');

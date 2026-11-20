@@ -11,7 +11,8 @@ whole numbers: `ratio_*_a` units of item_a per `ratio_*_b` units of item_b.
 the realm's reference currency (Chaos Orb in PoE1, Exalted Orb in PoE2) or its
 bridge (Divine Orb). Columns:
 
-    price            all-leg VWAP in reference currency
+    price            VWAP across both legs in reference currency (one leg only when the
+                     two disagree by more than 3x, which means one printed a joke trade)
     volume, value    units traded, and their value in reference currency
     bridge           value of one bridge currency (Divine) that hour
     r_*              the direct leg against the reference currency
@@ -26,6 +27,7 @@ Parquet are parsed, and only months that changed are rewritten.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Callable
@@ -40,6 +42,9 @@ DIVINE = _CURRENCY + "CurrencyModValues"
 EXALTED = _CURRENCY + "CurrencyAddModToRare"
 # realm -> (reference currency, bridge currency)
 ANCHORS = {"poe1": (CHAOS, DIVINE), "poe2": (EXALTED, DIVINE)}
+
+# Bump when the definition of `prices` changes: existing derived files are then rebuilt from `markets`.
+PRICES_VERSION = "2"
 
 _MAP = "MAP(VARCHAR, UBIGINT)"
 _DIGEST_COLUMNS = (
@@ -112,17 +117,26 @@ joined AS (
     LEFT JOIN bridge g ON g.hour = coalesce(r.hour, b.hour) AND g.league = coalesce(r.league, b.league)
 )
 SELECT hour, league, item,
-       CAST((r_value + b_value) / (CASE WHEN r_price IS NULL THEN 0 ELSE r_volume END
-                                   + CASE WHEN b_price IS NULL THEN 0 ELSE b_volume END) AS DOUBLE) AS price,
-       CAST(r_volume + b_volume AS UBIGINT) AS volume,
-       CAST(r_value + b_value AS DOUBLE) AS value,
+       CAST(CASE WHEN use_r AND use_b THEN (r_value + b_value) / (r_volume + b_volume)
+                 WHEN use_r THEN r_price ELSE b_price END AS DOUBLE) AS price,
+       CAST(CASE WHEN use_r THEN r_volume ELSE 0 END + CASE WHEN use_b THEN b_volume ELSE 0 END AS UBIGINT) AS volume,
+       CAST(CASE WHEN use_r THEN r_value ELSE 0 END + CASE WHEN use_b THEN b_value ELSE 0 END AS DOUBLE) AS value,
        bridge,
        r_price, r_lo, r_hi, CAST(r_volume AS UBIGINT) AS r_volume,
        r_stock_lo, r_stock_hi, CAST(r_bid_lo AS DOUBLE) AS r_bid_lo, CAST(r_bid_hi AS DOUBLE) AS r_bid_hi,
        b_price, b_lo, b_hi, CAST(b_volume AS UBIGINT) AS b_volume,
        b_stock_lo, b_stock_hi, CAST(b_bid_lo AS DOUBLE) AS b_bid_lo, CAST(b_bid_hi AS DOUBLE) AS b_bid_hi
-FROM joined
-WHERE r_price IS NOT NULL OR b_price IS NOT NULL
+FROM (
+    -- The two markets of an item never honestly disagree by a factor of three. When they do, one of
+    -- them printed a joke trade; the headline price then follows the market that moved more units.
+    SELECT *,
+           r_price IS NOT NULL AND (b_price IS NULL OR greatest(r_price, b_price) <= 3 * least(r_price, b_price)
+                                    OR r_volume >= b_volume) AS use_r,
+           b_price IS NOT NULL AND (r_price IS NULL OR greatest(r_price, b_price) <= 3 * least(r_price, b_price)
+                                    OR b_volume > r_volume) AS use_b
+    FROM joined
+    WHERE r_price IS NOT NULL OR b_price IS NOT NULL
+)
 ORDER BY league, item, hour
 """
 
@@ -135,8 +149,13 @@ def _write(con: duckdb.DuckDBPyConnection, query: str, target: Path, params: dic
 
 
 def _ingested_hours(con: duckdb.DuckDBPyConnection, target: Path) -> set[int]:
+    """Hours already folded into a month's Parquet. The sidecar also remembers hours that
+    published no markets at all (league downtime), which leave no rows to find."""
     if not target.exists():
         return set()
+    sidecar = target.with_name("hours.json")
+    if sidecar.exists():
+        return set(json.loads(sidecar.read_text()))
     rows = con.execute(f"SELECT DISTINCT epoch(hour)::BIGINT FROM read_parquet('{target.as_posix()}')").fetchall()
     return {r[0] for r in rows}
 
@@ -147,16 +166,16 @@ def ingest_month(con: duckdb.DuckDBPyConnection, root: Path, realm: str, month_d
     markets = markets_dir(root) / f"realm={realm}" / f"month={month}" / "data.parquet"
     prices = prices_dir(root) / f"realm={realm}" / f"month={month}" / "data.parquet"
     raw = {int(p.name.split(".")[0]): p for p in month_dir.glob("*.json.gz")}
-    new = sorted(set(raw) - _ingested_hours(con, markets))
+    done = _ingested_hours(con, markets)
+    new = sorted(set(raw) - done)
     if new:
         con.execute("CREATE OR REPLACE TEMP TABLE fresh AS " + _PARSE, {"files": [raw[h].as_posix() for h in new]})
-        # An hour with no markets at all still counts as ingested once its neighbours are in;
-        # nothing to record for it, the raw file stays as the proof.
         source = "SELECT * FROM fresh"
         if markets.exists():
             source += f" UNION ALL BY NAME SELECT * FROM read_parquet('{markets.as_posix()}')"
         _write(con, f"SELECT * FROM ({source}) ORDER BY league, item_a, item_b, hour", markets)
         con.execute("DROP TABLE fresh")
+        markets.with_name("hours.json").write_text(json.dumps(sorted(done | set(new))))
     if markets.exists() and (new or not prices.exists()):
         ref, bridge = ANCHORS[realm]
         legs = LEGS_SQL.format(markets=f"read_parquet('{markets.as_posix()}')")
@@ -167,6 +186,10 @@ def ingest_month(con: duckdb.DuckDBPyConnection, root: Path, realm: str, month_d
 def ingest(root: Path, log: Callable[[str], None] | None = print) -> dict[str, int]:
     """Bring Parquet up to date with the raw archive. Returns hours added per realm."""
     added: dict[str, int] = {}
+    stamp = prices_dir(root) / "VERSION"
+    if prices_dir(root).exists() and (not stamp.exists() or stamp.read_text().strip() != PRICES_VERSION):
+        for stale in prices_dir(root).glob("realm=*/month=*/data.parquet"):
+            stale.unlink()
     con = duckdb.connect()
     con.execute("SET TimeZone = 'UTC'")
     try:
@@ -181,6 +204,9 @@ def ingest(root: Path, log: Callable[[str], None] | None = print) -> dict[str, i
                 if count and log:
                     log(f"[{realm}] {month_dir.name}: +{count} hours")
             added[realm] = total
+        if added:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(PRICES_VERSION)
     finally:
         con.close()
     return added

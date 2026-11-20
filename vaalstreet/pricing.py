@@ -74,8 +74,14 @@ def fair_value(
     lookback: int = 168,
     refit_every: int = 24,
     outlier_z: float = 3.0,
+    reject_z: float = 6.0,
 ) -> FairValue:
-    """Causal fair value for price[T, N] (NaN = no print). `value` is traded value, for weighting."""
+    """Causal fair value for price[T, N] (NaN = no print). `value` is traded value, for weighting.
+
+    A print more than `reject_z` forecast deviations away is not believed on its own: it is
+    set aside, and only if the next print lands near it does the model accept that the item
+    really repriced (a crash after a patch) rather than someone fat-fingering a trade.
+    """
     y = np.log(np.where(price > 0, price, np.nan))
     T, N = y.shape
     d = np.vstack([np.full((1, N), np.nan), y[1:] - y[:-1]])
@@ -87,6 +93,7 @@ def fair_value(
     q = np.full(N, 0.02**2)
     r = np.full(N, 0.05**2)
     typical = np.ones(N)
+    pending = np.full(N, np.nan)  # log price of an unconfirmed far-out print
 
     for t in range(T):
         if t % refit_every == 0 and t >= 12:
@@ -109,12 +116,17 @@ def fair_value(
         # Huber-style: a print far outside the forecast band is treated as much noisier.
         R_eff = R * np.maximum(1.0, (np.abs(score) / outlier_z) ** 2)
         K = P_pred / (P_pred + R_eff + _EPS)
-        update = obs & ~fresh
+        seen = obs & ~fresh
+        far = seen & (np.abs(score) > reject_z)
+        # Confirmed when this print is closer to the one set aside than to the old value.
+        confirmed = far & np.isfinite(pending) & (np.abs(y[t] - pending) < 0.5 * np.abs(pending - x))
+        update = seen & ~far
+        z[t] = np.where(seen, score, np.nan)
         x = np.where(update, x + K * innovation, x)
         P = np.where(update, (1 - K) * P_pred, np.where(np.isnan(x), P, P_pred))
-        x = np.where(fresh, y[t], x)
-        P = np.where(fresh, R, P)
-        z[t] = np.where(update, score, np.nan)
+        x = np.where(fresh | confirmed, y[t], x)
+        P = np.where(fresh | confirmed, R, P)
+        pending = np.where(far & ~confirmed, y[t], np.where(obs, np.nan, pending))
         fair[t] = np.exp(x)
         sd[t] = np.sqrt(P)
     return FairValue(fair, sd, z, q, r)
