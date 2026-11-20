@@ -167,6 +167,29 @@ def rolling_quantile(a: np.ndarray, window: int, q: float, min_count: int = 1) -
     return np.where(counts >= min_count, out, np.nan)
 
 
+def weighted_quantile(a: np.ndarray, w: np.ndarray, q: float, min_count: int = 1) -> np.ndarray:
+    """Weighted quantile along the last axis: the smallest value with at least `q` of the weight at
+    or below it. NaN values (or zero weights) are ignored; fewer than `min_count` values gives NaN."""
+    a = np.asarray(a, dtype=np.float64)
+    w = np.where(np.isfinite(a), np.nan_to_num(np.asarray(w, dtype=np.float64)), 0.0)
+    w = np.maximum(w, 0.0)
+    order = np.argsort(a, axis=-1)  # NaNs sort last, with zero weight
+    values = np.take_along_axis(a, order, axis=-1)
+    cum = np.cumsum(np.take_along_axis(w, order, axis=-1), axis=-1)
+    total = cum[..., -1:]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        reached = cum / total >= q - 1e-12
+    first = np.argmax(reached, axis=-1)
+    out = np.take_along_axis(values, first[..., None], axis=-1)[..., 0]
+    count = np.sum(w > 0, axis=-1)
+    return np.where((count >= min_count) & (total[..., 0] > 0), out, np.nan)
+
+
+def rolling_weighted_quantile(a: np.ndarray, w: np.ndarray, window: int, q: float, min_count: int = 1) -> np.ndarray:
+    """Trailing-window weighted quantile down each column: row t covers rows (t-window, t]."""
+    return weighted_quantile(_windows(a, window), _windows(np.where(np.isfinite(a), w, np.nan), window), q, min_count)
+
+
 def _windows(a: np.ndarray, window: int) -> np.ndarray:
     a = np.asarray(a, dtype=np.float64)
     pad = np.full((window - 1,) + a.shape[1:], np.nan)

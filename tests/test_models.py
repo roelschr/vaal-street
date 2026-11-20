@@ -12,7 +12,7 @@ from conftest import CARD, ITEM, NEW, OLD, OTHER, PREMIUM, item_price
 from vaalstreet import pricing
 from vaalstreet.desk import Desk
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.panel import CORE, LEGS, Panel, ffill, rolling, rolling_quantile
+from vaalstreet.panel import CORE, LEGS, Panel, ffill, rolling, rolling_quantile, rolling_weighted_quantile, weighted_quantile
 
 
 def noisy_walk(T=600, N=4, noise=0.05, seed=3):
@@ -93,6 +93,19 @@ def test_rolling_helpers_match_numpy():
     assert np.allclose(fast, slow, equal_nan=True)
     filled = ffill(np.array([[np.nan], [1.0], [np.nan], [np.nan], [2.0]]), limit=1)
     assert np.array_equal(filled[:, 0], [np.nan, 1.0, 1.0, np.nan, 2.0], equal_nan=True)
+
+
+def test_weighted_quantile_ignores_volume_free_outliers():
+    values = np.array([1.0, 2.0, 3.0, 100.0, np.nan])
+    weights = np.array([10.0, 10.0, 10.0, 0.01, 5.0])
+    assert weighted_quantile(values, weights, 0.5) == 2.0
+    assert weighted_quantile(values, weights, 0.99) == 3.0, "a joke trade carries no weight"
+    assert weighted_quantile(values, np.ones(5), 0.99) == 100.0
+    assert np.isnan(weighted_quantile(values, weights, 0.5, min_count=5))
+    rng = np.random.default_rng(2)
+    a = rng.normal(size=(60, 2))
+    rolled = rolling_weighted_quantile(a, np.ones_like(a), 12, 0.5, min_count=12)
+    assert np.isnan(rolled[:11]).all() and rolled[30, 0] == np.sort(a[19:31, 0])[5]
 
 
 def test_panel_is_a_dense_hourly_grid(con):

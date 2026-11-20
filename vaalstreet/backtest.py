@@ -34,9 +34,10 @@ import duckdb
 import numpy as np
 
 from vaalstreet import pricing
-from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling_quantile
+from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling_weighted_quantile
 
 LEG_KEYS = ("r", "b")
+MAX_SWING = math.log(1.5)
 
 
 class Strategy(Protocol):
@@ -102,7 +103,7 @@ class Context:
         return self._sim.z[self.t]
 
     def swing(self, leg: str, reach: float) -> np.ndarray:
-        """Level (as log distance from fair) the leg's hourly VWAP stayed below in `reach` of recent hours."""
+        """Log distance from fair value below which `reach` of the leg's recent volume traded."""
         return self._sim.swing(leg, reach)[self.t]
 
     @property
@@ -283,13 +284,17 @@ class Simulation:
         return self.realized + self.position * np.nan_to_num(self._mark[t]) - self.cost
 
     def swing(self, leg: str, reach: float, window: int = 48) -> np.ndarray:
-        """Causal rolling quantile of log(leg VWAP / prior fair): [T, N]."""
+        """Causal, volume-weighted rolling quantile of log(leg VWAP / prior fair): [T, N].
+
+        The level below which `reach` of the leg's units traded over the trailing window."""
         key = (leg, reach)
         if key not in self._swing:
             prior = np.vstack([self.fair[:1], self.fair[:-1]])
             with np.errstate(divide="ignore", invalid="ignore"):
                 dev = np.log(self.panel[f"{leg}_price"] / prior)
-            self._swing[key] = rolling_quantile(np.where(np.isfinite(dev), dev, np.nan), window, reach, min_count=12)
+            # Never place a level more than ~1.5x from fair value: beyond that the print was an empty book.
+            dev = np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan)
+            self._swing[key] = rolling_weighted_quantile(dev, self.panel[f"{leg}_volume"], window, reach, min_count=12)
         return self._swing[key]
 
     def equity_now(self, t: int) -> float:

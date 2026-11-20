@@ -4,7 +4,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const state = {
   status: null, league: null, bridge: null, unit: localStorage.unit || 'chaos', share: +(localStorage.share || 0.1),
-  generation: -1, filters: { q: '', category: '', minValue: 1000, watched: false, kind: 'all', minMargin: 0.03, capital: '' },
+  generation: -1, filters: { q: '', category: '', minValue: 1000, watched: false, kind: 'all', minMargin: 0.03, capital: localStorage.bankroll || '' },
   league_view: { horizon: 7, unit: 'divine' }, lab: null, hideout: new URLSearchParams(location.search).has('hideout'),
 };
 const PALETTE = ['#8fb8f2', '#b9a3ee', '#e8c66a', '#f0787f', '#5fd3a2', '#d9a05b', '#7fd6e0', '#c9cf7a'];
@@ -261,19 +261,48 @@ async function viewFlips(main) {
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
       <label class="f">Your share of the flow: <span id="shareL">${plainPct(state.share)}</span><input type="range" id="share" min="0.01" max="0.3" step="0.01" value="${state.share}"></label>
       <label class="f">Min. margin (%)<input type="number" id="mm" value="${f.minMargin * 100}" min="0" step="1"></label>
-      <label class="f">Max. capital (c)<input type="number" id="cap" value="${f.capital}" placeholder="any" min="0" step="1000"></label>
+      <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 5000" min="0" step="1000"></label>
       <label class="f">Search<input type="search" id="q" value="${esc(f.q)}" placeholder="Item name"></label>
-    </div><section class="panel" id="tbl"></section>`;
+    </div><div id="plan"></div><section class="panel" id="tbl"></section>`;
   const draw = () => {
     const q = f.q.toLowerCase();
-    const rows = d.flips.filter(r => (f.kind === 'all' || r.kind === f.kind) && (!q || r.name.toLowerCase().includes(q)) && (!f.capital || r.capital <= +f.capital));
+    const rows = d.flips.filter(r => (f.kind === 'all' || r.kind === f.kind) && (!q || r.name.toLowerCase().includes(q)));
     $('#tbl', main).replaceChildren(table(flipCols(), rows, { sort: 6, onRow: r => openItem(r.id), empty: 'No plan clears these filters.' }));
+    // A session plan: the flips that earn most per Chaos tied up, one per item, sized to fit the bankroll.
+    const bank = +f.capital, host = $('#plan', main);
+    host.replaceChildren();
+    if (!(bank > 0)) return;
+    // Each item gets at most a quarter of the bankroll; plans are taken in order of what that stake earns,
+    // and only if the same rule sold and made money over the last week.
+    const perItem = bank / 4, taken = new Set(), picks = [];
+    let left = bank;
+    const sized = rows.filter(r => r.capital > 0 && r.replay && r.replay.return > 0 && r.replay.sales >= 2)
+      .map(r => { const stake = Math.min(r.capital, perItem); return { ...r, stake, est: r.profit_per_hour * stake / r.capital }; })
+      .sort((a, b) => b.est - a.est);
+    for (const r of sized) {
+      if (left < bank * 0.02 || picks.length >= 12) break;
+      if (taken.has(r.id)) continue;
+      const stake = Math.min(r.stake, left);
+      taken.add(r.id); left -= stake;
+      picks.push({ ...r, stake, est: r.est * stake / r.stake });
+    }
+    const total = picks.reduce((a, r) => a + r.est, 0);
+    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(bank - left)} deployed</span>`);
+    p.style.marginBottom = '14px';
+    p.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
+      { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
+      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => money(r.stake), title: 'Chaos to keep working in this item (at most a quarter of the bankroll)' },
+      { h: 'Est. / hour', f: r => money(r.est) },
+      { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
+    ], picks, { onRow: r => openItem(r.id), empty: 'No plan fits this bankroll with the current filters.' }));
+    host.append(p);
   };
   $('#kind', main).onclick = e => { const k = e.target.dataset.k; if (k) { f.kind = k; main.querySelectorAll('#kind button').forEach(b => b.classList.toggle('on', b.dataset.k === k)); draw(); } };
   $('#share', main).oninput = e => { $('#shareL', main).textContent = plainPct(+e.target.value); };
   $('#share', main).onchange = e => { state.share = +e.target.value; localStorage.share = state.share; route(); };
   $('#mm', main).onchange = e => { f.minMargin = (+e.target.value || 0) / 100; route(); };
-  $('#cap', main).onchange = e => { f.capital = e.target.value; draw(); };
+  $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; draw(); };
   $('#q', main).oninput = e => { f.q = e.target.value; draw(); };
   draw();
 }

@@ -480,8 +480,13 @@ def _default(o):
 
 
 def serve(port: int = 3000, root: Path | None = None, *, sync: bool = True) -> None:
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), None)
+    except OSError as err:
+        raise RuntimeError(f"Cannot listen on port {port} ({err.strerror}). Is the desk already running? "
+                           f"Try --port {port + 1}.") from err
     app = App(root, sync=sync)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app))
+    httpd.RequestHandlerClass = make_handler(app)
     print(f"Vaal Street desk: http://localhost:{port}   (data in {app.root})", flush=True)
     try:
         httpd.serve_forever()

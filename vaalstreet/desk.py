@@ -27,12 +27,16 @@ import numpy as np
 from vaalstreet import items as item_meta
 from vaalstreet import pricing
 from vaalstreet.ingest import ANCHORS
-from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill
+from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, weighted_quantile
 from vaalstreet.paths import data_dir
 
 DAY = 24
 SWING_WINDOW = 48  # hours of prints used to learn where each market trades relative to fair value
 PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of hours an order level is expected to be reached
+# A market's hourly average sometimes prints far from fair value because the book was empty and somebody
+# paid a whole Divine for three oils. That is not a level a second seller could count on, so order levels
+# are never placed more than this far (in log terms, about 1.5x) from fair value.
+MAX_SWING = math.log(1.5)  # keep in step with backtest.MAX_SWING
 PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
@@ -63,6 +67,7 @@ class Leg:
     name: str
     fair: np.ndarray  # [T, N] this leg's own filtered VWAP
     dev: np.ndarray  # [W, N] trailing log(leg VWAP / combined fair value); NaN when the leg did not print
+    weight: np.ndarray  # [W, N] units traded in those hours
     flow: np.ndarray  # [N] units traded per hour, trailing day
     active: np.ndarray  # [N] share of trailing-day hours with a print
     age: np.ndarray  # [N] hours since the leg last printed
@@ -118,7 +123,8 @@ class Desk:
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 low, high = np.nanmedian(lo[-DAY:], axis=0), np.nanmedian(hi[-DAY:], axis=0)
             legs[key] = Leg(
-                label, leg_fv.fair, np.where(np.isfinite(dev), dev, np.nan),
+                label, leg_fv.fair, np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan),
+                np.nan_to_num(vol[-SWING_WINDOW:]),
                 pricing.trailing_sum(vol, DAY)[-1] / DAY,
                 pricing.activity(price, DAY)[-1], _age(price), low, high,
                 ffill(_geo(panel[f"{key}_stock_lo"], panel[f"{key}_stock_hi"]), limit=6)[-1],
@@ -261,11 +267,12 @@ class Desk:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
 
         Each plan buys on one leg and sells on another (or the same) at levels the
-        leg's *hourly average* price has actually reached: "in `reach` of recent
-        hours the Chaos market averaged this low, and the Divine market averaged
-        that high". Volume traded through those levels, which is what makes them
-        better evidence than the published extremes. For every item and leg pair
-        the patience level with the highest expected profit is kept.
+        leg's *hourly average* price has actually reached: "`reach` of the units
+        traded over the last two days changed hands in hours when the Chaos market
+        averaged this low, and `reach` when the Divine market averaged that high".
+        Volume went through those levels, which is what makes them better evidence
+        than the published extremes. For every item and leg pair the patience level
+        with the highest expected profit is kept.
         """
         p = self.panel
         fair = self.fv.fair[-1]
@@ -282,10 +289,10 @@ class Desk:
             if not usable.any():
                 continue
             for reach in PATIENCE:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    buy = fair * np.exp(np.nanquantile(buy_leg.dev, reach, axis=0))
-                    sell = fair * np.exp(np.nanquantile(sell_leg.dev, 1 - reach, axis=0))
+                # Volume-weighted: `reach` of the units traded at or beyond each level, so an hour in which
+                # three units changed hands at a silly ratio cannot set it.
+                buy = fair * np.exp(weighted_quantile(buy_leg.dev.T, buy_leg.weight.T, reach))
+                sell = fair * np.exp(weighted_quantile(sell_leg.dev.T, sell_leg.weight.T, 1 - reach))
                 with np.errstate(divide="ignore", invalid="ignore"):
                     margin = sell / buy - 1
                 # Orders only work in the hours that reach them, and a maker sees one side of the flow.
