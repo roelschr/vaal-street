@@ -4,7 +4,8 @@
     legs           every market seen from both sides: the price of `item` in `quote`
     prices         one reference-currency price per item, league and hour (see ingest.py)
     items          item id -> name, category, stack size
-    leagues        first/last hour, traded value and kind per league
+    leagues        first/last hour, traded value and kind per league (a table, computed when
+                   the connection opens: reconnect after an ingest to see new leagues)
     league_prices  prices plus name, category and hours/days since the league's first trade
 
 Reference currency: Chaos Orb in PoE1, Exalted Orb in PoE2. Every process opens
@@ -34,7 +35,7 @@ CREATE VIEW legs AS {legs};
 CREATE VIEW prices AS
 SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}';
 
-CREATE VIEW leagues AS
+CREATE TABLE leagues AS
 SELECT league,
        min(hour) AS first_hour, max(hour) AS last_hour, count(DISTINCT hour) AS hours,
        sum(value) AS value,

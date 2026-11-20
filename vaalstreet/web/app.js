@@ -108,7 +108,7 @@ function renderTop() {
   $('#top').innerHTML = `
     <select id="leagueSel" title="League">${leagues.map(l => `<option ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}</option>`).join('')}</select>
     ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
-    <div class="stat"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
+    <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compact(sm.value_24h / sm.bridge)} d</b><span>traded, 24h</span></div>
     <div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>` : ''}
     <span class="grow"></span>
@@ -135,7 +135,7 @@ async function viewDesk(main) {
   main.innerHTML = `<div class="head"><div><h1>${esc(s.league)} desk</h1><p>What is worth doing this hour, from the exchange's latest published prices.</p></div></div>
     <div class="kpis">
       <div class="kpi"><span>Divine Orb</span><b>${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
-      <div class="kpi"><span>League day</span><b>${s.league_day}</b></div>
+      <div class="kpi"><span>League day</span><b>${s.league_day ?? '–'}</b></div>
       <div class="kpi"><span>Traded in 24h</span><b>${compact(s.value_24h / s.bridge)} d</b></div>
       <div class="kpi"><span>Items trading</span><b>${s.items}</b></div>
       <div class="kpi"><span>Latest hour</span><b>${ago(s.as_of + 3600)}</b></div>
@@ -309,9 +309,12 @@ async function viewLeague(main) {
   if (!state.summary) await loadDesk();
   renderTop();
   const past = d.precedents, unitWord = v.unit === 'divine' ? 'Divine' : 'Chaos';
-  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${esc(d.league)} is on day ${d.day}. ${past.length ? `Lined up against the same day of ${past.map(esc).join(', ')}.` : 'No earlier league in the archive yet — run a full history sync to compare leagues.'}</p></div></div>
+  const st0 = state.status, shallow = st0.first_hour > st0.archive_start + 86400;
+  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${d.truncated ? `The archive does not reach back to the start of ${esc(d.league)}, so its league days cannot be counted yet.` : `${esc(d.league)} is on day ${d.day}.`} ${past.length ? `Lined up against the same day of ${past.map(esc).join(', ')}.` : 'No earlier league in the archive yet.'}</p></div></div>
+    ${shallow ? `<p class="note">History on disk starts ${new Date(st0.first_hour * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}. The exchange has published every hour since July 2024; the full archive is about 1.5 GB and takes one to two hours to download, in the background, newest first. <button class="btn" id="bf" ${st0.sync.backfill ? 'disabled' : ''}>${st0.sync.backfill ? 'Downloading…' : 'Download full history'}</button></p>` : ''}
     <div class="grid" id="g"></div>`;
   const g = $('#g', main);
+  if ($('#bf', main)) $('#bf', main).onclick = async e => { e.target.disabled = true; e.target.textContent = 'Downloading…'; await api('/api/sync', { backfill: true }); toast('Downloading the full history in the background. Pages refresh as leagues arrive.'); };
   const dv = panel('Divine Orb in Chaos, by league day', 'c12');
   dv.innerHTML += `<div class="body"><div id="lg"></div><div id="dvc"></div></div>`;
   g.append(dv);
@@ -326,7 +329,6 @@ async function viewLeague(main) {
     { h: 'Each league', l: 1, f: r => r.by_league.map(m => `<span class="chip ${m.move > 0 ? 'up' : 'down'}" title="${esc(m.league)}">${m.move > 0 ? '+' : ''}${(m.move * 100).toFixed(0)}%</span>`).join('') },
     { h: 'Rose in', f: r => `${Math.round(r.up_share * r.n)} of ${r.n}`, s: r => r.up_share },
     { h: 'Price now', f: r => moneyU(r.price_now), s: r => r.price_now },
-    { h: 'Traded today', f: r => money(r.value_now), s: r => r.value_now },
   ];
   const traded = d.playbook.items.filter(r => r.traded_now && (r.value_now || 0) >= 2000);
   const up = panel(`Rose over the next ${v.horizon} days`, 'c6', controls), down = panel(`Fell over the next ${v.horizon} days`, 'c6');
@@ -341,7 +343,6 @@ async function viewLeague(main) {
     { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
     { h: 'Now', f: r => moneyU(r.price_now), s: r => r.price_now },
     { h: `Typical on day ${d.day}`, f: r => moneyU(r.typical), s: r => r.typical },
-    { h: 'Past range', f: r => `${fmt(r.low)} – ${fmt(r.high)}` },
     { h: 'vs typical', f: r => pct(r.vs_typical, 0), s: r => r.vs_typical },
     { h: 'Leagues', f: r => r.n, s: r => r.n },
   ];
@@ -528,7 +529,11 @@ async function openItem(id, hours = 168) {
   $('#watchBtn', drawer).onclick = async () => { row.watched = !row.watched; await api('/api/watch', { league: state.league, item: s.id, on: row.watched }); $('#watchBtn', drawer).textContent = row.watched ? '★ Watching' : '☆ Watch'; };
   $('#aa', drawer).onclick = async () => {
     const threshold = $('#at', drawer).value; if (threshold === '') return toast('Enter a threshold.', true);
-    try { await api('/api/alert', { league: state.league, item: s.id, field: $('#af', drawer).value, op: $('#ao', drawer).value, threshold: +threshold }); toast('Alert added. It fires when a new hour crosses the threshold.'); }
+    try {
+      await api('/api/alert', { league: state.league, item: s.id, field: $('#af', drawer).value, op: $('#ao', drawer).value, threshold: +threshold });
+      toast('Alert added. It fires when a new hour crosses the threshold.');
+      if (window.Notification?.permission === 'default') Notification.requestPermission();
+    }
     catch (err) { toast(err.message, true); }
   };
 }
@@ -538,7 +543,7 @@ function closeDrawer() { $('#drawer').hidden = true; $('#drawer').innerHTML = ''
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12 }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)} · day ${s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
   const fp = panel('Flips', '');
   fp.append(table([
     { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">${order(r.buy_order, true)} · ${order(r.sell_order, false)}</span>` },
@@ -585,9 +590,19 @@ async function poll(first) {
     const s = await api('/api/status');
     const changed = s.generation !== state.generation || s.ready !== state.status?.ready;
     state.status = s; state.league ||= s.league; state.generation = s.generation;
+    announce(s.last_event);
     if (first || changed) await route(); else if (!state.hideout && state.summary) renderTop();
     else if (!s.ready) route();
   } catch (err) { if (first) $('#main').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+}
+// A fired alert reaches you even when the desk is in a background tab.
+function announce(event) {
+  if (!event) return;
+  const seen = +(localStorage.lastEvent || 0);
+  localStorage.lastEvent = Math.max(seen, event.id);
+  if (!seen || event.id <= seen) return;
+  toast(`${event.title} — ${event.body}`);
+  if (window.Notification?.permission === 'granted') new Notification(event.title, { body: event.body, icon: '/mark.svg' });
 }
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
 window.addEventListener('keydown', e => {

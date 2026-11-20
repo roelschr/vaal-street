@@ -190,6 +190,8 @@ class App:
             try:
                 out["leagues"] = self.leagues()
                 out["league"] = self.default_league()
+                events = self.ledger.events(out["league"], 1)
+                out["last_event"] = events[0] if events else None
             except ApiError:
                 out["ready"] = False
         return out
@@ -201,8 +203,11 @@ class App:
         for row in market:
             row["watched"] = row["id"] in watch
         book = self.book()
+        info = next((l for l in book.leagues() if l["league"] == desk.league), None)
+        # Without the league's first hour on disk, "day N" would be counted from the wrong place.
+        day = book.day_of(desk.league) if info and not info["truncated"] else None
         return {
-            "summary": desk.summary() | {"league_day": book.day_of(desk.league)},
+            "summary": desk.summary() | {"league_day": day},
             "market": market,
             "events": self.ledger.events(desk.league),
         }
@@ -232,7 +237,9 @@ class App:
         book = self.book()
         league = q.get("league") or self.default_league()
         unit = q.get("unit", "divine")
+        info = next((l for l in book.leagues() if l["league"] == league), None)
         out = {"leagues": book.leagues(), "league": league, "day": book.day_of(league),
+               "truncated": bool(info and info["truncated"]),
                "precedents": book.precedents(league), "divine": book.divine_curve(int(q.get("max_day", 90)))}
         out["playbook"] = book.playbook(league, int(q.get("horizon", 7)), unit=unit,
                                         day=int(q["day"]) if q.get("day") else None)
