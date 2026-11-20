@@ -375,7 +375,6 @@ async function viewLeague(main) {
     { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
     { h: 'Typical move', f: r => pct(r.median, 0), s: r => r.median, title: 'Median across past leagues' },
     { h: 'Each league', l: 1, f: r => r.by_league.map(m => `<span class="chip ${m.move > 0 ? 'up' : 'down'}" title="${esc(m.league)}">${m.move > 0 ? '+' : ''}${(m.move * 100).toFixed(0)}%</span>`).join('') },
-    { h: 'Rose in', f: r => `${Math.round(r.up_share * r.n)} of ${r.n}`, s: r => r.up_share },
     { h: 'Price now', f: r => moneyU(r.price_now), s: r => r.price_now },
   ];
   const traded = d.playbook.items.filter(r => r.traded_now && (r.value_now || 0) >= 2000);
