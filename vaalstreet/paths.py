@@ -9,8 +9,12 @@ REALMS = ("poe1", "poe2")
 
 
 def data_dir() -> Path:
+    """`VAAL_DATA_DIR` if set; `data/` in a source checkout; otherwise `~/.vaalstreet`."""
     override = os.environ.get("VAAL_DATA_DIR")
-    return Path(override) if override else Path(__file__).resolve().parent.parent / "data"
+    if override:
+        return Path(override)
+    checkout = Path(__file__).resolve().parent.parent
+    return checkout / "data" if (checkout / "pyproject.toml").exists() else Path.home() / ".vaalstreet"
 
 
 def raw_dir(root: Path) -> Path:

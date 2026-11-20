@@ -136,7 +136,7 @@ Views: `markets` (as published), `legs` (each market from both sides), `prices` 
 
 ## Files
 
-All data lives under `./data` (override with `VAAL_DATA_DIR`).
+All data lives under `data/` in the checkout (`~/.vaalstreet` if installed as a package; override with `VAAL_DATA_DIR`).
 
 ```
 data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as served
