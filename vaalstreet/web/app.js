@@ -241,7 +241,7 @@ const flipCols = () => [
   { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
   { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
-  { h: 'Hours reached', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of recent hours in which the market averaged at or beyond each order level' },
+  { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
   { h: 'Units / hour', f: r => fmt(r.units_per_hour), s: r => r.units_per_hour },
   { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
   { h: 'Last 7 days', f: r => r.replay ? `${pct(r.replay.return, 0)} <span class="dim">· ${r.replay.sales} sale${r.replay.sales === 1 ? '' : 's'}</span>` : '<span class="dim">no fills</span>', s: r => r.replay?.return, title: 'This plan’s rule replayed over the last 7 days on a fixed stake, re-posting orders every 4 hours: profit as a share of the stake (inventory still held is valued at fair value), and the number of hours with a sale' },
@@ -256,7 +256,7 @@ async function viewFlips(main) {
   const d = await api(withLeague('/api/flips', { share: state.share, min_margin: f.minMargin }));
   state.bridge = d.summary.bridge; renderTop();
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
-    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to, in the stated share of recent hours — so real volume traded there. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore Gold fees and who is ahead of you in the queue; check the in-game book before sizing up.</p>
+    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore Gold fees and who is ahead of you in the queue; check the in-game book before sizing up.</p>
     <div class="bar">
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
       <label class="f">Your share of the flow: <span id="shareL">${plainPct(state.share)}</span><input type="range" id="share" min="0.01" max="0.3" step="0.01" value="${state.share}"></label>
@@ -567,7 +567,7 @@ async function openItem(id, hours = 168) {
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
       <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
-      <div class="muted small" style="margin-top:5px">Levels reached in ${plainPct(p.reach)} of recent hours · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${pct(p.replay.return, 0)} on the stake, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}</div></div>`).join('')
+      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${pct(p.replay.return, 0)} on the stake, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);

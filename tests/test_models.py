@@ -143,7 +143,7 @@ def test_cross_market_flip_captures_the_divine_premium(desk):
     assert cross["margin"] >= PREMIUM - 1 - 0.01, "at least the structural premium"
     assert cross["buy"] < cross["sell"]
     assert cross["buy_order"]["currency"] == "Chaos" and cross["sell_order"]["currency"] == "Divine"
-    # 10% of the smaller market's flow, in the share of hours the levels are reached.
+    # 10% of the smaller market's flow, times the share of volume that trades beyond the levels.
     assert cross["units_per_hour"] == pytest.approx(0.1 * cross["reach"] * 1000, rel=1e-6)
     chaos = plans[(ITEM, "chaos")]
     assert 0.02 < chaos["margin"] < cross["margin"], "the same-market swing is smaller than the cross-market gap"

@@ -32,7 +32,7 @@ from vaalstreet.paths import data_dir
 
 DAY = 24
 SWING_WINDOW = 48  # hours of prints used to learn where each market trades relative to fair value
-PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of hours an order level is expected to be reached
+PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of a market's volume that trades beyond an order level
 # A market's hourly average sometimes prints far from fair value because the book was empty and somebody
 # paid a whole Divine for three oils. That is not a level a second seller could count on, so order levels
 # are never placed more than this far (in log terms, about 1.5x) from fair value.
@@ -295,7 +295,7 @@ class Desk:
                 sell = fair * np.exp(weighted_quantile(sell_leg.dev.T, sell_leg.weight.T, 1 - reach))
                 with np.errstate(divide="ignore", invalid="ignore"):
                     margin = sell / buy - 1
-                # Orders only work in the hours that reach them, and a maker sees one side of the flow.
+                # Only the volume that trades beyond a level can fill an order resting there.
                 units = share * reach * np.minimum(buy_leg.flow, sell_leg.flow)
                 profit = margin * units * buy
                 ok = usable & np.isfinite(margin) & (margin >= min_margin) & (units > 0)
