@@ -400,15 +400,19 @@ class Hold:
     warmup: int = 24
 
     def step(self, ctx: Context) -> None:
-        if ctx.t != self.warmup:
-            if ctx.t == self.warmup + 3:
+        bought = ctx.state.get("bought")
+        if bought is not None:
+            if ctx.t - bought >= 3:  # whatever has not filled by now is left unbought
                 ctx.cancel_all()
+            return
+        if ctx.t < self.warmup:
             return
         mask = _liquid(ctx, self.top, window=self.warmup)
         budget = ctx.bankroll / max(mask.sum(), 1)
         with np.errstate(divide="ignore", invalid="ignore"):
             units = np.where(mask, budget / ctx.fair, 0.0)
         ctx.quote("r", buy_limit=np.where(mask, np.inf, np.nan), buy_units=units)
+        ctx.state["bought"] = ctx.t
 
 
 @dataclass
@@ -485,7 +489,7 @@ class Reversion:
 
 @dataclass
 class Momentum:
-    """Once a day, hold the liquid items whose fair value rose most over `lookback` hours."""
+    """About once a day, hold the liquid items whose fair value rose most over `lookback` hours."""
 
     lookback: int = 72
     hold: int = 10
@@ -493,10 +497,12 @@ class Momentum:
     rebalance: int = 24
 
     def step(self, ctx: Context) -> None:
-        if ctx.t < self.lookback + 24 or ctx.t % self.rebalance:
-            if ctx.t % self.rebalance == 3:
-                ctx.cancel_all()
+        last = ctx.state.get("rebalanced")
+        if ctx.t < self.lookback + 24 or (last is not None and ctx.t - last < self.rebalance):
+            if last is not None and ctx.t - last >= 3:
+                ctx.cancel_all()  # orders that did not fill within a few hours are dropped until the next rebalance
             return
+        ctx.state["rebalanced"] = ctx.t
         hist = ctx.fair_history(self.lookback + 1)
         with np.errstate(divide="ignore", invalid="ignore"):
             ret = np.log(hist[-1] / hist[0])

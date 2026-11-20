@@ -99,6 +99,14 @@ def test_hold_tracks_the_market_and_windows_select_league_days(con):
     assert len(window.hours) == 3 * 24 + 1
 
 
+def test_strategies_behave_the_same_whether_you_visit_hourly_or_rarely(con):
+    for spec in ("hold", "momentum"):
+        hourly = backtest.run(con, OLD, spec, capital=1000, slippage=0.0)
+        rarely = backtest.run(con, OLD, spec, capital=1000, slippage=0.0, attention=5)
+        assert rarely.fills <= hourly.fills * 2 + 5, f"{spec}: stale orders must not keep filling between visits"
+        assert rarely.total_return == pytest.approx(hourly.total_return, abs=0.25)
+
+
 def test_custom_strategy_is_loaded_from_a_file(tmp_path, con):
     module = tmp_path / "mine.py"
     module.write_text(
