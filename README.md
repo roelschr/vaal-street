@@ -45,7 +45,9 @@ python -m vaalstreet sync --all      # every hour since July 2024, newest first,
 
 **Fair value.** A local-level Kalman filter on log price per item. The item's own returns are split into real movement and bounce (negative lag-one autocovariance), hours that traded more value count for more, and prints far outside the forecast are down-weighted. Parameters are re-fitted on trailing data only, so the series is causal: the value shown for an hour used nothing from after it.
 
-**Flip plans.** For each item and pair of markets, the desk looks at where each market's *hourly average* has traded relative to fair value over the last two days. A plan buys at the level the buy market averaged at or below in a given share of hours, and sells at the level the sell market averaged at or above in the same share — levels real volume went through. Three kinds: within the Chaos market, within the Divine market, and **Chaos → Divine**, which buys from players dumping loot for Chaos and sells to players paying Divines. The patience level with the highest expected profit is kept. Orders are given as whole-number ratios the exchange accepts.
+You can check the model on any league: `python -m vaalstreet scorecard --league Mirage` compares fair value with the latest print as a predictor of where the item trades over the following six hours.
+
+**Flip plans.** For each item and pair of markets, the desk looks at where each market's *hourly average* has traded relative to fair value over the last two days. A plan buys at the level the buy market averaged at or below in a given share of hours, and sells at the level the sell market averaged at or above in the same share — levels real volume went through. Three kinds: within the Chaos market, within the Divine market, and **Chaos → Divine**, which buys from players dumping loot for Chaos and sells to players paying Divines. The patience level with the highest expected profit is kept. Orders are given as whole-number ratios the exchange accepts. Each plan also shows its own last week: the same rule replayed through the backtest simulator on a fixed stake.
 
 **Set conversions.** Read from the game data: a divination card's stack size and reward, and shards that combine into their orb. A set is compared with its reward at fair value, and again "in a hurry" (buy the set in the dearer market, sell the reward in the cheaper one).
 
@@ -81,6 +83,7 @@ python -m vaalstreet flips --kind cross          # maker plans for the live leag
 python -m vaalstreet arb                         # sets against their rewards
 python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
+python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
 python -m vaalstreet sql "SELECT league, kind, hours FROM leagues ORDER BY first_hour"
 ```
 

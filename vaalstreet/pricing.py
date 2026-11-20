@@ -202,3 +202,52 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
         if err < best_err - 1e-12:
             best, best_err = (currency, items), err
     return best
+
+
+def forward_vwap(price: np.ndarray, value: np.ndarray, horizon: int) -> np.ndarray:
+    """Value-weighted mean log price over the `horizon` hours after each row: [T, N], NaN if none traded."""
+    seen = np.isfinite(price) & (price > 0)
+    weight = np.where(seen, np.nan_to_num(value), 0.0)
+    logp = np.where(seen, np.log(np.where(seen, price, 1.0)), 0.0)
+    zero = np.zeros((1, price.shape[1]))
+    num = np.cumsum(np.vstack([zero, weight * logp]), axis=0)
+    den = np.cumsum(np.vstack([zero, weight]), axis=0)
+    T = price.shape[0]
+    start = np.minimum(np.arange(T) + 1, T)
+    end = np.minimum(start + horizon, T)
+    total = den[end] - den[start]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(total > 0, (num[end] - num[start]) / total, np.nan)
+
+
+def scorecard(price: np.ndarray, value: np.ndarray, horizon: int = 6, warmup: int = 48) -> list[dict]:
+    """How well fair value predicts where an item trades next, against simply using the last print.
+
+    The target is the value-weighted price over the following `horizon` hours - what you would
+    actually transact at. Errors are absolute log differences (0.05 is about 5%), reported for
+    items grouped by how regularly they trade. Everything is out of sample: the estimate at
+    hour t uses hours up to t only.
+    """
+    from vaalstreet.panel import ffill
+
+    target = forward_vwap(price, value, horizon)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        last = np.log(ffill(price))
+        fair = np.log(fair_value(price, value).fair)
+    printed = np.mean(np.isfinite(price), axis=0)
+    rows = []
+    for label, lo, hi in (("trades almost every hour", 0.9, 1.01), ("trades most hours", 0.5, 0.9),
+                          ("trades some hours", 0.1, 0.5)):
+        group = (printed >= lo) & (printed < hi)
+        err_fair = np.abs(target[warmup:, group] - fair[warmup:, group])
+        err_last = np.abs(target[warmup:, group] - last[warmup:, group])
+        ok = np.isfinite(err_fair) & np.isfinite(err_last)
+        if not ok.any():
+            continue
+        rows.append({
+            "items": label, "count": int(group.sum()),
+            "fair_median": float(np.median(err_fair[ok])), "last_median": float(np.median(err_last[ok])),
+            "fair_mean": float(np.mean(err_fair[ok])), "last_mean": float(np.mean(err_last[ok])),
+            "improvement": float(1 - np.mean(err_fair[ok]) / np.mean(err_last[ok])),
+        })
+    return rows

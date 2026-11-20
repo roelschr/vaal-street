@@ -61,6 +61,17 @@ def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
     assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
 
 
+def test_scorecard_measures_fair_value_against_the_last_print():
+    true, seen = noisy_walk(T=800, noise=0.05)
+    value = np.ones_like(seen)
+    target = pricing.forward_vwap(seen, value, 3)
+    assert target[10, 0] == pytest.approx(np.log(seen[11:14, 0]).mean()), "the next three hours, not this one"
+    assert np.isnan(target[-1]).all()
+    rows = pricing.scorecard(seen, value, horizon=6)
+    assert len(rows) == 1 and rows[0]["count"] == 4
+    assert rows[0]["fair_mean"] < rows[0]["last_mean"] and rows[0]["improvement"] > 0.2
+
+
 def test_nice_ratio_gives_small_whole_number_orders():
     assert pricing.nice_ratio(220.97) == (221, 1)
     assert pricing.nice_ratio(3.3) == (33, 10)

@@ -182,6 +182,22 @@ def _backtest(args: argparse.Namespace) -> None:
         print(f"  {s['league']}: {tops}")
 
 
+def _scorecard(args: argparse.Namespace) -> None:
+    from vaalstreet import pricing
+    from vaalstreet.panel import Panel
+
+    con = connect()
+    for league in args.league or [_league(con, args)]:
+        panel = Panel.load(con, league, ("price", "value"), min_value=args.min_value)
+        rows = pricing.scorecard(panel["price"], panel["value"], horizon=args.horizon)
+        print(f"{league}: error predicting the value-weighted price of the next {args.horizon} hours "
+              f"(absolute log difference; 0.05 is about 5%)")
+        _table(rows, [("items", "Items that", ""), ("count", "Count", ""), ("fair_mean", "Fair value, mean", ".4f"),
+                      ("last_mean", "Last print, mean", ".4f"), ("improvement", "Error cut", "+.0%"),
+                      ("fair_median", "Fair, median", ".4f"), ("last_median", "Last, median", ".4f")])
+        print()
+
+
 def _sql(args: argparse.Namespace) -> None:
     connect(realm=args.realm).sql(args.query).show(max_rows=200, max_width=220)
 
@@ -254,6 +270,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--compound", action="store_true", help="size orders on current equity instead of the stake")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_backtest)
+
+    p = commands.add_parser("scorecard", help="how well fair value predicts upcoming prices, per league")
+    p.add_argument("--league", action="append")
+    p.add_argument("--horizon", type=int, default=6, help="hours ahead (default 6)")
+    p.add_argument("--min-value", type=float, default=200000, help="skip items that traded less than this in total")
+    p.set_defaults(run=_scorecard)
 
     p = commands.add_parser("sql", help="run a query against the views")
     p.add_argument("query")

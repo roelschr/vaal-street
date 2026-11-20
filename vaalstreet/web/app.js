@@ -516,6 +516,7 @@ async function openItem(id, hours = 168) {
       <div class="kpi"><span>vs Divine</span><b>${money(row.divine)}</b><i>${pct(row.premium)}</i></div>
       <div class="kpi"><span>Traded 24h</span><b>${money(row.value_24h)}</b></div>
     </div>
+    ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="grow"></span><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
     <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>

@@ -223,6 +223,8 @@ class Desk:
                 "divine": _num(b.fair[-1, i]) if b.active[i] >= 0.25 and b.age[i] < 6 else None,
                 "premium": _num(self.premium[i], 4),
                 "imbalance": _num(imbalance[i], 3),
+                # The model's split of hourly returns: real movement vs print-to-print bounce (log sd).
+                "move": _num(math.sqrt(fv.q[i]), 3), "noise": _num(math.sqrt(fv.r[i]), 3),
                 "spark": [_num(v, 4) for v in fair[spark_rows, i]],
             })
         rows.sort(key=lambda row: -(row["value_24h"] or 0))
