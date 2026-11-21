@@ -364,14 +364,14 @@ async function viewArbitrage(main) {
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 40" min="0" step="10"></label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px"><input type="checkbox" id="fit" ${f.fit !== false ? 'checked' : ''} ${purse ? '' : 'disabled'}> Only what my bankroll can start</label>
       <label class="f">Min. traded / 24h (c)<input type="number" id="liq" value="${f.arbLiquidity ?? 2000}" min="0" step="500"></label>
-      <div class="f">Swaps per round trip<div class="seg" id="swaps">${[1, 2, 3].map(n => `<button type="button" data-n="${n}" class="${f.swaps === n ? 'on' : ''}" title="Round trips with up to ${n} swap${n === 1 ? '' : 's'}">up to ${n}</button>`).join('')}</div></div>
+      <div class="f ctl">Swaps per round trip<div class="seg" id="swaps">${[1, 2, 3].map(n => `<button type="button" data-n="${n}" class="${f.swaps === n ? 'on' : ''}" title="Round trips with up to ${n} swap${n === 1 ? '' : 's'}">up to ${n}</button>`).join('')}</div></div>
     </div><div class="grid" id="g"></div><datalist id="arbItems">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
   const fits = cost => !purse || f.fit === false || cost <= purse;
   const liquid = f.arbLiquidity ?? 2000;
   const sets = panel('Conversions', 'c12');
   sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once), plus the recipes you entered below. “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk, then mark it with ✓ or ✗.</p></div>`;
   sets.append(table([
-    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
+    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.inputs?.length > 1 ? r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') : r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
     { h: 'How', l: 1, f: r => `<span class="tag">${HOW[r.how] || r.how}${r.steps > 1 ? ` × ${r.steps}` : ''}</span>`, s: r => r.how, title: 'A number after × means the recipe is applied that many tiers in a row' },
     { h: 'Cost', f: r => money(r.cost), s: r => r.cost, title: 'Fair value of everything you need to buy for one conversion' },
     { h: 'Worth', f: r => money(r.proceeds), s: r => r.proceeds },
