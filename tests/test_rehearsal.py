@@ -161,9 +161,18 @@ def test_practice_trades_never_reach_the_real_ledger(archive_root, tmp_path):
     app = App(archive_root, sync=False)
     app.ledger = Ledger(tmp_path)
     real = app.ledger
-    real.add_trade(NEW, ITEM, "buy", 1, 10.0)
+    real.add_trade(NEW, ITEM, "buy", 1, 10.0, gold=50)  # a real fee: 50 Gold per unit of the orb
+    real.add_fixed("recipe", [[ITEM, 2]], "Metadata/Items/Currency/CurrencyTestShard", 7)
+    real.set("minutes_per_order", 3.0)
     app.start_rehearsal({"league": NEW, "start_day": 1})
     assert app.ledger is not real and app.ledger.path == tmp_path / "rehearsal.sqlite"
+    # Game facts and your settings come from the real ledger, read inside the rehearsal.
+    assert app.ledger.gold_fees(NEW)[ITEM]["gold_per_unit"] == 50
+    assert [f["gives"] for f in app.ledger.fixed_conversions()] == [7]
+    assert app.settings()["minutes_per_order"] == 3.0 and app.costs(NEW).fee(ITEM)[0] == 50
+    assert not app.ninja_on(), "poe.ninja's prices are today's: never used in a rehearsal"
+    app.api_post("/api/watch", {"item": ITEM, "on": True})  # a fact: written to the real ledger
+    assert real.watchlist(NEW) == [ITEM]
     assert app.ledger.positions(NEW) == {}, "practice starts empty"
     app.api_post("/api/trade", {"league": NEW, "item": ITEM, "side": "buy", "units": 100, "price": 10.0})
     app.api_post("/api/alert", {"league": NEW, "item": ITEM, "field": "price", "op": "above", "threshold": 1})

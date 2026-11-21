@@ -26,7 +26,7 @@ from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert
 from vaalstreet.paths import data_dir, icons_dir
-from vaalstreet.rehearsal import PRACTICE_FILE, Rehearsal, league_hours
+from vaalstreet.rehearsal import PRACTICE_FILE, PracticeLedger, Rehearsal, league_hours
 
 WEB = Path(__file__).parent / "web"
 HOUR = 3600
@@ -73,9 +73,10 @@ class App:
 
     @property
     def ledger(self) -> Ledger:
-        """The real ledger, or the practice ledger while a rehearsal runs."""
+        """The real ledger, or while a rehearsal runs the practice ledger for activity and the real one
+        for game facts and your settings (see `rehearsal.PracticeLedger`)."""
         practice = self._practice()
-        return practice.ledger if practice else self._ledger
+        return PracticeLedger(practice.ledger, self._ledger) if practice else self._ledger
 
     @ledger.setter
     def ledger(self, value: Ledger) -> None:
@@ -193,6 +194,8 @@ class App:
             return self._ninja
 
     def ninja_on(self) -> bool:
+        if self._practice():
+            return False  # poe.ninja knows only today's prices: in a rehearsal they would leak the future
         return bool(self.settings().get("ninja_prices"))
 
     def refresh_ninja(self) -> None:

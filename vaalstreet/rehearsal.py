@@ -45,6 +45,27 @@ def league_hours(con: duckdb.DuckDBPyConnection, league: str) -> tuple[int, int]
     return int(row[0]), int(row[1])
 
 
+class PracticeLedger:
+    """The ledger the server uses during a rehearsal: practice activity in one file, game facts in the other.
+
+    Trades, orders, fills, sessions, alerts and their events, and the stash are practice: they go to
+    `rehearsal.sqlite`. Your settings, the Gold fees your real trades taught the desk, your own recipes and
+    vendor prices, recipe checks and the watchlist are facts about the game and about you, not practice: they
+    are read from the real ledger, and a change to them made during a rehearsal is written there too.
+    """
+
+    FACTS = frozenset({
+        "get", "set", "settings", "costs", "gold_fees", "fixed_conversions", "add_fixed", "delete_fixed",
+        "recipe_checks", "check_recipe", "delete_recipe_check", "watchlist", "watch",
+    })
+
+    def __init__(self, practice: Ledger, real: Ledger) -> None:
+        self.practice, self.real = practice, real
+
+    def __getattr__(self, name: str):
+        return getattr(self.real if name in self.FACTS else self.practice, name)
+
+
 class Rehearsal:
     """One practice session over a past league. Thread-safe; the server shares one between requests."""
 
