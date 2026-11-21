@@ -38,6 +38,8 @@ python -m vaalstreet sync --all      # every hour since July 2024, newest first,
 
 **Hideout mode** (press `H`) opens a small always-on-top window with the top flips, your watchlist and alerts, so it can sit over the game. At the bottom of that window, turn on a notification and/or reading the title aloud for each alert that fires; both are off until you tick them, the browser asks for notification permission only when you tick the box, and the choice is remembered. The window checks for new alerts every minute and right after each new hour. Nothing is sent to the game. **Check an offer** (press `C` anywhere, including the hideout window, or use the button on Markets and on an item) opens a small panel: type the item, pick buy or sell and the Chaos or Divine market, enter the ratio as two whole numbers with the items first, and press Enter for go, caution or no-go with the reasons. It remembers the market and side you used last. Prices can be shown in Chaos or Divine anywhere. `/` jumps to search.
 
+**Rehearsal.** Practise a league start before the real one. Pick a past league and a starting point (its first hour unless you choose a later day), and the desk plays it forward as if it were live: every page shows what the desk would have shown at that hour, built only from prices published by then. Past leagues that had not ended yet at that hour count as still running, so they are not used as precedents. The clock moves one hour each time you step, or by itself at a speed you set, such as one game hour per real minute. Every answer carries the league, the hour and the league day, so the page can show a banner and practice never passes for the live market. New hours keep downloading in the background, but the rehearsal does not see them. Trades, orders, sessions and alerts you make while rehearsing go to a separate practice file, `rehearsal.sqlite`, which is emptied when a new rehearsal starts; they never touch your real ledger. When you stop, the desk reports your practice profit, with open positions valued at fair value at the last hour you reached, next to what simply holding Divines over the same hours would have made. That comparison assumes a bankroll of 1,000 Chaos unless you set another.
+
 ## How the numbers are made
 
 **The data.** For every market (pair of items), league and hour, the exchange publishes the volume traded on each side, the lowest and highest executed ratio, and the lowest and highest stock on offer. There is no order book and no individual trades. An item usually has two markets that matter: against Chaos and against Divine.
@@ -147,6 +149,7 @@ python -m vaalstreet divine-timing               # on which league days the Divi
 python -m vaalstreet meta                        # items in more demand than any past league at this point
 python -m vaalstreet cross-league                # the same items in Hardcore, Ruthless and Standard: real gaps or noise
 python -m vaalstreet report --out reports        # today's "state of the economy" page; --all-days for every day
+python -m vaalstreet rehearse Mirage --start-day 2   # practise on a past league: Enter for the next hour, q to quit
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
 python -m vaalstreet backtest swing --fill-model queue   # orders wait behind the stock already on offer
 python -m vaalstreet backtest swing 'reversion:{"entry_z": -2.5}' --portfolio
@@ -249,6 +252,7 @@ data/ninja.sqlite                          poe.ninja answers, cached; safe to de
 data/strategies/                           strategy code you imported with `strategy import`
 data/screen.json                           the screen check's rectangle, if you use it
 data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash — the only file worth backing up
+data/rehearsal.sqlite                      practice trades from the last rehearsal; emptied when a new one starts
 ```
 
 To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
@@ -270,6 +274,7 @@ vaalstreet/search.py    strategy search, judged walk-forward on later leagues
 vaalstreet/research.py  experiments with pass rules fixed in advance
 vaalstreet/report.py    league report pages, one per league day
 vaalstreet/ninja.py     poe.ninja client and card-reward prices
+vaalstreet/rehearsal.py replaying a past league hour by hour, with its own practice ledger
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.

@@ -38,7 +38,7 @@ To try the CLI or the server without touching the user's archive, set `VAAL_DATA
 
 ## Ask before you do these
 
-- **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and `strategies/` holds strategy code they imported; nothing can rebuild either. The raw archive is about 1.5 GB and takes hours to download again.
+- **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and `strategies/` holds strategy code they imported; nothing can rebuild either. `rehearsal.sqlite` holds only practice trades; the server empties it by design when a rehearsal starts, and a rehearsal must never write to `desk.sqlite`. The raw archive is about 1.5 GB and takes hours to download again.
 - **Start a large download.** Examples are `sync --all` or a backfill into the real data directory. These put load on GGG's servers and on the user's connection.
 - **Add a runtime dependency.** The package has only three today. The same goes for adding a library to an optional extra.
 

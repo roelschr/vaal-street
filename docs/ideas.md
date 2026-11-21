@@ -63,7 +63,7 @@ Waves run in order. Within a wave, the tasks touch different files, so they can 
 | --- | --- | --- |
 | Launch-day playbook | After the sync, wave 4 | Hour by hour for the first 72 hours of each past league. It needs those starts on disk. |
 | Patch-note impact | Only with tags you enter | No machine-readable patch-note source is open to the desk. A tag list you fill in yourself is possible later. |
-| Next-league rehearsal | Build, wave 4 | The desk is built "as of" a past hour and played forward. This is the same causality rule the backtests follow, so it is a natural fit. It is a large UI task, so it comes late. |
+| Next-league rehearsal | Backend built, wave 4; page to come | The desk is built "as of" a past hour and played forward. This is the same causality rule the backtests follow, so it is a natural fit. The server and the `rehearse` command run it; the browser page is a later task. |
 | Divine timing | After the sync, wave 4 | It comes from the Divine-by-league-day curves the League start page already draws. |
 | Meta shifts | After the sync, wave 4 | We compare each item's demand growth with every past league at the same day. |
 | Event leagues | After the sync, wave 4 | Short events become their own family of precedents, so they stop skewing the challenge-league ones. |
