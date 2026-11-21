@@ -45,6 +45,9 @@ MAX_AGE = 6
 PLAN_TOLERANCE = 0.04
 # A holding or an offer bigger than this many hours of its market's volume moves the price.
 THIN_HOURS = 3.0
+# The Flips page's three kinds of plan, as a player would say them.
+PLAN_WORDS = {"chaos": "The Chaos-market flip", "divine": "The Divine-market flip",
+              "cross": "The flip that buys for Chaos and sells for Divines"}
 
 
 def resolve(desk: Desk, item: str) -> str:
@@ -165,7 +168,8 @@ def check(desk: Desk, item: str, market: str, side: str, item_units: float, curr
         better = -diff if side == "buy" else diff
         status = "matches" if abs(diff) <= PLAN_TOLERANCE else "beats" if better > 0 else "misses"
         out["plan"] = level | {"status": status}
-        reasons.append(f"The {level['kind']} flip plan {side}s at {level['price']:.4g} Chaos; this offer {status} it.")
+        reasons.append(f"{PLAN_WORDS[level['kind']]} {'buys' if side == 'buy' else 'sells'} at {level['price']:.4g} Chaos"
+                       f" each; this offer {status} it.")
 
     flow = float(leg.flow[i]) if math.isfinite(leg.flow[i]) else 0.0
     out.update(volume_per_hour=_num(flow), active=_num(leg.active[i], 3), age=int(min(leg.age[i], 10**6)))
@@ -178,10 +182,10 @@ def check(desk: Desk, item: str, market: str, side: str, item_units: float, curr
             reasons.append(f"The {stock:g} on offer is more than this market has traded in a day.")
         else:
             reasons.append(f"The {stock:g} on offer at this ratio is about {hours:.1f} hours of that volume"
-                           + (" - a large pile; the price may not hold for all of it." if hours > THIN_HOURS else "."))
+                           + (": a large pile; the price may not hold for all of it." if hours > THIN_HOURS else "."))
     if not trusted:
-        hours = "never" if leg.age[i] >= 10**6 else f"{int(leg.age[i])} hours ago"
-        reasons.append(f"The {market.title()} market last traded {hours} and traded in {leg.active[i]:.0%} of the "
+        when = "has never traded" if leg.age[i] >= 10**6 else f"last traded {int(leg.age[i])} hours ago"
+        reasons.append(f"The {market.title()} market {when} and traded in {leg.active[i]:.0%} of the "
                        "last day's hours, so its value is a rough guess.")
         if verdict == "go":
             verdict = "caution"
