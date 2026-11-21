@@ -324,6 +324,11 @@ def _age(price: np.ndarray) -> np.ndarray:
     return np.where(printed.any(axis=0), np.argmax(printed[::-1], axis=0), 10**6)
 
 
+# A 24h or 7d change compares with an earlier window; launch prices are wild for about a day, so a
+# window that starts less than this many hours after the item's first trade in the league gives no change.
+SETTLE_HOURS = 24
+
+
 @dataclass
 class Desk:
     league: str
@@ -455,16 +460,16 @@ class Desk:
         def change(back: int) -> np.ndarray:
             """Move over `back` hours between two 3-hour medians, so one odd print cannot fake a trend.
 
-            No change when the earlier window starts before the league's first hour or before the
-            item's first trade: league-start prices are not a level to compare with, and early
-            league prices can be hundreds of times off, which reads as +66,700%.
+            No change when the earlier window starts within SETTLE_HOURS of the item's first trade in
+            the league (or before it): launch prices are not a level to compare with, and on Covens
+            day 7 they made a 7-day change read +66,700%.
             """
             if T < back + 3:
                 return np.full(fair.shape[1], np.nan)
             with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 out = np.nanmedian(fair[-3:], axis=0) / np.nanmedian(fair[T - 3 - back : T - back], axis=0) - 1
-            out[first_print > T - 3 - back] = np.nan
+            out[first_print + SETTLE_HOURS > T - 3 - back] = np.nan
             return out
 
         chg_24, chg_7d = change(DAY), change(7 * DAY)

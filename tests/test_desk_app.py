@@ -218,18 +218,27 @@ def test_api_strategy_export_matches_the_cli_file(server):
 
 
 def test_market_change_is_blank_when_the_window_starts_before_the_item_traded(con, archive_root):
-    # New runs 8 days (192 hours), so the 7-day change compares with hours 21-23. Blank the orb's
-    # prints up to hour 22: that window now starts before its first trade, so there is no 7-day
-    # change, while the 24-hour change still has a full earlier window and stays.
+    # New runs 8 days (192 hours), so the 7-day change compares with hours 21-23 and the 24-hour
+    # change with hours 165-167. A change needs its window to start SETTLE_HOURS (24) after the
+    # item's first trade: the orb trades from hour 0, so 21 < 24 already blanks the 7-day change
+    # (the Covens day-7 case), while the 24-hour change stays.
     from vaalstreet.desk import Desk
 
     def row(desk):
         return next(r for r in desk.market() if r["id"] == ITEM)
 
-    assert row(Desk.build(con, NEW, root=archive_root))["change_7d"] is not None
+    from vaalstreet.desk import SETTLE_HOURS
+
     desk = Desk.build(con, NEW, root=archive_root)
     T = len(desk.panel.hours)
-    assert T - 3 - 7 * 24 == 21
-    desk.panel["price"][:22, desk.panel.index(ITEM)] = float("nan")
-    changed = row(desk)
-    assert changed["change_7d"] is None and changed["change_24h"] is not None
+    assert T - 3 - 7 * 24 == 21 < SETTLE_HOURS == 24
+    fresh = row(desk)
+    assert fresh["change_7d"] is None and fresh["change_24h"] is not None
+    # First trade at hour 142: the 24-hour window (from hour 165) starts 23 hours later, too soon.
+    desk = Desk.build(con, NEW, root=archive_root)
+    desk.panel["price"][:142, desk.panel.index(ITEM)] = float("nan")
+    assert row(desk)["change_24h"] is None
+    # First trade at hour 141: exactly 24 hours before the window, so the change is shown.
+    desk = Desk.build(con, NEW, root=archive_root)
+    desk.panel["price"][:141, desk.panel.index(ITEM)] = float("nan")
+    assert row(desk)["change_24h"] is not None
