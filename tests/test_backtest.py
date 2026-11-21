@@ -171,6 +171,22 @@ def test_whole_lots_fill_whole_items_at_the_ratio_the_order_states():
     assert sim.books["r"].buy_units[0] == 0, "the five items short of a lot were never posted"
 
 
+def test_whole_lot_orders_never_state_a_worse_price_than_their_limit():
+    from vaalstreet import pricing
+
+    for limit in (3.31, 0.0937, 7.77, 1.234, 0.31, 151.5, 2.0 / 3):
+        c, i = pricing.fit_ratio(limit, 1000, side="buy")
+        assert c / i <= limit + 1e-12, f"a buy at {limit} posts {c}/{i}"
+        c, i = pricing.fit_ratio(limit, 1000, side="sell")
+        assert c / i >= limit - 1e-12, f"a sell at {limit} posts {c}/{i}"
+    # In the simulator: 3.31 is bought at "33 for 10" (3.30), and a sale at 3.31 is offered at or above it.
+    sim = backtest.Simulation(tiny_panel([4, 3, 4, 4, 4]), capital=1000, participation=1.0, whole_lots=True)
+    sim.run(Script({0: [("buy", 25, 3.31)], 2: [("sell", 20, 3.31)]}))
+    # The sale rounds up to "53 for 16" (3.3125): one lot of 16 sells, four items stay.
+    assert sim.position[0] == 4
+    assert sim.realized[0] == pytest.approx(16 * (53 / 16 - 3.30))
+
+
 def test_a_purse_too_small_for_one_lot_posts_nothing():
     sim = backtest.Simulation(tiny_panel([10, 9, 9, 9]), capital=5, participation=1.0, whole_lots=True)
     result = sim.run(Script({0: [("buy", 5, 9.5)]}))
@@ -193,14 +209,14 @@ def test_a_divine_market_order_trades_whole_divines_at_the_fill_hours_divine_pri
     class BuyForDivines:
         def step(self, ctx):
             if ctx.t == 0:
-                ctx.buy(0, 60, 9.6, leg="b")
+                ctx.buy(0, 80, 9.6, leg="b")
 
     sim = backtest.Simulation(panel, capital=1000, participation=1.0, whole_lots=True)
     result = sim.run(BuyForDivines())
-    # 9.6 Chaos at 100 a Divine is 0.096 Divine each; 10 Divines of purse -> "5 Divines for 52".
-    # Row 1 the Divine is 110, so the order stands at 10.58 Chaos each and the 9.0 average trades through it.
-    assert sim.position[0] == 52
-    assert result.cash[1] == pytest.approx(1000 - 5 * 110), "five whole Divines, at the hour they are paid"
+    # 9.6 Chaos at 100 a Divine is 0.096 Divine each; rounded down within 10 Divines: "7 Divines for 73".
+    # Row 1 the Divine is 110, so the order stands at 10.55 Chaos each and the 9.0 average trades through it.
+    assert sim.position[0] == 73
+    assert result.cash[1] == pytest.approx(1000 - 7 * 110), "seven whole Divines, at the hour they are paid"
 
 
 class Requote:
