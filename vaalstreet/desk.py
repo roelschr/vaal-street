@@ -185,8 +185,10 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
     most once per buy-then-sell).
 
     Without a Gold budget, plans are taken by Chaos earned per Chaos staked. With `gold_budget`
-    (Gold you are willing to spend per hour of trading), they are taken by Chaos per 1,000 Gold,
-    and a stake is shrunk to what the remaining Gold pays for (skipped if not even one lot fits).
+    (Gold to spend this session), they are taken by Chaos per 1,000 Gold. Gold is charged when an
+    order is posted, so a plan's Gold against the budget is posting its buy and sell orders once at
+    the size of its stake: stake / buy price units, times the Gold per unit flipped (both sides).
+    A stake is shrunk to what the remaining Gold pays for (skipped if not even one lot fits).
     Plans whose Gold is unknown cannot be ranked that way; they are listed in `gold_unknown`.
     """
     def earns(r: dict, stake: float) -> float:
@@ -218,19 +220,21 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
         if r["id"] in taken or r["lot_cost"] > left:
             continue
         stake = min(stake, left)
-        est, gold = earns(r, stake), None
+        posted = None
         if gold_left is not None:
-            ratio = per_gold(r)
-            gold = 0.0 if ratio == math.inf else est * 1000 / ratio  # Gold an hour moves with what is flipped
-            if gold > gold_left + 1e-9:
-                # Like Chaos running short: cut the plan to the earnings the Gold left pays for. The stake
-                # that earns that much is 2 x earnings / margin (below the flow cap, which binds otherwise).
-                est = gold_left * ratio / 1000
-                stake = 2 * est / r["margin"] if r["margin"] > 0 else 0.0
+            per_chaos = (r.get("gold") or 0) / r["buy"] if r.get("buy") else 0.0  # Gold per Chaos staked
+            posted = stake * per_chaos
+            if posted > gold_left + 1e-9:
+                # Like Chaos running short: shrink the stake to what the Gold left pays to post.
+                stake = gold_left / per_chaos
                 if stake < r["lot_cost"]:
                     continue
-                gold = gold_left
-            gold_left -= gold
+                posted = gold_left
+            gold_left -= posted
+        est = earns(r, stake)
+        ratio = per_gold(r)
+        # Informative only: Gold an hour at this stake's expected fills.
+        gold_hour = None if ratio is None else 0.0 if ratio == math.inf else est * 1000 / ratio
         taken.add(r["id"])
         left -= stake
         picks.append({"id": r["id"], "name": r["name"], "category": r.get("category"), "kind": r["kind"],
@@ -238,11 +242,11 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
                       "lot_cost": r["lot_cost"], "replay": r["replay"],
                       "chaos_per_1000_gold": r.get("chaos_per_1000_gold"), "gold_sources": r.get("gold_sources"),
                       "minutes": r.get("minutes"),
-                      "stake": stake, "est": est, "gold_per_hour": gold})
+                      "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour})
     return {
         "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
         "expected_per_hour": sum(p["est"] for p in picks), "deployed": bankroll - left,
-        "gold_per_hour": gold_budget - gold_left if gold_budget is not None else None,
+        "gold_used": gold_budget - gold_left if gold_budget is not None else None,
         "minutes": sum(p["minutes"] or 0 for p in picks),
         "gold_unknown": [{"id": r["id"], "name": r["name"], "kind": r["kind"]} for r in unknown],
     }

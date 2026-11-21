@@ -62,10 +62,13 @@ def test_conversion_and_round_trip_gold(desk):
     assert same["gold"] is None, "one item without a fee makes the trip's Gold unknown"
 
 
-def plan(id, margin, lot, flow, per_1000, kind="chaos"):
+def plan(id, margin, lot, flow, per_1000, kind="chaos", buy=1.0, gold=None):
+    """A hand-made flip plan. `gold` is Gold per unit flipped (both orders)."""
+    if gold is None and per_1000 is not None:
+        gold = 1000 * margin * buy / per_1000
     return {"id": id, "name": id, "kind": kind, "margin": margin, "lot_cost": lot, "flow_value": flow,
-            "replay": {"return": 0.1, "sales": 3}, "buy_order": {}, "sell_order": {},
-            "chaos_per_1000_gold": per_1000, "minutes": 2}
+            "replay": {"return": 0.1, "sales": 3}, "buy_order": {}, "sell_order": {}, "buy": buy,
+            "gold": gold, "chaos_per_1000_gold": per_1000, "minutes": 2}
 
 
 def test_session_plan_without_budget_matches_the_old_rule():
@@ -75,32 +78,25 @@ def test_session_plan_without_budget_matches_the_old_rule():
     # Known answer: stakes are 25 each (a quarter of 100), ranked by margin; one plan per item; "c"'s lot is too big.
     assert [p["id"] for p in out["flips"]] == ["a", "b"] and out["flips"][0]["kind"] == "cross"
     assert out["expected_per_hour"] == pytest.approx(0.3 * 12.5 + 0.2 * 12.5) and out["deployed"] == 50
-    assert out["gold_unknown"] == [] and out["gold_per_hour"] is None
+    assert out["gold_unknown"] == [] and out["gold_used"] is None
 
 
-def test_session_plan_under_a_gold_budget():
+def test_session_plan_under_a_gold_budget_for_the_session():
     plans = [plan("a", 0.10, 10, 1000, 5), plan("b", 0.20, 10, 1000, 1), plan("d", 0.10, 10, 1000, 20),
              plan("u", 0.50, 10, 1000, None)]
-    out = session_plan(plans, 100, gold_budget=200)
-    # "d" earns 1.25 c/h at 20 c per 1,000 Gold: 62.5 Gold. "a" earns 1.25 at 5: 250 Gold, more than the
-    # 137.5 left, so its stake shrinks to 25 x 137.5 / 250 = 13.75 (still above one lot). "b" gets no Gold.
-    assert [p["id"] for p in out["flips"]] == ["d", "a"]
-    assert out["flips"][1]["stake"] == pytest.approx(13.75) and out["gold_per_hour"] == pytest.approx(200)
+    out = session_plan(plans, 100, gold_budget=300)
+    # Known answer: at buy price 1, "d" costs 1000 x 0.1 / 20 = 5 Gold per unit flipped, so posting its
+    # 25 c stake once costs 125 Gold. "a" costs 20 Gold a unit: 25 units would be 500, more than the 175
+    # left, so its stake shrinks to 175 / 20 = 8.75 - below its lot of 10, so it is skipped. "b" (200 a
+    # unit) cannot post one lot either. The plan stops at 125 of 300 Gold.
+    assert [p["id"] for p in out["flips"]] == ["d"] and out["gold_used"] == pytest.approx(125)
+    assert out["flips"][0]["gold_to_post"] == pytest.approx(125)
     assert out["gold_unknown"] == [{"id": "u", "name": "u", "kind": "chaos"}], "unknown Gold is listed, not included"
-    assert out["minutes"] == 4
-
-
-def test_gold_budget_holds_when_a_plan_is_capped_by_its_flow():
-    # Known answer: "t" can only earn 0.1 x 5 = 0.5 c/h however big the stake (its flow is 5 c an hour),
-    # which costs 500 Gold at 1 c per 1,000 Gold. With 300 Gold it is cut to 0.3 c/h on a stake of 6.
-    out = session_plan([plan("t", 0.10, 2, 5, 1)], 100, gold_budget=300)
-    pick = out["flips"][0]
-    assert pick["est"] == pytest.approx(0.3) and pick["stake"] == pytest.approx(6)
-    assert out["gold_per_hour"] == pytest.approx(300) and out["gold_per_hour"] <= 300 + 1e-9
-    assert session_plan([plan("t", 0.10, 10, 5, 1)], 100, gold_budget=300)["flips"] == [], "less than one lot: skipped"
+    cut = session_plan([plan("a", 0.10, 5, 1000, 5)], 100, gold_budget=300)["flips"][0]
+    assert cut["stake"] == pytest.approx(15) and cut["gold_to_post"] == pytest.approx(300), "cut at a known total"
 
 
 def test_free_orders_rank_first_not_as_unknown():
-    free = plan("f", 0.05, 10, 1000, None) | {"gold": 0}
+    free = plan("f", 0.05, 10, 1000, None, gold=0)
     out = session_plan([plan("a", 0.10, 10, 1000, 5), free], 100, gold_budget=10)
-    assert [p["id"] for p in out["flips"]][0] == "f" and out["gold_unknown"] == []
+    assert [p["id"] for p in out["flips"]] == ["f"] and out["gold_unknown"] == [] and out["gold_used"] == 0

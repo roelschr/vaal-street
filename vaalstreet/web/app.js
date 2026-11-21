@@ -275,7 +275,7 @@ async function viewFlips(main) {
       <label class="f">Your share of the flow: <span id="shareL">${plainPct(state.share)}</span><input type="range" id="share" min="0.01" max="0.3" step="0.01" value="${state.share}"></label>
       <label class="f">Min. margin (%)<input type="number" id="mm" value="${f.minMargin * 100}" min="0" step="1"></label>
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 5000" min="0" step="1000"></label>
-      <label class="f" title="Gold you are willing to spend per hour of trading. With a budget, the session plan picks the plans that earn most per Gold">Gold budget / hour<input type="number" id="gb" value="${f.goldBudget || ''}" placeholder="optional" min="0" step="1000"></label>
+      <label class="f" title="Gold is paid when you post an order. With a budget, the session plan picks the plans that earn most per Gold until posting their orders once would spend it">Gold to spend this session<input type="number" id="gb" value="${f.goldBudget || ''}" placeholder="optional" min="0" step="1000"></label>
       <label class="f" title="Gold per item bought or sold, for items you have no recorded trade for. Leave empty to say “unknown”">Assumed fee (Gold / item)<input type="number" id="fee" value="${st.assumed_gold_fee ?? ''}" placeholder="unknown" min="0" step="any"></label>
       <label class="f">Minutes per order<input type="number" id="mpo" value="${st.minutes_per_order}" min="0" step="0.5"></label>
       <label class="f">Rank by<select id="rank">${[['profit', 'Est. / hour'], ['gold', 'Chaos per 1,000 Gold'], ['own', 'Per hour of your time']].map(([k, l]) => `<option value="${k}" ${f.rankBy === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -292,7 +292,7 @@ async function viewFlips(main) {
     const picks = sp.flips, total = sp.expected_per_hour;
     // Kept so the Ledger can start a session against this plan.
     state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
-    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_per_hour)} of ${fmt(sp.gold_budget)} Gold an hour` : ''} · about ${fmt(sp.minutes)} min to post</span>`);
+    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${fmt(sp.minutes)} min to post</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
       { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
@@ -301,6 +301,8 @@ async function viewFlips(main) {
       { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
       { h: 'Est. / hour', f: r => money(r.est) },
       { h: 'Per 1,000 Gold', f: r => r.chaos_per_1000_gold == null ? '<span class="dim">Gold unknown</span>' : `${money(r.chaos_per_1000_gold)}<div class="muted small">${feeSource(r)}</div>` },
+      { h: 'Gold to post', f: r => r.gold_to_post == null ? '–' : fmt(r.gold_to_post), title: 'Gold to post this plan’s buy and sell orders once, at the size of its stake' },
+      { h: 'Gold / hour', f: r => r.gold_per_hour == null ? '–' : fmt(r.gold_per_hour), title: 'Gold an hour at the fills this stake expects, if you keep re-posting' },
       { h: 'Minutes', f: r => fmt(r.minutes) },
       { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
     ], picks, { onRow: r => openItem(r.id), empty: sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));

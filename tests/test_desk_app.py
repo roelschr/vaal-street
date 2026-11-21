@@ -151,8 +151,8 @@ def test_api_gold_fields_settings_and_session_plan(server):
     session = flips["session"]
     assert session["gold_budget"] == 1000000 and session["gold_unknown"] == []
     assert session["flips"] and all(p["chaos_per_1000_gold"] for p in session["flips"])
-    tight = call(f"{server}/api/flips?min_margin=0.01&bankroll=5000&gold_budget=5")[1]["session"]
-    assert tight["gold_per_hour"] <= 5 + 1e-9 and tight["expected_per_hour"] < session["expected_per_hour"]
+    tight = call(f"{server}/api/flips?min_margin=0.01&bankroll=5000&gold_budget=500")[1]["session"]
+    assert tight["gold_used"] <= 500 + 1e-9 and tight["expected_per_hour"] < session["expected_per_hour"]
 
     arb = call(f"{server}/api/arbitrage")[1]
     assert arb["conversions"][0]["gold"] is not None and arb["loops"][0]["chaos_per_1000_gold"] is not None
