@@ -42,6 +42,8 @@ function fmt(v) {
 }
 const tick = unit => v => (Math.abs(v) >= 1e4 ? compact(v) : String(parseFloat(v.toPrecision(3)))) + ' ' + unit;
 const compact = v => v == null ? '–' : Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(1) + 'B' : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v.toFixed(0);
+// A big Chaos amount, short ("8.4M c" or "57K d"), in the unit the trader chose.
+const compactMoney = (v, bridge = state.bridge) => state.unit === 'divine' && bridge ? `${compact(v / bridge)} d` : `${compact(v)} c`;
 // A reference-currency amount in the unit the trader chose.
 function money(v, unit = state.unit) {
   if (v == null) return '<span class="dim">–</span>';
@@ -113,7 +115,7 @@ function renderTop() {
     <select id="leagueSel" title="League">${leagues.map(l => `<option ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}</option>`).join('')}</select>
     ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
-    <div class="stat"><b>${compact(sm.value_24h / sm.bridge)} d</b><span>traded, 24h</span></div>
+    <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
     <div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>` : ''}
     <span class="grow"></span>
     <div class="sync" title="${esc(sync.error || '')}"><span class="dot ${sync.error ? 'err' : sync.running ? 'busy' : ''}"></span>${esc(sync.error ? 'Sync failed' : sync.message)}</div>
@@ -140,7 +142,7 @@ async function viewDesk(main) {
     <div class="kpis">
       <div class="kpi"><span>Divine Orb</span><b>${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
       <div class="kpi"><span>League day</span><b>${s.league_day ?? '–'}</b></div>
-      <div class="kpi"><span>Traded in 24h</span><b>${compact(s.value_24h / s.bridge)} d</b></div>
+      <div class="kpi"><span>Traded in 24h</span><b>${compactMoney(s.value_24h, s.bridge)}</b></div>
       <div class="kpi"><span>Items trading</span><b>${s.items}</b></div>
       <div class="kpi"><span>Latest hour</span><b>${ago(s.as_of + 3600)}</b></div>
     </div><div class="grid" id="g"></div>`;
