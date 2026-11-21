@@ -32,6 +32,10 @@ from pathlib import Path
 
 from vaalstreet.paths import ledger_file
 
+# Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
+# publish the schedule. Minutes per order is a rough guess at your clicking speed.
+SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades(
     id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, item TEXT NOT NULL,
@@ -179,6 +183,17 @@ class Ledger:
                 p["units"] -= sold
             p["last"] = tr["t"]
         return out, sales
+
+    def settings(self) -> dict:
+        return {key: self.get(key, default) for key, default in SETTINGS.items()}
+
+    def costs(self, league: str):
+        """Gold fees learned from your records, your assumed fee and minutes per order, as `desk.Costs`.
+        Read fresh on every call, so a newly recorded trade counts at once."""
+        from vaalstreet.desk import Costs  # desk pulls in duckdb and numpy; the ledger stays light without it
+
+        settings = self.settings()
+        return Costs(self.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"])
 
     def gold_fees(self, league: str) -> dict[str, dict]:
         """item -> {gold_per_unit, trades}: the median Gold paid per unit over your own records.

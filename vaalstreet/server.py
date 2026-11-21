@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, check, db, items
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, Ledger
+from vaalstreet.ledger import ALERT_FIELDS, SETTINGS, Ledger
 from vaalstreet.paths import data_dir, icons_dir
 
 WEB = Path(__file__).parent / "web"
@@ -252,13 +252,10 @@ class App:
                 "meta": desk.meta.get(series["id"], {}), "alerts": self.ledger.alerts(desk.league)}
 
     def costs(self, league: str) -> Costs:
-        """Gold fees learned from your records, your assumed fee and minutes per order, read fresh
-        on every request so a newly recorded trade counts at once."""
-        settings = self.settings()
-        return Costs(self.ledger.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"])
+        return self.ledger.costs(league)
 
     def settings(self) -> dict:
-        return {key: self.ledger.get(key, default) for key, default in SETTINGS.items()}
+        return self.ledger.settings()
 
     def api_flips(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
@@ -304,6 +301,18 @@ class App:
             _flag(row, checks)
             out.append(row)
         return out
+
+    def api_ladder(self, q: dict) -> dict:
+        from vaalstreet import ladder
+
+        desk = self.desk(q.get("league"))
+        start = float(q["bankroll"]) if q.get("bankroll") else 25.0
+        hours = float(q["hours"]) if q.get("hours") else None
+        target = float(q["target"]) if q.get("target") else None
+        out = ladder.plan(desk, max(start, 0.0), hours=hours, target=target, costs=self.costs(desk.league),
+                          share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)),
+                          fixed=self.ledger.fixed_conversions())
+        return {"summary": desk.summary(), **out}
 
     def api_league(self, q: dict) -> dict:
         book = self.book()
@@ -536,11 +545,6 @@ class App:
         return data
 
 
-# Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
-# publish the schedule. Minutes per order is a rough guess at your clicking speed.
-SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
-
-
 def _status(found: dict | None) -> str:
     return found["status"] if found else "unchecked"
 
@@ -554,7 +558,7 @@ def _flag(row: dict, checks: dict) -> None:
 
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
-    "/api/arbitrage": "api_arbitrage", "/api/league": "api_league", "/api/curve": "api_curve",
+    "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
 }
 
