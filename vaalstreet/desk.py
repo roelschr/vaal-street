@@ -1056,24 +1056,25 @@ class Desk:
         r, b = self.legs["r"], self.legs["b"]
         index = self.panel._by_id
         ref, divine = ANCHORS[self.realm]
-        value_24h = np.nansum(self.panel["value"][-DAY:], axis=0)
-        quotes: dict[tuple[str, bool], tuple[float, float] | None] = {}
+        quotes: dict[tuple[str, bool], tuple[float, float, float, float] | None] = {}
 
-        def quote(item_id: str, chaos_here: bool = False) -> tuple[float, float] | None:
-            """(entry cost, exit proceeds) for one unit, in reference currency."""
+        def quote(item_id: str, chaos_here: bool = False) -> tuple[float, float, float, float] | None:
+            """(entry cost, exit proceeds) for one unit, in reference currency, and the value the market
+            you would buy in and the one you would sell in traded over the last day."""
             if item_id == ref:
-                return (1.0, 1.0)
+                return (1.0, 1.0, math.inf, math.inf)
             key = (item_id, chaos_here)
             if key not in quotes:
                 i = index.get(item_id)
                 legs = (r,) if chaos_only or chaos_here else (r, b)
-                options = [float(leg.fair[-1, i]) for leg in legs if i is not None and self._quotable(leg, i)]
-                quotes[key] = (min(options), max(options)) if options else None
+                options = [(float(leg.fair[-1, i]), float(leg.flow[i]) * DAY * float(leg.fair[-1, i]))
+                           for leg in legs if i is not None and self._quotable(leg, i)]
+                if options:
+                    (buy, buy_value), (sell, sell_value) = min(options), max(options)
+                    quotes[key] = (buy, sell, buy_value, sell_value)
+                else:
+                    quotes[key] = None
             return quotes[key]
-
-        def depth(item_id: str) -> float:
-            i = index.get(item_id)
-            return math.inf if item_id == ref or i is None else float(value_24h[i])
 
         # An edge is (item received, units received per unit given, value traded in a day, hours active,
         # value of the received item resting on offer in the latest hour - what a swap could take at once,
@@ -1120,8 +1121,12 @@ class Desk:
             start, end = quote(path[0], hows[0] == "divine"), quote(path[-1], hows[-1] == "divine")
             if not start or not end:
                 return
-            if not math.isfinite(value):  # vendor swaps alone: as deep as the markets at either end
-                value, hours = min(depth(path[0]), depth(path[-1])), DAY
+            if not math.isfinite(value):  # vendor swaps alone
+                hours = DAY
+            # A trip is as deep as its thinnest market, and that includes the market you buy the first
+            # item in and the one you sell the last item in: a swap that trades millions a day does not
+            # help when the item you start with trades one unit every few hours.
+            value = min(value, start[2], end[3])
             if value < min_value:
                 return
             edge = math.prod(rates) * end[1] / start[0] - 1

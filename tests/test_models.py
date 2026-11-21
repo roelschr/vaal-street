@@ -446,6 +446,20 @@ def test_round_trips_skip_swap_markets_far_out_of_line(desk):
     assert not [p for p in paths if CARD in p]
 
 
+def test_a_round_trip_is_as_deep_as_the_market_it_buys_in(desk):
+    """Known answer: shards -> orb is limited by its swap market, 100 orbs an hour (about 25,000 Chaos a day).
+    When the shard's Chaos market trades one shard an hour (2 Chaos), the trip is 48 Chaos a day deep."""
+    trip = lambda: next(row for row in desk.loops(min_value=10, chaos_only=True)  # noqa: E731
+                        if [x["id"] for x in row["path"]] == [OTHER, ITEM])
+    swap_value = 100 * 24 * desk.fair(ITEM)
+    assert trip()["value_24h"] == pytest.approx(swap_value, rel=0.05)
+    desk.legs["r"].flow[desk.panel.index(OTHER)] = 1.0
+    desk._cache.clear()
+    thin = trip()
+    assert thin["value_24h"] == pytest.approx(24 * 2.0, rel=0.02)
+    assert thin["profit_per_day"] == pytest.approx(0.1 * 48 * thin["edge"], rel=0.02)
+
+
 def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
     from vaalstreet.ingest import DIVINE
 
