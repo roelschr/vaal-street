@@ -170,3 +170,31 @@ def test_snapshot_restores_the_archive_without_raw_files(archive_root, tmp_path,
     # Restored hours count as on disk, so a sync only fetches what came after them.
     assert archive.missing(restored, "poe1", H0, H0 + 5 * HOUR) == []
     assert archive.have(restored, "poe1") == archive.have(archive_root, "poe1")
+
+
+def test_cli_keeps_your_recipes_and_arb_walks_longer_round_trips(archive_root, tmp_path, monkeypatch, capsys):
+    import shutil
+
+    from conftest import CARD, ITEM
+    from vaalstreet import cli
+    from vaalstreet.ledger import Ledger
+
+    shutil.copytree(archive_root / "items", tmp_path / "items")
+    monkeypatch.setenv("VAAL_DATA_DIR", str(tmp_path))
+    cli.main(["recipe"])
+    assert "No recipes" in capsys.readouterr().out
+    cli.main(["recipe", "add", "--give", "5 test card", "--get", "Test Orb", "--note", "made up"])
+    cli.main(["recipe", "add", "--vendor", "--give", "12 Chaos Orb", "--get", "1 Test Orb"])
+    listed = capsys.readouterr().out
+    assert "5 Test Card -> 1 Test Orb" in listed and "12 Chaos Orb buys 1 Test Orb" in listed and "unchecked" in listed
+    fixed = Ledger(tmp_path).fixed_conversions()
+    assert fixed[0]["inputs"] == [(CARD, 5.0)] and fixed[0]["output"] == ITEM
+    with pytest.raises(SystemExit):
+        cli.main(["recipe", "add", "--give", "5 No Such Thing", "--get", "Test Orb"])
+    cli.main(["recipe", "delete", "--id", str(fixed[0]["id"])])
+    assert len(Ledger(tmp_path).fixed_conversions()) == 1
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["arb", "--swaps", "3"])
+    out = capsys.readouterr().out
+    assert "Round trips of up to 3 swaps" in out and "Test Shard -> Test Orb" in out and "unchecked" in out

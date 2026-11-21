@@ -222,16 +222,89 @@ def _stash(args: argparse.Namespace) -> None:
 
 def _arb(args: argparse.Namespace) -> None:
     from vaalstreet.desk import Desk
+    from vaalstreet.ledger import Ledger
 
     con = connect()
     desk = Desk.build(con, _league(con, args))
-    rows = desk.conversions(share=args.share)
+    ledger = Ledger(data_dir())
+    fixed, checks = ledger.fixed_conversions(), ledger.recipe_checks()
+
+    def check(row: dict) -> str:
+        found = checks.get(row["recipe_key"])
+        return found["status"] if found else "unchecked"
+
+    rows = desk.conversions(share=args.share, fixed=fixed)
     for r in rows:
-        r["recipe"] = f"{r['need']} -> {r['gives']} {r['reward']}"
+        if r.get("inputs"):
+            r["recipe"] = " + ".join(f"{x['units']:g} {x['name']}" for x in r["inputs"]) + f" -> {r['gives']:g} {r['reward']}"
+            r["name"] = "(yours)"
+        else:
+            r["recipe"] = f"{r['need']} -> {r['gives']} {r['reward']}"
+        r["checked"] = check(r)
     print(f"{desk.league} - full sets against what they turn into")
     _table(rows, [("name", "Item", ""), ("recipe", "Set", ""), ("cost", "Cost", ",.4g"), ("proceeds", "Worth", ",.4g"),
                   ("margin", "Margin", ".1%"), ("margin_now", "In a hurry", ".1%"),
-                  ("profit_per_hour", "c/hour", ",.0f")], args.rows)
+                  ("profit_per_hour", "c/hour", ",.0f"), ("checked", "In game", "")], args.rows)
+
+    loops = desk.loops(share=args.share, swaps=args.swaps, fixed=fixed)
+    for r in loops:
+        r["route"] = " -> ".join(step["name"] for step in r["path"])
+        r["checked"] = check(r)
+    print(f"\nRound trips of up to {args.swaps} swaps")
+    _table(loops, [("route", "Route", ""), ("edge", "Edge", ".1%"), ("value_24h", "Thinnest swap/day", ",.0f"),
+                   ("resting_value", "Resting now", ",.0f"), ("profit_per_day", "c/day", ",.0f"),
+                   ("checked", "In game", "")], args.rows)
+
+
+def _item_id(names: dict[str, str], text: str) -> str:
+    """An item ID from its name (any case) or the end of its ID."""
+    found = names.get(text.lower()) or next((i for i in names.values() if i.endswith(text)), None)
+    if not found:
+        raise LookupError(f"No item called {text!r}. Use the name as the exchange shows it.")
+    return found
+
+
+def _counted(names: dict[str, str], text: str) -> tuple[str, float]:
+    """"3 Test Card" -> (its ID, 3). A missing count means one."""
+    head, _, rest = text.strip().partition(" ")
+    try:
+        units = float(head)
+    except ValueError:
+        return _item_id(names, text.strip()), 1.0
+    return _item_id(names, rest.strip()), units
+
+
+def _recipe(args: argparse.Namespace) -> None:
+    from vaalstreet.ledger import Ledger
+
+    root = data_dir()
+    ledger = Ledger(root)
+    meta = items.load(root, "poe1")
+    name = lambda item_id: (meta.get(item_id) or {}).get("name") or items.fallback_name(item_id)
+    if args.action == "add":
+        if not args.give or not args.get:
+            sys.exit("Say what goes in (--give) and what comes out (--get).")
+        names = {(m.get("name") or "").lower(): item_id for item_id, m in meta.items()}
+        inputs = [_counted(names, text) for text in args.give]
+        output, gives = _counted(names, args.get)
+        ledger.add_fixed("vendor" if args.vendor else "recipe", [list(x) for x in inputs], output, gives, args.note)
+    elif args.action == "delete":
+        if args.id is None:
+            sys.exit("Say which one to delete (--id, from the list).")
+        ledger.delete_fixed(args.id)
+    checks = ledger.recipe_checks()
+    rows = []
+    for f in ledger.fixed_conversions():
+        left = " + ".join(f"{n:g} {name(i)}" for i, n in f["inputs"])
+        found = checks.get(f["key"])
+        rows.append({"id": f["id"], "kind": "vendor price" if f["kind"] == "vendor" else "recipe",
+                     "what": f"{left} {'buys' if f['kind'] == 'vendor' else '->'} {f['gives']:g} {name(f['output'])}",
+                     "checked": found["status"] if found else "unchecked", "note": f["note"]})
+    if not rows:
+        print("No recipes or vendor prices of your own yet. Add one with: recipe add --give ... --get ...")
+        return
+    _table(rows, [("id", "ID", ""), ("kind", "Kind", ""), ("what", "Conversion", ""), ("checked", "In game", ""),
+                  ("note", "Note", "")], len(rows))
 
 
 def _playbook(args: argparse.Namespace) -> None:
@@ -398,11 +471,32 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--league")
     p.set_defaults(run=_stash)
 
-    p = commands.add_parser("arb", help="card sets and shards against what they turn into")
+    p = commands.add_parser("arb", help="card sets, shards and your own recipes against what they turn into, "
+                                        "and round trips through item-for-item markets")
     p.add_argument("--league")
     p.add_argument("--share", type=float, default=0.1)
+    p.add_argument("--swaps", type=int, default=3, choices=range(1, 5),
+                   help="longest round trip, in swaps (default 3; 4 can take several seconds)")
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_arb)
+
+    p = commands.add_parser(
+        "recipe", help="list, add or delete your own recipes and vendor prices",
+        description="The desk cannot read recipes or vendor prices from any source it may use, so you type in "
+                    "the ones you know. A recipe turns what you give into what you get; a vendor price says an NPC "
+                    "sells what you get for what you give, as many times as you like. Each one counts as "
+                    "unchecked until you confirm it in game on the desk's Arbitrage page.",
+        epilog='examples:\n  recipe add --give "5 Test Card" --get "Test Orb" --note "full stack"\n'
+               '  recipe add --vendor --give "3 Chaos Orb" --get "Test Shard"\n  recipe delete --id 2',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("action", nargs="?", choices=["list", "add", "delete"], default="list")
+    p.add_argument("--give", action="append", metavar='"COUNT NAME"',
+                   help="what goes in, e.g. \"5 Test Card\"; repeat for each input")
+    p.add_argument("--get", metavar='"COUNT NAME"', help="what comes out, e.g. \"1 Test Orb\"")
+    p.add_argument("--vendor", action="store_true", help="a vendor sells --get for --give (one currency)")
+    p.add_argument("--note", default="", help="where it came from, or anything to remember")
+    p.add_argument("--id", type=int, help="the ID to delete, as the list shows it")
+    p.set_defaults(run=_recipe)
 
     p = commands.add_parser("playbook", help="what past leagues did next, from the current league day")
     p.add_argument("--league")
