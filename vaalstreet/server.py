@@ -382,6 +382,7 @@ class App:
         out["standing"] = book.standing(league, unit=unit)
         out["divine_outlook"] = book.divine_outlook(league)
         out["family"] = book.family_of(league)
+        out["divine_timing"] = book.divine_timing(league)
         out["launch"] = book.launch(league, unit=q.get("launch_unit", "chaos"), limit=int(q.get("launch_rows", 150)))
         return out
 

@@ -405,6 +405,21 @@ def _launch(book, league: str, args: argparse.Namespace) -> None:
                   ("m72", "Hour 72", "+.0%")], args.rows)
 
 
+def _divine_timing(args: argparse.Namespace) -> None:
+    from vaalstreet.leagues import LeagueBook
+
+    con = connect()
+    out = LeagueBook(con).divine_timing(_league(con, args), max_day=args.max_day)
+    print(out["advice"])
+    if out["by_league"]:
+        print("\nThe cheapest day in each past league:")
+        _table(out["by_league"], [("league", "League", ""), ("day", "Day", ""), ("price", "Divine (c)", ",.4g")],
+               len(out["by_league"]))
+        print("\nHow much dearer the Divine was than on its cheapest day (median of past leagues):")
+        _table(out["curve"], [("day", "Day", ""), ("dearer", "Dearer by", "+.0%"), ("n", "Leagues", "")],
+               len(out["curve"]))
+
+
 def _cross_league(args: argparse.Namespace) -> None:
     from vaalstreet.leagues import LeagueBook
 
@@ -680,6 +695,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--launch", action="store_true",
                    help="instead: the first 72 hours of past leagues, when each item first traded and where it went")
     p.set_defaults(run=_playbook)
+
+    p = commands.add_parser("divine-timing", help="on which league days Chaos bought the most Divines in past leagues")
+    p.add_argument("--league")
+    p.add_argument("--max-day", type=int, default=30, help="look at league days up to this one (default 30)")
+    p.set_defaults(run=_divine_timing)
 
     p = commands.add_parser("cross-league", help="the same items in this league's Hardcore, Ruthless and Standard: "
                                                  "which price gaps are real and which close")

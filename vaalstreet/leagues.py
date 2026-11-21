@@ -375,12 +375,7 @@ class LeagueBook:
         every ended league of `family`. Leagues whose start is not on disk are never used. With fewer than
         two, `shortfall` says so in words.
         """
-        if current is not None:
-            past = self.precedents(current)
-            family = self.family_of(current)
-        else:
-            family = family or "challenge"
-            past = [r["league"] for r in self.leagues() if r["family"] == family and r["main"] and r["ended"]]
+        past, family = self._past(current, family)
         out = {"league": current, "family": family, "unit": unit, "hours": LAUNCH_HOURS, "checks": list(LAUNCH_CHECKS),
                "precedents": past, "shortfall": None, "items": []}
         if len(past) < 2:
@@ -460,6 +455,75 @@ class LeagueBook:
             })
         out["items"].sort(key=lambda r: (-r["n"], -(r["day0_value"] or 0)))
         out["items"] = out["items"][:limit]
+        return out
+
+    # --------------------------------------------------------- divine timing
+    def _past(self, current: str | None, family: str | None) -> tuple[list[str], str]:
+        if current is not None:
+            return self.precedents(current), self.family_of(current)
+        family = family or "challenge"
+        return [r["league"] for r in self.leagues() if r["family"] == family and r["main"] and r["ended"]], family
+
+    def divine_timing(self, current: str | None = None, *, family: str | None = None, max_day: int = 30,
+                      window: int = 3) -> dict:
+        """On which league days Chaos bought the most Divines in past leagues, and how consistently.
+
+        For each past league in the family, the day (up to `max_day`, or as far as every league reaches)
+        on which the Divine's daily average price in Chaos was lowest. The advice names the `window`-day
+        stretch that holds the most of those days, as "in k of n past leagues". `curve` gives, per league
+        day, how much dearer the Divine was than on its cheapest day (median across leagues).
+        Only ended leagues before `current` count; today's league day is used only to say where it stands.
+        """
+        past, family = self._past(current, family)
+        label = family.replace("_", " ")
+        out = {"league": current, "family": family, "precedents": past, "n": len(past), "by_league": [],
+               "window": None, "curve": [], "advice": None, "day": self.day_of(current) if current else None}
+        rows = self._rows(
+            "SELECT league, day, price FROM league_daily WHERE item = $bridge AND league IN $past AND day <= $max_day "
+            "AND price > 0 ORDER BY league, day",
+            {"bridge": self.bridge, "past": past or [""], "max_day": max_day},
+        )
+        curves: dict[str, dict[int, float]] = {}
+        for r in rows:
+            curves.setdefault(r["league"], {})[int(r["day"])] = float(r["price"])
+        if not curves:
+            out["advice"] = f"No past {label} league is on disk to time the Divine with."
+            return out
+        last = min(max(c) for c in curves.values())  # judge every league on the same stretch of days
+        for league in past:
+            c = {d: p for d, p in curves.get(league, {}).items() if d <= last}
+            if c:
+                cheapest = min(c, key=c.get)
+                out["by_league"].append({"league": league, "day": cheapest, "price": _num(c[cheapest])})
+        days = [r["day"] for r in out["by_league"]]
+        n = len(days)
+        best = max(range(0, last + 1), key=lambda a: (sum(a <= d < a + window for d in days), -a))
+        inside = sorted(d for d in days if best <= d < best + window)
+        lo, hi = inside[0], inside[-1]
+        out["n"] = n
+        out["window"] = {"from": lo, "to": hi, "leagues": len(inside), "days_checked": last}
+        when = f"on day {lo}" if lo == hi else f"between day {lo} and day {hi}"
+        if n == 1:
+            out["advice"] = (f"In the one past {label} league on disk ({out['by_league'][0]['league']}), the Divine was "
+                             f"cheapest in Chaos {when} of the first {last + 1} days. One league is not a pattern.")
+        else:
+            out["advice"] = (f"In {len(inside)} of {n} past {label} leagues the Divine was cheapest in Chaos {when} "
+                             f"(looking at the first {last + 1} days).")
+        if current is not None:
+            today = out["day"]
+            if today < lo:
+                out["advice"] += f" Today is day {today}, {lo - today} day{'s' if lo - today > 1 else ''} before that."
+            elif today <= hi:
+                out["advice"] += f" Today is day {today}, inside that stretch."
+            else:
+                out["advice"] += f" Today is day {today}, past that stretch."
+        for d in range(last + 1):
+            rel = [c[d] / min(v for k, v in c.items() if k <= last) - 1 for c in curves.values() if d in c]
+            rel.sort()
+            if rel:
+                m = len(rel) // 2
+                out["curve"].append({"day": d, "dearer": _num(rel[m] if len(rel) % 2 else (rel[m - 1] + rel[m]) / 2, 4),
+                                     "n": len(rel)})
         return out
 
     # --------------------------------------------------------- cross-league

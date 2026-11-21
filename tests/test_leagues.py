@@ -106,3 +106,23 @@ def test_launch_in_the_api_and_cli(server, archive_root, monkeypatch, capsys):
     cli.main(["playbook", "--launch", "--league", BLITZ, "--min-leagues", "1"])
     out = capsys.readouterr().out
     assert "Only 1 past event league" in out and "Test Lure" in out and "rise" in out
+
+
+def test_divine_timing(con, archive_root, monkeypatch, capsys):
+    book = LeagueBook(con)
+    # In the events the Divine costs 100 + 5 * |day - 2.5| Chaos: cheapest on day 2 in both.
+    events = book.divine_timing(family="event")
+    assert events["window"] == {"from": 2, "to": 2, "leagues": 2, "days_checked": 10}
+    assert events["advice"].startswith("In 2 of 2 past event leagues the Divine was cheapest in Chaos on day 2")
+    assert events["curve"][2]["dearer"] == 0 and events["curve"][0]["dearer"] > 0
+    # In Old it only climbs, so day 0; New rests on that one league and says so.
+    new = book.divine_timing(NEW)
+    assert new["n"] == 1 and new["by_league"][0] == {"league": OLD, "day": 0, "price": new["by_league"][0]["price"]}
+    assert "One league is not a pattern" in new["advice"] and "Today is day 7, past that stretch" in new["advice"]
+    assert book.divine_timing(FLASH)["advice"] == "No past event league is on disk to time the Divine with."
+
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["divine-timing", "--league", BLITZ])
+    assert "In the one past event league on disk (Flash), the Divine was cheapest in Chaos on day 2" in capsys.readouterr().out
