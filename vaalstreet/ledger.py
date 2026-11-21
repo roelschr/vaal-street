@@ -74,7 +74,10 @@ CREATE TABLE IF NOT EXISTS fixed_conversions(
     note TEXT NOT NULL DEFAULT '', t INTEGER NOT NULL);
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
-_COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"}}
+_COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
+            # An alert's kind and its rule; `state` remembers which conditions are live and when each last fired.
+            "alerts": {"kind": "TEXT NOT NULL DEFAULT 'price'", "params": "TEXT NOT NULL DEFAULT '{}'",
+                       "state": "TEXT NOT NULL DEFAULT '{}'"}}
 ORDER_STATUSES = ("open", "part-filled", "filled", "cancelled", "closed")
 # Whole-number ratios never sit exactly on a level, so an order counts as "at the plan" within this.
 REPRICE_TOLERANCE = 0.04
@@ -454,38 +457,280 @@ class Ledger:
 
     # --------------------------------------------------------------- alerts
     def alerts(self, league: str) -> list[dict]:
-        return self._all("SELECT * FROM alerts WHERE league = ? ORDER BY id", (league,))
+        out = []
+        for row in self._all("SELECT * FROM alerts WHERE league = ? ORDER BY id", (league,)):
+            row["params"] = json.loads(row.get("params") or "{}")
+            row["state"] = json.loads(row.get("state") or "{}")
+            out.append(row)
+        return out
 
-    def add_alert(self, league: str, item: str, field: str, op: str, threshold: float) -> int:
-        if field not in ALERT_FIELDS or op not in ("above", "below"):
-            raise ValueError("Unknown alert field or direction.")
-        return self._run("INSERT INTO alerts(league, item, field, op, threshold) VALUES (?,?,?,?,?)",
-                         (league, item, field, op, float(threshold)))
+    def add_alert(self, league: str, item: str = "", field: str = "price", op: str = "above",
+                  threshold: float = 0.0, kind: str = "price", params: dict | None = None) -> int:
+        """Store one alert. A price alert is item + field + op + threshold; the other kinds keep their rule in `params`.
+
+        `params` is checked and cleaned by `alert_params`, so what is stored is always a rule the
+        evaluation understands. Percentages are kept as you type them: 5 means 5%.
+        """
+        if kind == "price":
+            if field not in ALERT_FIELDS or op not in ("above", "below"):
+                raise ValueError("Unknown alert field or direction.")
+            if not item:
+                raise ValueError("A price alert needs an item.")
+            return self._run("INSERT INTO alerts(league, item, field, op, threshold) VALUES (?,?,?,?,?)",
+                             (league, item, field, op, float(threshold)))
+        clean = alert_params(kind, params or {})
+        return self._run("INSERT INTO alerts(league, item, field, op, threshold, kind, params) VALUES (?,?,?,?,?,?,?)",
+                         (league, clean.get("item") or "", kind, "above", 0.0, kind, json.dumps(clean)))
 
     def delete_alert(self, alert_id: int) -> None:
         self._run("DELETE FROM alerts WHERE id = ?", (int(alert_id),))
 
-    def evaluate_alerts(self, league: str, rows: dict[str, dict], now: int) -> list[dict]:
-        """Fire alerts that newly crossed their threshold; they re-arm once the value comes back."""
+    def evaluate_alerts(self, league: str, rows: dict[str, dict], now: int,
+                        context: dict | None = None) -> list[dict]:
+        """Fire alerts whose condition newly holds, and write one event per alert that fires.
+
+        `rows` is item -> market row, as before. `context` holds what the other kinds look at, all
+        plain dicts the server builds from the desk, so this file stays free of model code:
+        "flips" (flip plans), "loops" (round trips), "orders" (orders with advice), "standing"
+        (standing rows) and "playbook" (horizon -> playbook rows). A kind whose list is missing is
+        skipped and keeps its state, so a failed model call never re-arms an alert.
+
+        No repeats: each alert tracks the conditions that hold now by key (an item, a round trip,
+        an order and its advice). A key fires when it starts to hold; it can fire again only after
+        it has cleared and come back, and not within ALERT_COOLDOWN seconds of its last firing,
+        so a value hovering on the threshold does not ring every hour.
+        """
+        context = context or {}
         fired = []
         for alert in self.alerts(league):
-            row = rows.get(alert["item"])
-            value = row.get(alert["field"]) if row else None
-            if value is None or not alert["active"]:
+            if not alert["active"]:
                 continue
-            crossed = value > alert["threshold"] if alert["op"] == "above" else value < alert["threshold"]
-            if crossed and not alert["hot"]:
-                title = f"{row['name']}: {ALERT_FIELDS[alert['field']].lower()} {alert['op']} {alert['threshold']:g}"
-                body = f"Now {value:g}"
-                self._run("INSERT INTO events(t, league, title, body) VALUES (?,?,?,?)", (now, league, title, body))
-                fired.append({"title": title, "body": body})
-            if bool(alert["hot"]) != crossed:
-                self._run("UPDATE alerts SET hot = ? WHERE id = ?", (int(crossed), alert["id"]))
+            kind = alert.get("kind") or "price"
+            if kind == "price":
+                fired += self._evaluate_price(league, alert, rows, now)
+                continue
+            matches = _ALERT_MATCHERS[kind](alert["params"], context)
+            if matches is None:
+                continue
+            state = alert["state"]
+            was_hot = set(state.get("hot", []))
+            last = {k: t for k, t in state.get("fired", {}).items() if now - t < ALERT_COOLDOWN}
+            new = [m for m in matches if m["key"] not in was_hot and m["key"] not in last]
+            if new:
+                title = new[0]["title"]
+                body = new[0]["body"]
+                if len(new) > 1:
+                    body += f" And {len(new) - 1} more."
+                self._run("INSERT INTO events(t, league, title, body) VALUES (?,?,?,?)",
+                          (now, league, _speakable(title), body))
+                fired.append({"alert": alert["id"], "title": _speakable(title), "body": body})
+                for m in new:
+                    last[m["key"]] = now
+            state = {"hot": sorted(m["key"] for m in matches), "fired": last}
+            self._run("UPDATE alerts SET state = ?, hot = ? WHERE id = ?",
+                      (json.dumps(state), int(bool(matches)), alert["id"]))
+        return fired
+
+    def _evaluate_price(self, league: str, alert: dict, rows: dict[str, dict], now: int) -> list[dict]:
+        row = rows.get(alert["item"])
+        value = row.get(alert["field"]) if row else None
+        if value is None:
+            return []
+        crossed = value > alert["threshold"] if alert["op"] == "above" else value < alert["threshold"]
+        fired = []
+        if crossed and not alert["hot"]:
+            title = _speakable(f"{row['name']} {ALERT_FIELDS[alert['field']].lower()} {alert['op']} {alert['threshold']:g}")
+            body = f"Now {value:g}"
+            self._run("INSERT INTO events(t, league, title, body) VALUES (?,?,?,?)", (now, league, title, body))
+            fired.append({"alert": alert["id"], "title": title, "body": body})
+        if bool(alert["hot"]) != crossed:
+            self._run("UPDATE alerts SET hot = ? WHERE id = ?", (int(crossed), alert["id"]))
         return fired
 
     def events(self, league: str, limit: int = 30) -> list[dict]:
         return self._all("SELECT * FROM events WHERE league = ? ORDER BY id DESC LIMIT ?", (league, limit))
 
+    def events_since(self, league: str, since: int = 0, limit: int = 50) -> list[dict]:
+        """Events newer than event id `since`, oldest first: a cheap poll for notifications."""
+        return self._all("SELECT * FROM events WHERE league = ? AND id > ? ORDER BY id LIMIT ?",
+                         (league, int(since), int(limit)))
+
+
+# ------------------------------------------------------------------ alert rules
+# Once a condition has fired, it stays quiet for this long even if it clears and comes back.
+ALERT_COOLDOWN = 6 * 3600
+# Event titles are read aloud and shown in a notification, so they stay short.
+TITLE_LENGTH = 60
+ALERT_KINDS = {"price": "Price", "plan": "Flip plan", "trip": "Round trip", "order": "Your orders",
+               "precedent": "League precedent"}
+
+
+def _speakable(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= TITLE_LENGTH else text[: TITLE_LENGTH - 1].rstrip(" ,:") + "…"
+
+
+def _short(name: str, room: int = 28) -> str:
+    return name if len(name) <= room else name[: room - 1].rstrip() + "…"
+
+
+def _number(params: dict, key: str, default: float | None, what: str, low: float = 0.0) -> float | None:
+    value = params.get(key, default)
+    if value in (None, ""):
+        return default
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} must be a number.") from None
+    if not (math.isfinite(value) and value >= low):
+        raise ValueError(f"{what} must be {low:g} or more.")
+    return value
+
+
+def alert_params(kind: str, params: dict) -> dict:
+    """Check and clean an alert rule; errors are written for the player who typed it."""
+    item = str(params.get("item") or "").strip()
+    if kind == "plan":
+        return {"item": item, "min_margin": _number(params, "min_margin", 2.0, "The margin"),
+                "min_profit": _number(params, "min_profit", 0.0, "The profit per hour")}
+    if kind == "trip":
+        return {"item": item, "min_edge": _number(params, "min_edge", 3.0, "The edge"),
+                "min_resting": _number(params, "min_resting", 0.0, "The value waiting in orders")}
+    if kind == "order":
+        return {}
+    if kind == "precedent":
+        if not item:
+            raise ValueError("A league precedent alert needs an item.")
+        mode = params.get("mode", "standing")
+        direction = params.get("direction", "cheap" if mode == "standing" else "up")
+        if mode == "standing":
+            if direction not in ("cheap", "dear"):
+                raise ValueError("Choose cheap or dear against past leagues.")
+            return {"item": item, "mode": mode, "direction": direction,
+                    "min_gap": _number(params, "min_gap", 20.0, "The gap to past leagues")}
+        if mode == "playbook":
+            if direction not in ("up", "down"):
+                raise ValueError("Choose whether the price should go up or down.")
+            horizon = _number(params, "horizon", 7, "The number of days", low=1)
+            if horizon != int(horizon) or horizon > 60:
+                raise ValueError("The number of days must be a whole number from 1 to 60.")
+            return {"item": item, "mode": mode, "direction": direction, "horizon": int(horizon),
+                    "min_move": _number(params, "min_move", 20.0, "The move")}
+        raise ValueError("A league precedent alert looks at either today's standing or the playbook.")
+    raise ValueError("Unknown alert kind. Choose price, plan, trip, order or precedent.")
+
+
+def describe_alert(alert: dict, names: dict[str, str] | None = None) -> str:
+    """One plain sentence for an alert's rule, for the alert list."""
+    names = names or {}
+    kind = alert.get("kind") or "price"
+    p = alert.get("params") or {}
+    name = names.get(p.get("item") or alert.get("item"), p.get("item") or alert.get("item"))
+    if kind == "price":
+        return f"When the {ALERT_FIELDS.get(alert['field'], alert['field']).lower()} of {name} goes {alert['op']} {alert['threshold']:g}."
+    if kind == "plan":
+        what = f"a flip plan for {name}" if p.get("item") else "a flip plan for any item"
+        return f"When {what} shows a margin of {p['min_margin']:g}% or more and makes {p['min_profit']:g} Chaos an hour or more."
+    if kind == "trip":
+        start = f" starting with {name}" if p.get("item") else ""
+        return (f"When a round trip{start} shows an edge of {p['min_edge']:g}% or more and its thinnest swap "
+                f"has orders worth {p['min_resting']:g} Chaos or more waiting.")
+    if kind == "order":
+        return "When one of your open orders should be re-priced, cancelled or collected."
+    if p.get("mode") == "playbook":
+        return (f"When past leagues moved {name} {p['direction']} by a median of {p['min_move']:g}% or more "
+                f"over the next {p['horizon']} days from today's league day.")
+    return f"When {name} is {p['min_gap']:g}% or more {p['direction']}er than on the same day of past leagues."
+
+
+def _match_plan(p: dict, ctx: dict) -> list[dict] | None:
+    plans = ctx.get("flips")
+    if plans is None:
+        return None
+    out = []
+    for plan in plans:
+        if p["item"] and plan["id"] != p["item"]:
+            continue
+        margin, profit = (plan.get("margin") or 0) * 100, plan.get("profit_per_hour") or 0
+        if margin >= p["min_margin"] and profit >= p["min_profit"]:
+            market = {"chaos": "Chaos market", "divine": "Divine market", "cross": "both markets"}.get(plan["kind"], plan["kind"])
+            out.append({"key": f"{plan['id']}:{plan['kind']}",
+                        "title": f"Flip {_short(plan['name'])}, {margin:.0f}% margin",
+                        "body": f"Flip in the {market}: buy at {plan['buy']:g}, sell at {plan['sell']:g}, "
+                                f"about {profit:.0f} Chaos an hour."})
+    return out
+
+
+def _match_trip(p: dict, ctx: dict) -> list[dict] | None:
+    loops = ctx.get("loops")
+    if loops is None:
+        return None
+    out = []
+    for loop in loops:
+        path = loop.get("path") or []
+        if not path or (p["item"] and path[0]["id"] != p["item"]):
+            continue
+        edge, resting = (loop.get("edge") or 0) * 100, loop.get("resting_value") or 0
+        if edge >= p["min_edge"] and resting >= p["min_resting"]:
+            out.append({"key": loop.get("recipe_key") or ">".join(s["id"] for s in path),
+                        "title": f"Round trip from {_short(path[0]['name'], 24)}, {edge:.0f}% edge",
+                        "body": f"{' → '.join(s['name'] for s in path)}: {edge:.1f}% back per trip, "
+                                f"{resting:.0f} Chaos of orders waiting at the thinnest swap."})
+    return out
+
+
+def _match_order(p: dict, ctx: dict) -> list[dict] | None:
+    orders = ctx.get("orders")
+    if orders is None:
+        return None
+    out = []
+    for o in orders:
+        advice = o.get("advice")
+        if advice in (None, "keep"):
+            continue
+        name = _short(o.get("name") or o["item"])
+        if advice == "collect":
+            title = f"{name} filled, post the sell" if o["side"] == "buy" else f"{name} sold, collect the currency"
+        elif advice == "re-price":
+            title = f"Re-price your {name} {o['side']}"
+        else:
+            title = f"Cancel your {name} {o['side']}"
+        out.append({"key": f"{o['id']}:{advice}", "title": title, "body": o.get("reason") or ""})
+    return out
+
+
+def _match_precedent(p: dict, ctx: dict) -> list[dict] | None:
+    if p["mode"] == "standing":
+        rows = ctx.get("standing")
+        if rows is None:
+            return None
+        row = next((r for r in rows if r["id"] == p["item"]), None)
+        gap = row and row.get("vs_typical")
+        if gap is None:
+            return []
+        gap *= 100
+        if (-gap if p["direction"] == "cheap" else gap) < p["min_gap"]:
+            return []
+        word = "cheaper" if gap < 0 else "dearer"
+        return [{"key": p["item"], "title": f"{_short(row['name'])} {abs(gap):.0f}% {word} than past leagues",
+                 "body": f"On this league day, past leagues paid about {row['typical']:g}; it is {row['price_now']:g} now."}]
+    rows = (ctx.get("playbook") or {}).get(p["horizon"])
+    if rows is None:
+        return None
+    row = next((r for r in rows if r["id"] == p["item"]), None)
+    move = row and row.get("median")
+    if move is None:
+        return []
+    move *= 100
+    if (move if p["direction"] == "up" else -move) < p["min_move"]:
+        return []
+    return [{"key": p["item"],
+             "title": f"{_short(row['name'])} {'rose' if move > 0 else 'fell'} {abs(move):.0f}% from here last leagues",
+             "body": f"From this league day, the median move over {p['horizon']} days was {move:+.0f}% "
+                     f"across {row['n']} past leagues."}]
+
+
+_ALERT_MATCHERS = {"plan": _match_plan, "trip": _match_trip, "order": _match_order, "precedent": _match_precedent}
 
 def _gold(value) -> float | None:
     """Gold as recorded: None when not given (unknown, never zero), else a non-negative number."""
