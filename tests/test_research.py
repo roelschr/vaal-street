@@ -56,6 +56,15 @@ def test_splits_never_train_on_an_overlapping_league():
     assert pairs == {"league1": ["league0"]}
 
 
+def test_a_counted_league_trains_only_on_counted_leagues():
+    rng = np.random.default_rng(0)
+    early = Season(make_panel(0, walk(rng)), eligible=False, why_not="started before the archive")
+    mid, late = Season(make_panel(1, walk(rng))), Season(make_panel(2, walk(rng)))
+    shown = Season(make_panel(3, walk(rng)), eligible=False, why_not="only 7 days")
+    pairs = {test.name: [s.name for s in train] for test, train in research.splits([early, mid, late, shown])}
+    assert pairs == {"league2": ["league1"], "league3": ["league0", "league1", "league2"]}
+
+
 def test_two_test_leagues_are_not_enough():
     scored = [{"league": f"l{k}", "counts": True, "signal": np.zeros((T, 2)), "fair": np.ones((T, 2)),
                "last": np.ones((T, 2))} for k in range(research.MIN_TEST_LEAGUES - 1)]

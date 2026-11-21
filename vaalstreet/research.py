@@ -56,6 +56,7 @@ QUIET_MOVE, QUIET_PRINTED, FALSE_ALARM_CEILING = 0.2, 0.5, 0.1
 KNOWN_CASES = (("Covens", "Foulborn Exalted Orb"),)
 # Discovery.
 TOP_ITEMS = 60
+MIN_ITEM_VALUE = 10_000  # Chaos traded over the whole league; items below it are left out
 RECIPE_MAX, RECIPE_TOLERANCE, RECIPE_MAD, RECIPE_DAYS = 10, 0.02, 0.03, 7
 LEAD_CORR, BASKET_CORR, MIN_PAIR_LEAGUES = 0.1, 0.6, 2
 
@@ -130,11 +131,13 @@ def _fmt(v) -> str:
 # ---- League splits and the forecast verdict --------------------------------------------------
 def splits(seasons: list[Season]) -> list[tuple[Season, list[Season]]]:
     """Each league that has training leagues, with those leagues: the ones that ended before it
-    began. A league overlapping the test league in time is never used to fit."""
+    began. A league overlapping the test league in time is never used to fit. A test league that
+    counts toward a verdict trains only on leagues that count too; the others, shown for
+    information, may train on whatever came before them."""
     ordered = sorted(seasons, key=lambda s: s.start)
     out = []
     for test in ordered:
-        train = [s for s in ordered if s.end < test.start]
+        train = [s for s in ordered if s.end < test.start and (s.counts or not test.counts)]
         if train:
             out.append((test, train))
     return out
@@ -672,7 +675,7 @@ def relationships(seasons: list[Season]) -> Result:
     """Leaders and laggards, and baskets that move together: candidates that hold across leagues."""
     t0 = time.perf_counter()
     seasons = [s for s in seasons if s.counts]
-    universe = _universe(seasons)[:TOP_ITEMS]
+    universe = _universe(seasons)
     K = len(universe)
     lead: dict[tuple, list] = {}
     basket: dict[tuple, list] = {}
@@ -718,7 +721,7 @@ def relationships(seasons: list[Season]) -> Result:
                           "median correlation": float(np.median(cs)), "held in leagues": f"{held} of {len(cs)}"})
     cands.sort(key=lambda c: -abs(c["median correlation"]))
     r = _discovery("relationships", seasons, cands,
-                   [f"Universe: the {K} most traded items. Lead: A's 6-hour move in fair value against B's next "
+                   [f"Universe: {K} items, the {TOP_ITEMS} most traded of each league. Lead: A's 6-hour move in fair value against B's next "
                     "6 hours relative to its fair value. Candidates only; check before trusting."])
     r.seconds = time.perf_counter() - t0
     return r
@@ -848,7 +851,7 @@ def seasons_from(con, leagues: list[str] | None = None) -> list[Season]:
             why = f"only {info['days']} days"
         else:
             why = ""
-        panel = Panel.load(con, name, CORE + LEGS, min_value=10_000)
+        panel = Panel.load(con, name, CORE + LEGS, min_value=MIN_ITEM_VALUE)
         out.append(Season(panel, eligible=not why, why_not=why))
     return out
 
