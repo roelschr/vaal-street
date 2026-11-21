@@ -721,7 +721,17 @@ class Desk:
                         "replay": replay.get((kind, p.items[i], reach)),
                     }
         plans = list(best.values())
+        r_fair, b_fair = self.legs["r"].fair[-1], self.legs["b"].fair[-1]
         for plan in plans:
+            if plan["kind"] == "cross":
+                # The two markets are real, but a Divine market far above the Chaos market is a thin
+                # crowd paying a lot per lot: the plan fills rarely, and its promise is the least reliable.
+                i = p._by_id[plan["id"]]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    gap = float(b_fair[i] / r_fair[i])
+                plan["divine_gap"] = _num(gap, 3)
+                plan["warning"] = (f"The Divine market pays {gap:.0f}x the Chaos market here; it fills rarely."
+                                   if math.isfinite(gap) and gap > OUT_OF_LINE else None)
             plan["profit_per_hour"] = _num(plan["profit_per_hour"], 4)
             plan["flow_value"] = _num((plan["units_per_hour"] or 0) * (plan["buy"] or 0), 4)
             plan["lot_cost"] = _num(max(

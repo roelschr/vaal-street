@@ -74,3 +74,19 @@ def test_leg_deviation_is_causal():
     assert np.array_equal(a[:200], b[:200], equal_nan=True), "the future must not move the past"
     # Clipped around the market's own value: a 2.8x market is not cut down to 1.5x the blended value.
     assert np.nanmedian(np.exp(a[50:])) == pytest.approx(2.8, rel=0.1)
+
+
+def test_a_divine_market_far_above_the_chaos_market_is_flagged_not_dropped(desk):
+    """Test Scrap's Divine market is 2.8x its Chaos market: flagged only past 3x. Push it to 6x."""
+    from vaalstreet.desk import session_plan
+
+    cross = next(p for p in desk.flips(min_margin=0.0) if p["id"] == SCRAP and p["kind"] == "cross")
+    assert cross["divine_gap"] == pytest.approx(SCRAP_PREMIUM, rel=0.1) and cross["warning"] is None
+    i = desk.panel.index(SCRAP)
+    desk.legs["b"].fair[-1, i] = 6 * desk.legs["r"].fair[-1, i]
+    desk._cache.clear()
+    flagged = next(p for p in desk.flips(min_margin=0.0) if p["id"] == SCRAP and p["kind"] == "cross")
+    assert flagged["warning"] == "The Divine market pays 6x the Chaos market here; it fills rarely."
+    # Kept on the board; a session plan takes it only if its replay at the stake beat holding Divines.
+    losing = flagged | {"lot_cost": 10.0, "replay": {"return": -0.1, "sales": 5}}
+    assert session_plan([losing], 1000)["flips"] == []
