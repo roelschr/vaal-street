@@ -317,16 +317,20 @@ def test_a_new_price_goes_to_the_back_of_the_queue_and_market_orders_do_not_queu
     assert taker.position[0] == pytest.approx(20), "market orders keep the 10% share of each hour"
 
 
-def test_inventory_risk_is_the_loss_on_a_one_range_move():
+def test_inventory_risk_is_the_loss_on_a_bad_day_for_the_items_held():
     from vaalstreet import pricing
 
-    prices = [10, 10.5, 9.8, 10.2, 10, 10.1, 9.9, 10]
-    sim = backtest.Simulation(tiny_panel(prices), capital=1000, participation=1.0, slippage=0.0)
+    prices = [10 * (1.02 if h % 2 else 0.98) for h in range(40)]  # +-2% every hour
+    sim = backtest.Simulation(tiny_panel(prices), capital=1000, participation=1.0, slippage=0.0, risk_hours=4)
     result = sim.run(Script({2: [("buy", 20, float("inf"))]}))
-    fv = pricing.fair_value(np.array(prices)[:, None], np.array(prices)[:, None] * 100)
-    held = np.array([0, 0, 0] + [20] * 5)
-    np.testing.assert_allclose(result.holdings, held * fv.fair[:, 0])
-    np.testing.assert_allclose(result.risk, held * (fv.fair - fv.low)[:, 0])
+    fair = pricing.fair_value(np.array(prices)[:, None], np.array(prices)[:, None] * 100).fair[:, 0]
+    held = np.array([0, 0, 0] + [20] * 37)
+    np.testing.assert_allclose(result.holdings, held * fair)
+    # Known answer: the std of the hourly log fair-value changes so far, over 4 hours, 1.645 deviations down.
+    t = 30
+    sigma = np.std(np.diff(np.log(fair[: t + 1])))
+    assert result.risk[t] == pytest.approx(20 * fair[t] * (1 - np.exp(-1.645 * sigma * 2)))
+    assert result.risk[t] > 0 and np.all(result.risk[:12] == 0), "zero until 12 hourly moves are known"
     summary = result.summary()
     assert summary["peak_risk"] == pytest.approx(result.risk.max(), abs=0.01) and summary["peak_risk"] > 0
     assert summary["average_risk"] == pytest.approx(result.risk.mean(), abs=0.01)

@@ -400,7 +400,7 @@ def _backtest(args: argparse.Namespace) -> None:
     options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage,
                    start_day=args.start_day, days=args.days, attention=args.attention, compound=args.compound,
                    whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit, gold_budget=args.gold_budget,
-                   schedule=args.schedule, fill_model=args.fill_model)
+                   schedule=args.schedule, fill_model=args.fill_model, risk_hours=args.risk_hours)
     summaries = []
     for league in leagues:
         started = time.time()
@@ -430,7 +430,7 @@ def _backtest(args: argparse.Namespace) -> None:
                        ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),
                        ("average_risk", "Avg drop", ",.0f")])
     print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
-          " if every item fell one fair-value range (the peak, and the average over the run).")
+          f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
     for s in summaries:
         tops = ", ".join(f"{t['name']} {t['profit']:+,.0f}" for t in s["top_items"][:5])
         print(f"  {s['league']}: {tops}")
@@ -648,6 +648,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
                    help="share: a fill takes at most --participation of the hour's volume (default). "
                    "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--risk-hours", type=float, default=24,
+                   help="how long you expect to hold items, for the Worst drop column (default 24)")
     p.add_argument("--export", metavar="FILE.json",
                    help="save the strategy, its settings and its results per league to a local file to share")
     p.add_argument("--league", action="append", help="repeat to compare leagues (default: the live one)")

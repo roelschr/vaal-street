@@ -24,7 +24,7 @@ the account is kept in Chaos throughout.
 A strategy is any object with `step(ctx)`; see `Hold`, `Swing`, `Reversion`,
 `Momentum` below, or pass your own class to `run`. `run_portfolio` runs several on one
 bankroll (see `Portfolio`). Every result also records the holdings at fair value and what
-they would lose if each item fell one fair-value range: the inventory risk.
+they would lose on a bad day for those items (see `drop_per_unit`): the inventory risk.
 """
 
 from __future__ import annotations
@@ -41,10 +41,27 @@ import duckdb
 import numpy as np
 
 from vaalstreet import pricing
-from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling_weighted_quantile
+from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling, rolling_weighted_quantile
 
 LEG_KEYS = ("r", "b")
 MAX_SWING = math.log(1.5)
+RISK_Z = 1.645  # one-sided 95%: a bad day, about 1 in 20
+RISK_WINDOW = 168  # hours of fair-value moves the volatility is measured over
+
+
+def drop_per_unit(mark: np.ndarray, horizon: float = 24, window: int = RISK_WINDOW, z: float = RISK_Z) -> np.ndarray:
+    """[T, N] Chaos per unit an item loses on a bad `horizon` hours: the inventory risk per item.
+
+    The volatility is the standard deviation of the item's hourly log fair-value changes over
+    the trailing `window` hours, so it measures how the market moves, not how sure the model is
+    of the value. It is scaled to the holding horizon by sqrt(horizon) (moves taken as
+    independent hour to hour) and the bad day is `z` deviations down: mark * (1 - exp(-z s sqrt(H))).
+    Row t uses fair values up to t only. Before 12 hourly changes are known it is 0.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        moves = np.diff(np.log(mark), axis=0, prepend=np.nan)
+    sigma = rolling(moves, window, np.nanstd, min_count=12)
+    return mark * (1 - np.exp(-z * np.nan_to_num(sigma) * math.sqrt(max(horizon, 0))))
 FILL_MODELS = ("share", "queue")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -326,7 +343,7 @@ class Result:
     divine: np.ndarray | None = None  # [T] Divine price relative to hour 24: the "just hold Divines" line
     gold: np.ndarray | None = None  # [T] Gold spent on posting orders so far
     holdings: np.ndarray | None = None  # [T] what is held, at fair value, in Chaos
-    risk: np.ndarray | None = None  # [T] what the holdings lose if every item drops one fair-value range
+    risk: np.ndarray | None = None  # [T] what the holdings lose on a bad day (about 1 in 20) for these items
     capital: np.ndarray | None = None  # [T] Chaos tied up in holdings, at what they cost
     members: list[dict] | None = None  # a portfolio's strategies, each with its share
 
@@ -417,6 +434,7 @@ class Simulation:
         fill_model: str = "share",
         wallet: Wallet | None = None,
         model_from: "Simulation | None" = None,
+        risk_hours: float = 24,
     ) -> None:
         if fill_model not in FILL_MODELS:
             raise ValueError(f"Unknown fill model {fill_model!r}; use {' or '.join(FILL_MODELS)}.")
@@ -454,9 +472,7 @@ class Simulation:
             fv = pricing.fair_value(panel["price"], panel["value"])
             self.fair, self.z = fv.fair, fv.z
             self._mark = ffill(self.fair)
-            # How far each item's price falls on a move of one fair-value range (fair value down to
-            # FairValue.low), in Chaos per unit. Forward-filled like the mark, so it is causal too.
-            self._drop = ffill(fv.fair - fv.low)
+            self._drop = drop_per_unit(self._mark, risk_hours)
             self._swing: dict[tuple[str, float], np.ndarray] = {}
             self._resting: dict[tuple[str, str], np.ndarray] = {}
         self.fills = 0
@@ -1045,6 +1061,7 @@ def run(
     gold_budget: float | None = None,
     schedule: str | None = None,
     fill_model: str = "share",
+    risk_hours: float = 24,
 ) -> Result:
     """Backtest one strategy on one league.
 
@@ -1058,6 +1075,7 @@ def run(
     on new orders. `schedule` (e.g. "mon-fri 19-22", UTC) limits visits to your play hours.
     `fill_model` is "share" (a fill takes at most `participation` of the hour's volume) or
     "queue" (a resting order first waits behind the stock published on its side when it went up).
+    `risk_hours` is how long you expect to hold items, for the inventory risk (`drop_per_unit`).
     """
     panel, offset = _load(con, league, start_day, days, universe)
     if isinstance(strategy, str):
@@ -1066,7 +1084,8 @@ def run(
         instance, name = strategy, type(strategy).__name__
     sim = Simulation(panel, offset=offset, **_options(
         panel, gold_per_unit, capital=capital, participation=participation, slippage=slippage, attention=attention,
-        compound=compound, whole_lots=whole_lots, gold_budget=gold_budget, schedule=schedule, fill_model=fill_model))
+        compound=compound, whole_lots=whole_lots, gold_budget=gold_budget, schedule=schedule, fill_model=fill_model,
+        risk_hours=risk_hours))
     return sim.run(instance, name, params)
 
 
