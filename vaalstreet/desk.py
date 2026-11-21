@@ -196,12 +196,18 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
     eligible = [r for r in plans if (r.get("lot_cost") or 0) > 0 and r["lot_cost"] <= bankroll
                 and r.get("margin") is not None and r.get("replay")
                 and (r["replay"].get("return") or 0) > 0 and (r["replay"].get("sales") or 0) >= 2]
+    def per_gold(r: dict) -> float | None:
+        """Chaos per 1,000 Gold; a plan whose orders cost no Gold at all ranks first."""
+        if r.get("gold") == 0:
+            return math.inf
+        return r.get("chaos_per_1000_gold")
+
     sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], bankroll / 4)]]
     unknown: list[dict] = []
     if gold_budget is not None:
-        unknown = [r for r, _, _ in sized if not r.get("chaos_per_1000_gold")]
-        sized = [x for x in sized if x[0].get("chaos_per_1000_gold")]
-        sized.sort(key=lambda x: (-x[0]["chaos_per_1000_gold"], -x[2]))
+        unknown = [r for r, _, _ in sized if per_gold(r) is None]
+        sized = [x for x in sized if per_gold(x[0]) is not None]
+        sized.sort(key=lambda x: (-per_gold(x[0]), -x[2]))
     else:
         sized.sort(key=lambda x: (-x[2] / x[1], -x[2]))  # most earned per Chaos tied up
     picks, taken = [], set()
@@ -214,16 +220,16 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
         stake = min(stake, left)
         est, gold = earns(r, stake), None
         if gold_left is not None:
-            gold = est * 1000 / r["chaos_per_1000_gold"]  # Gold an hour moves with what is flipped
+            ratio = per_gold(r)
+            gold = 0.0 if ratio == math.inf else est * 1000 / ratio  # Gold an hour moves with what is flipped
             if gold > gold_left + 1e-9:
-                if est <= 0:
-                    continue
-                # Like Chaos running short: shrink the stake to what the Gold left pays for.
-                stake *= gold_left / gold
+                # Like Chaos running short: cut the plan to the earnings the Gold left pays for. The stake
+                # that earns that much is 2 x earnings / margin (below the flow cap, which binds otherwise).
+                est = gold_left * ratio / 1000
+                stake = 2 * est / r["margin"] if r["margin"] > 0 else 0.0
                 if stake < r["lot_cost"]:
                     continue
-                est = earns(r, stake)
-                gold = est * 1000 / r["chaos_per_1000_gold"]
+                gold = gold_left
             gold_left -= gold
         taken.add(r["id"])
         left -= stake

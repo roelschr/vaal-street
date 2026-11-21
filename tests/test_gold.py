@@ -88,3 +88,19 @@ def test_session_plan_under_a_gold_budget():
     assert out["flips"][1]["stake"] == pytest.approx(13.75) and out["gold_per_hour"] == pytest.approx(200)
     assert out["gold_unknown"] == [{"id": "u", "name": "u", "kind": "chaos"}], "unknown Gold is listed, not included"
     assert out["minutes"] == 4
+
+
+def test_gold_budget_holds_when_a_plan_is_capped_by_its_flow():
+    # Known answer: "t" can only earn 0.1 x 5 = 0.5 c/h however big the stake (its flow is 5 c an hour),
+    # which costs 500 Gold at 1 c per 1,000 Gold. With 300 Gold it is cut to 0.3 c/h on a stake of 6.
+    out = session_plan([plan("t", 0.10, 2, 5, 1)], 100, gold_budget=300)
+    pick = out["flips"][0]
+    assert pick["est"] == pytest.approx(0.3) and pick["stake"] == pytest.approx(6)
+    assert out["gold_per_hour"] == pytest.approx(300) and out["gold_per_hour"] <= 300 + 1e-9
+    assert session_plan([plan("t", 0.10, 10, 5, 1)], 100, gold_budget=300)["flips"] == [], "less than one lot: skipped"
+
+
+def test_free_orders_rank_first_not_as_unknown():
+    free = plan("f", 0.05, 10, 1000, None) | {"gold": 0}
+    out = session_plan([plan("a", 0.10, 10, 1000, 5), free], 100, gold_budget=10)
+    assert [p["id"] for p in out["flips"]][0] == "f" and out["gold_unknown"] == []
