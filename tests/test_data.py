@@ -198,3 +198,13 @@ def test_cli_keeps_your_recipes_and_arb_walks_longer_round_trips(archive_root, t
     cli.main(["arb", "--swaps", "3"])
     out = capsys.readouterr().out
     assert "Round trips of up to 3 swaps" in out and "Test Shard -> Test Orb" in out and "unchecked" in out
+
+
+def test_tests_never_reach_the_default_data_directory():
+    from pathlib import Path
+
+    from vaalstreet.paths import data_dir
+
+    checkout = Path(__file__).resolve().parent.parent
+    assert not data_dir().resolve().is_relative_to(checkout), "conftest points VAAL_DATA_DIR at an empty temp dir"
+    assert not data_dir().resolve().is_relative_to(Path.home() / ".vaalstreet")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -177,6 +178,21 @@ def build_archive(root, hours, scrap: bool = False, divine_slope: float = 0.25):
     items.load.cache_clear()
     ingest(root, log=None)
     return root
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_default_data_dir(tmp_path_factory):
+    """Point VAAL_DATA_DIR at an empty directory for the whole session.
+
+    Without it, code that falls back to `data_dir()` reads `data/` in the checkout: the user's live
+    archive, possibly mid-sync. Tests that need data set VAAL_DATA_DIR themselves or pass a root."""
+    previous = os.environ.get("VAAL_DATA_DIR")
+    os.environ["VAAL_DATA_DIR"] = str(tmp_path_factory.mktemp("no-data"))
+    yield
+    if previous is None:
+        os.environ.pop("VAAL_DATA_DIR", None)
+    else:
+        os.environ["VAAL_DATA_DIR"] = previous
 
 
 @pytest.fixture(scope="session")
