@@ -215,3 +215,16 @@ def test_session_plan_carries_last_weeks_rates(flat_desk):
     for p in plan["flips"]:
         assert p["replayed_per_hour"] is not None and p["replayed_vs_divine_per_hour"] == pytest.approx(p["replayed_per_hour"])
     assert plan["replayed_per_hour"] == pytest.approx(sum(p["replayed_per_hour"] for p in plan["flips"]))
+
+
+def test_research_ladder_rates_reads_the_ladders_fields(flat_root):
+    from vaalstreet import research
+    from vaalstreet.db import connect
+
+    con = connect(flat_root)
+    try:
+        rows = research.ladder_rates(con, NEW).leagues
+    finally:
+        con.close()
+    assert rows and all("replayed vs Divines per hour" in r and r["Divines over those hours"] in (0.0, None) for r in rows)
+    assert any(r["picks"] for r in rows)

@@ -830,12 +830,16 @@ def ladder_rates(con, league: str) -> Result:
     for rung in ladder.ladder(desk):
         sess = rung["session"]
         promised, replayed = sess["expected_per_hour"], sess["replayed_per_hour"]
+        against = sess["replayed_vs_divine_per_hour"]
         rows.append({"purse": rung["label"], "picks": len(sess["picks"]), "promised per hour": float(promised),
-                     "replayed per hour": float(replayed),
-                     "replayed / promised": float(replayed / promised) if promised else math.nan})
+                     "replayed per hour": float(replayed), "replayed vs Divines per hour": float(against),
+                     "replayed / promised": float(replayed / promised) if promised else math.nan,
+                     "vs Divines / promised": float(against / promised) if promised else math.nan,
+                     "Divines over those hours": sess.get("divines")})
     r = Result("ladder-rates", REPORT if rows else THIN, 1, None, {"league": league}, rows,
                notes=["Promised is what today's order levels promise; replayed is what the same rule made over the "
-                      "last week. One league, as of its latest hour."])
+                      "last week at each pick's own stake, in whole lots; vs Divines is that less what holding "
+                      "Divines made over the same hours. One league, as of its latest hour."])
     r.seconds = time.perf_counter() - t0
     return r
 
