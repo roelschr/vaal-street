@@ -95,7 +95,7 @@ class App:
             return chosen
         newest = max(l["last_hour"] for l in leagues)
         live = [l for l in leagues if l["last_hour"] >= newest - 6 * HOUR]
-        challenge = [l for l in live if l["kind"] == "challenge"] or live
+        challenge = [l for l in live if l["family"] == "challenge"] or live
         return max(challenge, key=lambda l: l["value"] / max(l["hours"], 1))["league"]
 
     def desk(self, league: str | None = None) -> Desk:
@@ -383,6 +383,9 @@ class App:
         out["divine_outlook"] = book.divine_outlook(league)
         return out
 
+    def api_cross_league(self, q: dict) -> dict:
+        return self.book().cross_league(q.get("league") or self.default_league(), days=int(q.get("days", 7)))
+
     def api_curve(self, q: dict) -> dict:
         return {"curve": self.book().curve(q["id"], max_day=int(q.get("max_day", 90)))}
 
@@ -666,6 +669,7 @@ def _flag(row: dict, checks: dict) -> None:
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
+    "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
     "/api/alerts": "api_alerts", "/api/events": "api_events",
 }

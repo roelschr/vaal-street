@@ -42,7 +42,7 @@ def _league(con, args) -> str:
     rows = con.execute(
         """
         SELECT league FROM leagues
-        WHERE kind = 'challenge' AND last_hour >= (SELECT max(last_hour) FROM leagues) - INTERVAL 6 HOUR
+        WHERE family = 'challenge' AND last_hour >= (SELECT max(last_hour) FROM leagues) - INTERVAL 6 HOUR
         ORDER BY value / hours DESC LIMIT 1
         """
     ).fetchall()
@@ -387,6 +387,28 @@ def _playbook(args: argparse.Namespace) -> None:
     _table(rows[::-1], columns, half)
 
 
+def _cross_league(args: argparse.Namespace) -> None:
+    from vaalstreet.leagues import LeagueBook
+
+    con = connect()
+    league = _league(con, args)
+    out = LeagueBook(con).cross_league(league, days=args.days)
+    if not out["others"]:
+        print(f"No Hardcore, Ruthless or Standard markets to compare {league} with.")
+        return
+    print(f"{league}: the same item in {', '.join(out['others'])} over the last {args.days} days, in each league's own"
+          " Divines. A structural gap kept its sign and size day after day; noise flips or closes."
+          " Items cannot move between leagues, so this is a guide to reading their prices, not a trade.")
+    print("\nThe Divine in Chaos, against this league:")
+    _table(out["divine"], [("other", "League", ""), ("gap", "Gap", "+.0%"), ("days", "Days", ""),
+                           ("verdict", "Verdict", "")], len(out["divine"]))
+    rows = [r for r in out["items"] if args.all or r["verdict"] == "structural"]
+    print(f"\n{'Every gap' if args.all else 'Structural gaps'} (other league / this league - 1):")
+    _table(rows, [("name", "Item", ""), ("market", "Market", ""), ("other", "League", ""), ("gap", "Gap", "+.0%"),
+                  ("same_sign", "Same way", ".0%"), ("days", "Days", ""), ("hours", "Hours", ""),
+                  ("verdict", "Verdict", "")], args.rows)
+
+
 def _backtest(args: argparse.Namespace) -> None:
     con = connect()
     params = json.loads(args.params) if args.params else {}
@@ -638,6 +660,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-leagues", type=int, default=2)
     p.add_argument("--rows", type=int, default=30)
     p.set_defaults(run=_playbook)
+
+    p = commands.add_parser("cross-league", help="the same items in this league's Hardcore, Ruthless and Standard: "
+                                                 "which price gaps are real and which close")
+    p.add_argument("--league")
+    p.add_argument("--days", type=int, default=7, help="how many recent days to compare (default 7)")
+    p.add_argument("--all", action="store_true", help="show the noisy gaps too, not only the structural ones")
+    p.add_argument("--rows", type=int, default=30)
+    p.set_defaults(run=_cross_league)
 
     p = commands.add_parser("backtest", help="replay a strategy over one or more leagues")
     p.add_argument("strategy", nargs="+",

@@ -45,6 +45,12 @@ EVENT_AFTER_DAYS = 7  # an event starts at least this long after the league it r
 EVENT_OVERLAP_DAYS = 3  # ...and that league is still trading this long after the event began
 SOFTCORE = ("challenge", "event")  # the families the league page lines up
 
+# A cross-league gap is "structural" when it lasted this many days, kept its sign this often, and is this big.
+STRUCTURAL_DAYS = 3
+STRUCTURAL_SIGN = 0.8
+STRUCTURAL_SIZE = 0.03
+STRUCTURAL_HOURS = 12  # ...on at least this many hours that both leagues traded
+
 
 def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, str]]:
     """League name -> (family, base league), from the names and the dates each league traded.
@@ -345,3 +351,86 @@ class LeagueBook:
         ]
         items.sort(key=lambda row: row["vs_typical"] or 0)
         return {"league": current, "day": day, "unit": unit, "precedents": past, "items": items}
+
+    # --------------------------------------------------------- cross-league
+    def cross_league(self, current: str, *, days: int = 7, min_value: float = 50.0) -> dict:
+        """The same item, the same hour, in this league's Hardcore, Ruthless and Standard markets.
+
+        Each league has its own Chaos, worth a different number of Divines, so a raw Chaos gap mostly
+        repeats the gap in the Divine rate. Items are therefore compared in each league's own Divines:
+        Chaos-market prices divided by that hour's Divine price in the same league, and Divine-market
+        prices as they trade. The Chaos and Divine markets are compared separately, never mixed. The
+        Divine rate itself gets a row of its own.
+
+        Per item, market and other league: the hourly gap (other / this - 1) on hours both traded at
+        least `min_value` Chaos, its median per day over the last `days` days, and then:
+            gap        the median of those daily gaps
+            same_sign  the share of days whose gap had the sign of `gap`
+            spread     how much the daily gap wanders (standard deviation of its log)
+        A gap is "structural" when it held on at least STRUCTURAL_DAYS days (and STRUCTURAL_HOURS hours), kept its sign on at least
+        STRUCTURAL_SIGN of them, is at least STRUCTURAL_SIZE, and wanders less than its own size.
+        It is "none" when it stayed within STRUCTURAL_SIZE of zero, and "noise" otherwise: it flips or closes. Items cannot move between leagues, so a gap is not
+        a trade; it says which differences are real when you read prices from the other leagues.
+        """
+        others = self._rows(
+            """
+            SELECT league, family FROM leagues
+            WHERE (base = $l AND league <> $l AND family NOT LIKE '%_ssf') OR family = 'standard'
+            ORDER BY family
+            """,
+            {"l": current},
+        )
+        end = self._rows("SELECT epoch(last_hour)::BIGINT AS t, epoch(first_hour)::BIGINT AS f FROM leagues "
+                         "WHERE league = $l", {"l": current})
+        if not end:
+            raise LookupError(f"Unknown league {current!r}")
+        out = {"league": current, "days": days, "others": [r["league"] for r in others], "items": [],
+               "divine": []}
+        if not others:
+            return out
+        rows = self._rows(
+            """
+            WITH win AS (
+                SELECT p.*, d.price AS div
+                FROM prices p JOIN prices d ON d.league = p.league AND d.hour = p.hour AND d.item = $bridge
+                WHERE p.league IN $leagues AND p.hour > to_timestamp($end) - to_days($days)
+                  AND p.hour <= to_timestamp($end)
+            ), sides AS (
+                SELECT league, hour, item, 'chaos' AS market,
+                       CASE WHEN item = $bridge THEN r_price ELSE r_price / div END AS p, r_volume * r_price AS v
+                FROM win WHERE r_price > 0
+                UNION ALL
+                SELECT league, hour, item, 'divine', b_price / div, b_volume * b_price
+                FROM win WHERE b_price > 0 AND item <> $bridge
+            ), pairs AS (
+                SELECT o.league AS other, h.item, h.market,
+                       date_diff('hour', to_timestamp($start), h.hour) // 24 AS day, ln(o.p / h.p) AS g
+                FROM sides h JOIN sides o ON o.hour = h.hour AND o.item = h.item AND o.market = h.market
+                WHERE h.league = $l AND o.league <> $l AND h.v >= $min_value AND o.v >= $min_value
+            ), daily AS (
+                SELECT other, item, market, day, median(g) AS g, count(*) AS hours
+                FROM pairs GROUP BY ALL
+            )
+            SELECT d.other, d.item, i.name, d.market, count(*) AS n_days, sum(hours) AS hours,
+                   median(g) AS g, stddev_samp(g) AS spread,
+                   avg(CASE WHEN sign(g) = sign(m.mg) THEN 1.0 ELSE 0.0 END) AS same_sign
+            FROM daily d JOIN items i USING (item)
+            JOIN (SELECT other, item, market, median(g) AS mg FROM daily GROUP BY ALL) m USING (other, item, market)
+            GROUP BY d.other, d.item, i.name, d.market
+            """,
+            {"bridge": self.bridge, "leagues": [current] + out["others"], "end": end[0]["t"], "start": end[0]["f"],
+             "days": days, "l": current, "min_value": min_value},
+        )
+        family = {r["league"]: r["family"] for r in others}
+        for r in rows:
+            g, spread = r["g"], r["spread"] or 0.0
+            structural = (r["n_days"] >= STRUCTURAL_DAYS and r["hours"] >= STRUCTURAL_HOURS and r["same_sign"] >= STRUCTURAL_SIGN
+                          and abs(g) >= math.log1p(STRUCTURAL_SIZE) and spread < abs(g))
+            quiet = r["n_days"] >= STRUCTURAL_DAYS and abs(g) < math.log1p(STRUCTURAL_SIZE) and spread < STRUCTURAL_SIZE
+            row = {"other": r["other"], "family": family[r["other"]], "id": r["item"], "name": r["name"],
+                   "market": r["market"], "gap": _num(math.expm1(g), 4), "same_sign": _num(r["same_sign"], 3),
+                   "spread": _num(spread, 3), "days": int(r["n_days"]), "hours": int(r["hours"]),
+                   "verdict": "structural" if structural else "none" if quiet else "noise"}
+            (out["divine"] if r["item"] == self.bridge else out["items"]).append(row)
+        out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]), -abs(x["gap"] or 0)))
+        return out
