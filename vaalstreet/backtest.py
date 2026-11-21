@@ -530,6 +530,7 @@ class Simulation:
                 total = float(cost.sum())
                 scale = min(1.0, self.cash / total) if total > 0 else 0.0
                 units = np.where(hit, want, 0.0) * scale
+                hit &= units > 0  # an order that found no cash left did not fill
                 self._bought(units, cost * scale, hit)
                 book.buy_units = book.buy_units - units
                 self.wallet.take(t, key, "buy", units)

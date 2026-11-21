@@ -353,6 +353,7 @@ def test_a_portfolio_settles_in_the_order_given_on_shared_cash_and_volume():
     assert a.position[0] == 25 and b.position[0] == 0
     assert result.cash[-1] == pytest.approx(0) and [m["strategy"] for m in result.members] == ["first", "second"]
     assert result.members[0]["peak_capital"] == 250 and result.members[1]["peak_capital"] == 0
+    assert result.members[1]["fills"] == 0, "a buy that finds no cash left is not a fill"
 
 
 def test_portfolio_shares_add_up_and_one_strategy_alone_matches_a_plain_run(con):
