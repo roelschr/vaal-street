@@ -213,7 +213,7 @@ async function viewMarkets(main) {
     const t = table([
       { h: '', l: 1, f: r => `<button class="star ${r.watched ? 'on' : ''}" data-watch="${esc(r.id)}" title="Watch">★</button>` },
       { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
-      { h: 'Price', f: r => money(r.price), s: r => r.price },
+      { h: 'Price', f: r => `${money(r.price)}${fairRange(r)}`, s: r => r.price, title: 'Fair value, and how far either side of it the item’s worth plausibly sits right now' },
       { h: '24h', f: r => pct(r.change_24h), s: r => r.change_24h },
       { h: '7d', f: r => pct(r.change_7d), s: r => r.change_7d },
       { h: 'vs Chaos', f: r => money(r.chaos), s: r => r.chaos, title: 'Typical price in the item-for-Chaos market' },
@@ -238,6 +238,12 @@ async function viewMarkets(main) {
   draw();
 }
 
+// "±0.3%" after a fair value: half the width of its likely range, with the range itself on hover.
+function fairRange(r) {
+  if (r.fair_low == null || r.fair_high == null || !r.price) return '';
+  const half = (r.fair_high - r.fair_low) / 2 / r.price, unit = state.unit === 'divine' && state.bridge ? state.bridge : 1;
+  return `<span class="dim small" title="Likely between ${fmt(r.fair_low / unit)} and ${fmt(r.fair_high / unit)} ${unit === 1 ? 'Chaos' : 'Divine'}"> ±${(half * 100).toFixed(half < 0.01 ? 2 : 1)}%</span>`;
+}
 // Where each Gold fee came from, in words: the fee schedule is not published, so it is learned or assumed.
 const feeSource = r => (r.gold_sources || []).map(x => x.source === 'your trades' ? `from your trades (${x.trades})` : x.source === 'your assumption' ? 'your assumed fee' : 'unknown').filter((v, i, a) => a.indexOf(v) === i).join(', ');
 const goldCell = (r, value) => r.gold == null
@@ -772,7 +778,7 @@ async function openItem(id, hours = 168) {
     <div class="item" style="margin-bottom:4px">${icon(s.id)}<h1>${esc(s.name)}</h1></div>
     <div class="muted" style="margin-bottom:12px">${esc(s.category)}${d.meta.set ? ` · ${d.meta.set.need} turn into ${d.meta.set.gives} ${esc(d.meta.set.reward)}` : ''}</div>
     <div class="kpis">
-      <div class="kpi"><span>Fair value</span><b>${money(row.price)}</b><i>${pct(row.change_24h)}</i></div>
+      <div class="kpi"><span>Fair value</span><b>${money(row.price)}</b><i>${pct(row.change_24h)}</i>${row.fair_low != null ? `<div class="muted small">likely ${money(row.fair_low)} to ${money(row.fair_high)}</div>` : ''}</div>
       <div class="kpi"><span>vs Chaos</span><b>${money(row.chaos)}</b></div>
       <div class="kpi"><span>vs Divine</span><b>${money(row.divine)}</b><i>${pct(row.premium)}</i></div>
       <div class="kpi"><span>Traded 24h</span><b>${money(row.value_24h)}</b></div>
@@ -780,7 +786,7 @@ async function openItem(id, hours = 168) {
     ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
-    <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
+    <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#b2ef7840;height:8px"></i>Its likely range</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
     <div id="pc"></div>
     <h2 style="margin:18px 0 8px">Flip plans</h2><div class="orders" id="plans"></div>
     ${d.conversions.length ? `<h2 style="margin:18px 0 8px">Sets</h2><div class="orders">${d.conversions.map(c => `<div class="order"><b>${c.need} ${esc(c.name)}</b> → ${c.gives} ${esc(c.reward)}<div class="big">${pct(c.margin)}</div><span class="muted small">Costs ${money(c.cost)}, worth ${money(c.proceeds)}</span></div>`).join('')}</div>` : ''}
@@ -794,7 +800,8 @@ async function openItem(id, hours = 168) {
       { label: 'Fair value', color: '#b2ef78', x: s.t, y: conv(s.fair), width: 2, bridge: true },
       { label: 'Chaos market', color: '#d9a05b', x: s.t, y: conv(s.chaos), dots: true },
       { label: 'Divine market', color: '#8fb8f2', x: s.t, y: conv(s.divine), dots: true },
-    ], bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
+    ], band: { label: 'Fair value range', x: s.t, lo: conv(s.fair_low), hi: conv(s.fair_high), color: '#b2ef7826' },
+    bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
