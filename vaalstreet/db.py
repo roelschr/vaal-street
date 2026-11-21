@@ -30,12 +30,12 @@ PERMANENT_LEAGUES = ("Standard", "Hardcore", "Ruthless", "Hardcore Ruthless")
 
 _VIEWS = r"""
 CREATE VIEW markets AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE VIEW legs AS {legs};
 
 CREATE VIEW prices AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE TABLE leagues AS
 SELECT league,
@@ -63,8 +63,13 @@ def has_data(root: Path | None = None, realm: str = "poe1") -> bool:
     return any((prices_dir(root) / f"realm={realm}").glob("month=*/data.parquet"))
 
 
-def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyConnection:
-    """Open an in-memory DuckDB with the views above. Run `vaal sync` first."""
+def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None = None) -> duckdb.DuckDBPyConnection:
+    """Open an in-memory DuckDB with the views above. Run `vaal sync` first.
+
+    `until` (unix seconds) hides every hour after it, so the archive looks exactly as it did then:
+    league ends, families, precedents and fair value all follow. The league report uses it to keep
+    a past day's page free of anything published later.
+    """
     root = root or data_dir()
     if not has_data(root, realm):
         raise FileNotFoundError(f"No {realm} data under {root}. Run `python -m vaalstreet sync` first.")
@@ -101,6 +106,7 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
         _VIEWS.format(
             markets=markets, prices=prices, realm=realm, permanent=PERMANENT_LEAGUES,
             legs=LEGS_SQL.format(markets="markets"),
+            until="" if until is None else f" AND hour <= to_timestamp({int(until)})",
         )
     )
     _add_families(con)
