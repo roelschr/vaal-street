@@ -27,6 +27,11 @@ BLADE_CARD = "Metadata/Items/DivinationCards/DivinationCardTestBlade"
 OTHER = "Metadata/Items/Currency/CurrencyTestShard"
 EMBER = "Metadata/Items/Currency/CurrencyTestEmber"
 EMBER_PREMIUM = 0.95  # unlike the orb, the ember's Divine market is 5% cheaper than its Chaos market
+SCRAP = "Metadata/Items/Currency/CurrencyTestScrap"
+# A cheap item whose Divine market trades at 2.8 times its Chaos market, as cheap items do on live data
+# (Tainted Armourer's Scrap: about 6.4 c through Divines against 2.1 c for Chaos). Flip levels in its
+# Divine market must sit near 2.8 x 2 = 5.6 Chaos, not be capped at 1.5x the blended value.
+SCRAP_PREMIUM = 2.8
 OLD, NEW = "Old", "New"
 OLD_HOURS, NEW_START, NEW_HOURS = 20 * 24, 30 * 24, 8 * 24
 PREMIUM = 1.10  # the Divine market pays 10% more than the Chaos market
@@ -111,7 +116,7 @@ def side_markets(hour: int) -> list[dict]:
     return markets
 
 
-def digest(hour: int) -> dict:
+def digest(hour: int, scrap: bool = False) -> dict:
     markets = side_markets(hour)
     for league, start, length in ((OLD, 0, OLD_HOURS), (NEW, NEW_START, NEW_HOURS)):
         h = (hour - H0) // HOUR - start
@@ -133,6 +138,9 @@ def digest(hour: int) -> dict:
             market(league, LURE, CHAOS, lure_units(league, h), 3 * lure_units(league, h)),
             market("Dead (PL1)", ITEM, CHAOS, 0, 0),
         ]
+        if scrap:  # 2 Chaos each (+-5% every 12 hours, like the orb), and 2.8 times that through Divines
+            markets += [market(league, SCRAP, CHAOS, 3000, round(3000 * 2 * p / item_price(league, 0))),
+                        market(league, SCRAP, DIVINE, 300, round(300 * 2 * SCRAP_PREMIUM * p / item_price(league, 0) / div))]
     return {"next_change_id": hour + HOUR, "markets": markets}
 
 
@@ -141,22 +149,21 @@ def all_hours() -> list[int]:
     return [H0 + h * HOUR for h in list(range(OLD_HOURS)) + list(range(NEW_START, NEW_START + NEW_HOURS))]
 
 
-def write_raw(root, hours) -> None:
+def write_raw(root, hours, scrap: bool = False) -> None:
     for hour in hours:
         path = hour_path(root, "poe1", hour)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(gzip.compress(json.dumps(digest(hour)).encode()))
+        path.write_bytes(gzip.compress(json.dumps(digest(hour, scrap)).encode()))
 
 
-@pytest.fixture(scope="session")
-def archive_root(tmp_path_factory):
-    root = tmp_path_factory.mktemp("data")
-    write_raw(root, all_hours())
+def build_archive(root, hours, scrap: bool = False):
+    write_raw(root, hours, scrap)
     meta = items.build({
         CHAOS: {"name": "Chaos Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         DIVINE: {"name": "Divine Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         ITEM: {"name": "Test Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         OTHER: {"name": "Test Shard", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
+        SCRAP: {"name": "Test Scrap", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         LURE: {"name": "Test Lure", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         EMBER: {"name": "Test Ember", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         CARD: {"name": "Test Card", "item_class": "DivinationCard", "tags": ["divination_card"],
@@ -170,6 +177,18 @@ def archive_root(tmp_path_factory):
     items.load.cache_clear()
     ingest(root, log=None)
     return root
+
+
+@pytest.fixture(scope="session")
+def archive_root(tmp_path_factory):
+    return build_archive(tmp_path_factory.mktemp("data"), all_hours())
+
+
+@pytest.fixture(scope="session")
+def scrap_root(tmp_path_factory):
+    """The New league alone, plus Test Scrap, whose Divine market is 2.8 times its Chaos market."""
+    return build_archive(tmp_path_factory.mktemp("scrap"), [H0 + h * HOUR for h in range(NEW_START, NEW_START + NEW_HOURS)],
+                         scrap=True)
 
 
 @pytest.fixture()

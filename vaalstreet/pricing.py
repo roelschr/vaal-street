@@ -38,6 +38,8 @@ from vaalstreet.panel import rolling, rolling_quantile
 _EPS = 1e-12
 # A far print confirms a reprice only if it traded at least this share of a typical hour's units.
 CONFIRM_UNITS = 0.5
+# Never place a flip level more than about 1.5x from its market's fair value: beyond that the print was an empty book.
+MAX_SWING = math.log(1.5)
 
 
 @dataclass
@@ -377,6 +379,29 @@ def leg_premium(r_price: np.ndarray, b_price: np.ndarray, window: int = 24, min_
     with np.errstate(divide="ignore", invalid="ignore"):
         gap = np.log(b_price / r_price)
     return rolling(np.where(np.isfinite(gap), gap, np.nan), window, np.nanmedian, min_count)
+
+
+def prior(a: np.ndarray) -> np.ndarray:
+    """[T, N] each row replaced by the row before it (the first row by itself): what was known before hour t."""
+    return np.vstack([a[:1], a[:-1]])
+
+
+def leg_deviation(price: np.ndarray, fair: np.ndarray, leg_fair: np.ndarray, max_swing: float = MAX_SWING) -> np.ndarray:
+    """[T, N] log(one market's hourly price / the item's fair value known before that hour).
+
+    This is what flip levels are drawn from (`Desk.flips`, `Simulation.swing`). A print far out of line
+    was an empty book, not a level, so each deviation is clipped to within `max_swing` of *that market's
+    own* fair value, also as known before the hour. The two markets of an item are different prices: a
+    cheap item's Divine market can trade at three times its Chaos market, and clipping around the
+    blended value would cap a Divine-market level far below where that market really trades.
+    Where the market has no fair value yet, the clip is around the blended value.
+    """
+    before, leg_before = prior(fair), prior(leg_fair)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dev = np.log(price / before)
+        centre = np.log(leg_before / before)
+    centre = np.where(np.isfinite(centre), centre, 0.0)
+    return np.where(np.isfinite(dev), np.clip(dev, centre - max_swing, centre + max_swing), np.nan)
 
 
 def activity(price: np.ndarray, window: int = 24) -> np.ndarray:

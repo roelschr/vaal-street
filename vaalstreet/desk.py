@@ -41,7 +41,6 @@ PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of a market's volume that trades bey
 # A market's hourly average sometimes prints far from fair value because the book was empty and somebody
 # paid a whole Divine for three oils. That is not a level a second seller could count on, so order levels
 # are never placed more than this far (in log terms, about 1.5x) from fair value.
-MAX_SWING = math.log(1.5)  # keep in step with backtest.MAX_SWING
 PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
 PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
 REPLAY_DAYS = 7
@@ -368,18 +367,16 @@ class Desk:
                            until=None if as_of is None else last)
         fv = pricing.fair_value(panel["price"], panel["value"])
         # A print is compared with the fair value known *before* it, so a leg cannot explain itself.
-        prior = np.vstack([fv.fair[:1], fv.fair[:-1]])[-SWING_WINDOW:]
         legs = {}
         for key, label in (("r", "Chaos"), ("b", "Divine")):
             price, lo, hi, vol = panel[f"{key}_price"], panel[f"{key}_lo"], panel[f"{key}_hi"], panel[f"{key}_volume"]
             leg_fv = pricing.fair_value(price, vol * price)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                dev = np.log(price[-SWING_WINDOW:] / prior)
+            dev = pricing.leg_deviation(price, fv.fair, leg_fv.fair)[-SWING_WINDOW:]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 low, high = np.nanmedian(lo[-DAY:], axis=0), np.nanmedian(hi[-DAY:], axis=0)
             legs[key] = Leg(
-                label, leg_fv.fair, np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan),
+                label, leg_fv.fair, dev,
                 np.nan_to_num(vol[-SWING_WINDOW:]),
                 pricing.trailing_sum(vol, DAY)[-1] / DAY,
                 pricing.activity(price, DAY)[-1], _age(price), low, high,

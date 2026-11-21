@@ -44,7 +44,6 @@ from vaalstreet import pricing
 from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling, rolling_weighted_quantile
 
 LEG_KEYS = ("r", "b")
-MAX_SWING = math.log(1.5)
 RISK_Z = 1.645  # one-sided 95%: a bad day, about 1 in 20
 RISK_WINDOW = 168  # hours of fair-value moves the volatility is measured over
 
@@ -467,6 +466,7 @@ class Simulation:
         if model_from is not None:  # a portfolio fits the model once and shares it
             self.fair, self.z, self._mark, self._drop = model_from.fair, model_from.z, model_from._mark, model_from._drop
             self._swing = model_from._swing
+            self._leg_fair = model_from._leg_fair
             self._resting = model_from._resting
         else:
             fv = pricing.fair_value(panel["price"], panel["value"])
@@ -474,6 +474,7 @@ class Simulation:
             self._mark = ffill(self.fair)
             self._drop = drop_per_unit(self._mark, risk_hours)
             self._swing: dict[tuple[str, float], np.ndarray] = {}
+            self._leg_fair: dict[str, np.ndarray] = {}
             self._resting: dict[tuple[str, str], np.ndarray] = {}
         self.fills = 0
         self.sales = np.zeros(n, dtype=np.int64)  # hours in which each item sold
@@ -499,13 +500,17 @@ class Simulation:
         The level below which `reach` of the leg's units traded over the trailing window."""
         key = (leg, reach)
         if key not in self._swing:
-            prior = np.vstack([self.fair[:1], self.fair[:-1]])
-            with np.errstate(divide="ignore", invalid="ignore"):
-                dev = np.log(self.panel[f"{leg}_price"] / prior)
-            # Never place a level more than ~1.5x from fair value: beyond that the print was an empty book.
-            dev = np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan)
+            # Never more than ~1.5x from that market's own fair value: beyond that the print was an empty book.
+            dev = pricing.leg_deviation(self.panel[f"{leg}_price"], self.fair, self.leg_fair(leg))
             self._swing[key] = rolling_weighted_quantile(dev, self.panel[f"{leg}_volume"], window, reach, min_count=12)
         return self._swing[key]
+
+    def leg_fair(self, leg: str) -> np.ndarray:
+        """[T, N] one market's own causal fair value (the same model as the item's, on that market's prints)."""
+        if leg not in self._leg_fair:
+            price = self.panel[f"{leg}_price"]
+            self._leg_fair[leg] = pricing.fair_value(price, self.panel[f"{leg}_volume"] * price).fair
+        return self._leg_fair[leg]
 
     def equity_now(self, t: int) -> float:
         return float(self.cash + np.nansum(self.position * np.nan_to_num(self._mark[t])))
