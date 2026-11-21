@@ -38,7 +38,7 @@ To try the CLI or the server without touching the user's archive, set `VAAL_DATA
 
 ## Ask before you do these
 
-- **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and nothing can rebuild it. The raw archive is about 1.5 GB and takes hours to download again.
+- **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and `strategies/` holds strategy code they imported; nothing can rebuild either. The raw archive is about 1.5 GB and takes hours to download again.
 - **Start a large download.** Examples are `sync --all` or a backfill into the real data directory. These put load on GGG's servers and on the user's connection.
 - **Add a runtime dependency.** The package has only three today.
 
@@ -53,6 +53,7 @@ These rules hold across the code base. If a change you want to make would break 
 - **Derived data carries a version.** Existing installs rebuild derived files only when the version changes. If you change how hourly prices are derived in `ingest.py`, bump `PRICES_VERSION`. If `items.build` learns something new, bump `VERSION` in `items.py`. Without the bump, users keep their old files and your change does nothing for them.
 - **Tests stay offline.** `tests/conftest.py` builds a small synthetic exchange archive with known prices, premiums and recipes. `tests/test_data.py` serves digests from a local HTTP server and passes its address as `base_url`. New tests should use the same approach, so that the suite stays fast and its answers stay known. If a model change needs a property the synthetic archive lacks, extend the archive and state the new known answer in a comment.
 - **Local and read-only.** The server binds to `127.0.0.1` and rejects requests whose Host or Origin is not local; keep those checks. The only outbound traffic is read-only requests for exchange digests, the item export and item icons, sent with the `POE_USER_AGENT` identification string. There are no accounts, no tokens and no in-game automation. The README promises this to users.
+- **Shared strategies are code.** `strategy import` parses the file without running or importing it, shows the source under a warning, saves it only with `--yes`, and never overwrites a file. Export writes a local file only; nothing is uploaded.
 - **GGG's assets are not committed.** Item icons are fetched at run time and cached in the data directory. The README's license section depends on this.
 
 ## Code and writing style

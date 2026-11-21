@@ -11,7 +11,10 @@ published per market and hour - the average traded price (VWAP) and the volume:
   the extreme do not count. It never gets a better price than L.
 * A market order (no limit) pays the hour's VWAP plus `slippage`, the taker's
   cost of crossing the spread.
-* A fill takes at most `participation` of the hour's volume in that market.
+* A fill takes at most `participation` of the hour's volume in that market. With
+  `fill_model="queue"`, a resting order instead waits behind the stock published on its
+  side when it was posted (see `Simulation._queue_at`), and fills from the volume that trades
+  through its level after that queue is gone.
 * No leverage, no shorting: buys are scaled to cash, sells to inventory.
 
 Orders live in one of two markets per item: "r" (against Chaos) or "b" (against
@@ -19,7 +22,9 @@ Divine). Divine proceeds are converted to Chaos at that hour's Divine price, so
 the account is kept in Chaos throughout.
 
 A strategy is any object with `step(ctx)`; see `Hold`, `Swing`, `Reversion`,
-`Momentum` below, or pass your own class to `run`.
+`Momentum` below, or pass your own class to `run`. `run_portfolio` runs several on one
+bankroll (see `Portfolio`). Every result also records the holdings at fair value and what
+they would lose if each item fell one fair-value range: the inventory risk.
 """
 
 from __future__ import annotations
