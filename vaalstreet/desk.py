@@ -888,7 +888,6 @@ class Desk:
 
         for start in list(edges):
             walk([start], [], [], [], math.inf, DAY, math.inf)
-        out = [(costs or Costs()).loop(row, ref) for row in out]
         out.sort(key=lambda row: -(row["profit_per_day"] or 0))
         # Divine markets are deep, and one item that is cheap through Divines pairs with every item
         # that is dear through them, so Divine paths would crowd out everything else. Keep the best
@@ -903,7 +902,7 @@ class Desk:
                     continue
                 seen.update((start, bought))
             kept.append(row)
-        return kept
+        return [(costs or Costs()).loop(row, ref) for row in kept]
 
     def triangles(self, min_value: float = 500.0) -> list[dict]:
         """Item-vs-item markets whose traded rate disagrees with the two items' own prices."""
