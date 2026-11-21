@@ -630,7 +630,10 @@ def _report(args: argparse.Namespace) -> None:
     con = connect()
     league = _league(con, args)
     con.close()
-    report.write(None, Path(args.out), league, args.day, all_days=args.all_days)
+    try:
+        report.write(None, Path(args.out), league, args.day, all_days=args.all_days)
+    except (LookupError, ValueError) as e:
+        sys.exit(str(e))
     print("Nothing was uploaded. The folder is yours to publish wherever you like, or to keep.", file=sys.stderr)
 
 

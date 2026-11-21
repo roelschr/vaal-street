@@ -105,11 +105,12 @@ def _build(con, root, league: str, day: int, realm: str) -> dict:
     out["meta"] = sorted(meta["items"], key=lambda r: (-(r["vs_past_high"] or 0), r["id"]))
     cross = book.cross_league(league)
     # One short table per other league, Hardcore first: Standard's old economy has huge gaps that would
-    # otherwise fill the whole list.
+    # otherwise fill the whole list. Within a league the gaps seen on the most hours come first; ranked by
+    # size, thin markets with a few odd prints would top every table.
     out["gaps"] = {}
     for other in sorted(cross["others"], key=lambda o: ("standard" in _family(cross, o), o)):
         rows_ = sorted((r for r in cross["items"] + cross["divine"] if r["verdict"] == "structural" and r["other"] == other),
-                       key=lambda r: (-abs(math.log1p(r["gap"] or 0)), r["id"], r["market"]))[:GAP_ROWS]
+                       key=lambda r: (-r["hours"], -abs(math.log1p(r["gap"] or 0)), r["id"], r["market"]))[:GAP_ROWS]
         if rows_:
             out["gaps"][other] = rows_
     return out
@@ -138,7 +139,13 @@ def _divine(con, book: LeagueBook, league: str, day: int, desk: Desk) -> dict | 
             prev = c.get(day - 1)
             past.append({"league": name, "price": c[day], "change": c[day] / prev - 1 if prev else None})
     timing = book.divine_timing(league) if precedents else None
+    # The comparison row uses this league's daily average and day-on-day move, as the past leagues' rows do;
+    # the header keeps the latest hour.
+    daily = dict(own)
+    today = daily.get(day)
+    prev = daily.get(day - 1)
     return {"price": s["bridge"], "change": s["bridge_change_24h"], "own": own, "past": past,
+            "today": today, "today_change": today / prev - 1 if today and prev else None,
             "advice": timing["advice"] if timing and timing["by_league"] else None}
 
 
@@ -300,9 +307,10 @@ def _render_divine(data: dict) -> str:
     if d["past"]:
         rows = [[_td(_e(r["league"])), _td(chaos(r["price"])), _td(pct(r["change"]), _tone(r["change"]))]
                 for r in d["past"]]
-        rows.insert(0, [_td(f"<b>{_e(data['league'])}</b> (this league)"), _td(chaos(d["price"])),
-                        _td(pct(d["change"]), _tone(d["change"]))])
-        body.append(_table(["League", f"Divine on day {data['day']}", "Move that day"], rows))
+        rows.insert(0, [_td(f"<b>{_e(data['league'])}</b> (this league)"), _td(chaos(d["today"])),
+                        _td(pct(d["today_change"]), _tone(d["today_change"]))])
+        body.append(_table(["League", f"Average Divine price on day {data['day']}", "Move from the day before"],
+                           rows))
     if d["advice"]:
         body.append(f'<p class="muted">{_e(d["advice"])}</p>')
     intro = (f"One Divine Orb costs {chaos(d['price'])} Chaos, {pct(d['change'])} over the last 24 hours."
@@ -405,7 +413,7 @@ def _render_gaps(data: dict) -> str:
                  _td(pct(r["gap"]), _tone(r["gap"])), _td(f'{r["days"]}')] for r in items]
         body += f"<h3>{_e(other)}</h3>" + _table(["Item", "Market", "Price there, against here", "Days"], rows)
     intro = ("Prices that sat steadily higher or lower in this league's Hardcore and Standard markets over the last "
-             "week, each counted in its own league's Divine Orbs. Items cannot move between leagues, so these are "
+             "week, each counted in its own league's Divine Orbs, the ones seen on the most hours first. Items cannot move between leagues, so these are "
              "not trades; they say which differences are real when you read prices from the other leagues. "
              "Standard has run for years, so its prices are often far from a new league's.")
     return _section("Steady gaps against Hardcore and Standard", intro, body)

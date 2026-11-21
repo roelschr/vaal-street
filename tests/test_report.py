@@ -31,6 +31,10 @@ def test_divine_against_past_leagues(new_day7):
     assert d["own"][7][1] == pytest.approx(100 + 0.25 * (7 * 24 + 11.5), rel=1e-3)
     assert d["past"][0]["change"] == pytest.approx(6 / d["own"][6][1], rel=1e-2)
     assert "The Divine Orb" in page and "One league is not a pattern" in page
+    # The table row for this league is its day 7 average, like Old's row: the same number, printed the same way.
+    rows = re.findall(r"<tr><td>(.*?)</td><td>([^<]*)</td>", page.split("The Divine Orb", 1)[1].split("</section>")[0])
+    printed = {re.sub(r"<[^>]+>", "", k).split(" (")[0]: v for k, v in rows}
+    assert printed[NEW] == printed[OLD] == report.chaos(d["past"][0]["price"])
 
 
 def test_movers_and_most_traded(archive_root, new_day7):
@@ -147,6 +151,9 @@ def test_write_all_days_and_index(archive_root, tmp_path, monkeypatch):
     report.write(archive_root, out, OLD, 2, log=None)
     index = (out / "index.html").read_text()
     assert 'href="old-day-2.html"' in index and 'href="new-day-0.html"' in index
+    assert set(re.findall(r"https?://[^\s\"'<>)]+", index)) == {report.PROJECT_URL, report.API_URL, report.REPOE_URL}
+    for banned in ("<script", "<img", "<link", "url(", "src=", "@import", "xmlns"):
+        assert banned not in index
 
 
 def test_cli(archive_root, tmp_path, monkeypatch, capsys):
@@ -157,3 +164,5 @@ def test_cli(archive_root, tmp_path, monkeypatch, capsys):
     cli.main(["report", "--league", NEW, "--day", "5", "--out", str(out)])
     assert (out / "new-day-5.html").exists() and (out / "index.html").exists()
     assert "Nothing was uploaded" in capsys.readouterr().err
+    with pytest.raises(SystemExit, match="league days 0 to 7"):
+        cli.main(["report", "--league", NEW, "--day", "30", "--out", str(out)])
