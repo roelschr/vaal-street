@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, check, db, items
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, Ledger
+from vaalstreet.ledger import ALERT_FIELDS, SETTINGS, Ledger
 from vaalstreet.paths import data_dir, icons_dir
 
 WEB = Path(__file__).parent / "web"
@@ -252,13 +252,10 @@ class App:
                 "meta": desk.meta.get(series["id"], {}), "alerts": self.ledger.alerts(desk.league)}
 
     def costs(self, league: str) -> Costs:
-        """Gold fees learned from your records, your assumed fee and minutes per order, read fresh
-        on every request so a newly recorded trade counts at once."""
-        settings = self.settings()
-        return Costs(self.ledger.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"])
+        return self.ledger.costs(league)
 
     def settings(self) -> dict:
-        return {key: self.ledger.get(key, default) for key, default in SETTINGS.items()}
+        return self.ledger.settings()
 
     def api_flips(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
@@ -545,11 +542,6 @@ class App:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return data
-
-
-# Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
-# publish the schedule. Minutes per order is a rough guess at your clicking speed.
-SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
 
 
 def _status(found: dict | None) -> str:

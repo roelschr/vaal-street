@@ -168,20 +168,23 @@ def _flips(args: argparse.Namespace) -> None:
 def _ladder(args: argparse.Namespace) -> None:
     from vaalstreet import ladder
     from vaalstreet.desk import Desk
+    from vaalstreet.ledger import Ledger
 
     con = connect()
     desk = Desk.build(con, _league(con, args))
-    out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share)
+    costs = Ledger(data_dir()).costs(desk.league)  # the same Gold fees the desk in the browser uses
+    out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share, costs=costs)
     print(f"{desk.league} - Divine {desk.bridge:.1f}c\n")
     rows = []
     for r in out["ladder"]:
         s = r["session"]
         rows.append({"label": r["label"], "chaos": r["chaos"], "can_run": r["can_run"],
                      "promised": s["expected_per_hour"], "replayed": s["replayed_per_hour"],
-                     "hours": r["hours_to_next"]})
+                     "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
     _table(rows, [("label", "Purse", ""), ("chaos", "Chaos", ",.0f"), ("can_run", "Can run", ""),
                   ("promised", "c/hour now", ",.2f"), ("replayed", "c/hour last week", ",.2f"),
-                  ("hours", "Hours to next", ",.1f")], len(rows))
+                  ("hours", "Hours to next", ",.1f"), ("gold", "Gold/hour", ",.0f")], len(rows))
+    print("Gold/hour is blank until you record the Gold your trades cost, or set an assumed fee in the desk.")
     print("\nWhat opens up at each step:")
     for r in out["ladder"]:
         if r["opens"]:

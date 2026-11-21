@@ -124,7 +124,7 @@ class Costs:
 
     Every order on the exchange costs Gold, and GGG does not publish the schedule. `fees` is
     item id -> {"gold_per_unit", "trades"} as learned from your own records (`Ledger.gold_fees`);
-    `assumed` is a Gold-per-unit you entered for items with no record yet. A learned fee always
+    `assumed` is a Gold-per-unit you entered for items with no record yet (`Ledger.costs` builds both from your ledger). A learned fee always
     wins. With neither, the fee is unknown and every Gold figure built from it is None - the plan
     stays on the board, we just cannot price its Gold. We never guess a schedule.
 

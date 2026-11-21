@@ -93,3 +93,24 @@ def test_cli_ladder(archive_root, tmp_path, monkeypatch, capsys):
     cli.main(["ladder", "--league", NEW, "--from", "25", "--hours", "6"])
     out = capsys.readouterr().out
     assert "Hours to next" in out and "2 Divines (first Divine-market flips): " in out and "From 25 Chaos" in out and "not a promise" in out
+
+
+def test_cli_ladder_uses_the_gold_fees_you_recorded(archive_root, tmp_path, monkeypatch, capsys):
+    from conftest import ITEM
+    from vaalstreet import cli
+    from vaalstreet.ledger import Ledger
+
+    root = tmp_path / "data"
+    shutil.copytree(archive_root, root, ignore=shutil.ignore_patterns("desk.sqlite*"))
+    monkeypatch.setenv("VAAL_DATA_DIR", str(root))
+    cli.main(["ladder", "--league", NEW, "--from", "25"])
+    assert "Gold/hour" in (blind := capsys.readouterr().out)
+    # No fee on record: the 25 Chaos row has no Gold figure.
+    assert next(line for line in blind.splitlines() if line.startswith("25 Chaos")).split()[-1] == "-"
+    # One trade of 10 test orbs that cost 50 Gold: 5 Gold a unit, the same figure the API would use.
+    ledger = Ledger(root)
+    ledger.add_trade(NEW, ITEM, "buy", 10, 9.5, gold=50)
+    assert ledger.costs(NEW).fee(ITEM)[0] == 5
+    cli.main(["ladder", "--league", NEW, "--from", "25"])
+    row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("25 Chaos"))
+    assert row.split()[-1] != "-" and float(row.split()[-1].replace(",", "")) > 0
