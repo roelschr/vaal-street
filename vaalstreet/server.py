@@ -8,6 +8,7 @@ history, the item-name export and (optionally) item icons. The server binds to
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
 import threading
 import time
@@ -20,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from vaalstreet import archive, backtest, check, db, items
-from vaalstreet.desk import Desk, _num
+from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, Ledger, recipe_key
@@ -250,19 +251,38 @@ class App:
         return {"series": series, "flips": plans, "conversions": sets,
                 "meta": desk.meta.get(series["id"], {}), "alerts": self.ledger.alerts(desk.league)}
 
+    def costs(self, league: str) -> Costs:
+        """Gold fees learned from your records, your assumed fee and minutes per order, read fresh
+        on every request so a newly recorded trade counts at once."""
+        settings = self.settings()
+        return Costs(self.ledger.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"])
+
+    def settings(self) -> dict:
+        return {key: self.ledger.get(key, default) for key, default in SETTINGS.items()}
+
     def api_flips(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
         bankroll = float(q["bankroll"]) if q.get("bankroll") else None
+        bankroll = bankroll if bankroll and bankroll > 0 else None
         plans = desk.flips(share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)),
-                           bankroll=bankroll if bankroll and bankroll > 0 else None)
-        return {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))]}
+                           bankroll=bankroll, costs=self.costs(desk.league))
+        out = {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))], "settings": self.settings()}
+        if bankroll:
+            kind = q.get("kind", "all")
+            budget = float(q["gold_budget"]) if q.get("gold_budget") else None
+            out["session"] = session_plan([p for p in plans if kind == "all" or p["kind"] == kind], bankroll,
+                                          budget if budget is not None and budget >= 0 else None)
+        return out
 
     def api_arbitrage(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
         bankroll = float(q["bankroll"]) if q.get("bankroll") else 0.0
         poor = 0 < bankroll < desk.bridge  # cannot hold a single Divine: stay in the Chaos markets
-        return {"summary": desk.summary(), "conversions": desk.conversions(share=float(q.get("share", 0.1))),
-                "loops": desk.loops(chaos_only=poor, share=float(q.get("share", 0.1)))[:80], "chaos_only": poor}
+        costs = self.costs(desk.league)
+        return {"summary": desk.summary(),
+                "conversions": desk.conversions(share=float(q.get("share", 0.1)), costs=costs),
+                "loops": desk.loops(chaos_only=poor, share=float(q.get("share", 0.1)), costs=costs)[:80],
+                "chaos_only": poor, "settings": self.settings()}
 
     def api_league(self, q: dict) -> dict:
         book = self.book()
@@ -444,6 +464,17 @@ class App:
                     self.ledger.delete_alert(body["delete"])
                 else:
                     self.ledger.add_alert(league, body["item"], body["field"], body["op"], body["threshold"])
+            elif path == "/api/settings":
+                for key, value in body.items():
+                    if key not in SETTINGS:
+                        raise ValueError(f"unknown setting {key}")
+                    if value in (None, ""):
+                        self.ledger.set(key, SETTINGS[key])  # empty restores the default (no assumed fee)
+                        continue
+                    value = float(value)
+                    if not (math.isfinite(value) and value >= 0):
+                        raise ValueError(f"{key} must be a number of zero or more")
+                    self.ledger.set(key, value)
             elif path == "/api/league":
                 self.ledger.set("league", body["league"])
             elif path == "/api/sync":
@@ -473,6 +504,10 @@ class App:
         path.write_bytes(data)
         return data
 
+
+# Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
+# publish the schedule. Minutes per order is a rough guess at your clicking speed.
+SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
 
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",

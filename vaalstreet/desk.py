@@ -83,6 +83,175 @@ def kind_currency(plan: dict, side: str) -> bool:
     return plan[f"{side}_order"]["currency"] != "Chaos"
 
 
+@dataclass
+class Costs:
+    """What a plan costs besides Chaos: the Gold its orders take, and your own time.
+
+    Every order on the exchange costs Gold, and GGG does not publish the schedule. `fees` is
+    item id -> {"gold_per_unit", "trades"} as learned from your own records (`Ledger.gold_fees`);
+    `assumed` is a Gold-per-unit you entered for items with no record yet. A learned fee always
+    wins. With neither, the fee is unknown and every Gold figure built from it is None - the plan
+    stays on the board, we just cannot price its Gold. We never guess a schedule.
+
+    Gold is charged per unit of the item an order buys or sells, on each order. Item-for-item swaps
+    cannot be recorded in the ledger, so for round trips we *assume* each swap costs the fee of the
+    item given up, the same as selling it would.
+
+    Time: every order is `minutes_per_order` of your time (an assumption you set; 1 by default).
+    A plan is run as one batch of orders per hour of market time, sized to that hour's expected
+    fills, so Chaos per hour of your own time = Chaos per market hour x 60 / minutes per batch.
+    """
+
+    fees: dict[str, dict] = field(default_factory=dict)
+    assumed: float | None = None
+    minutes_per_order: float = 1.0
+
+    def fee(self, item_id: str) -> tuple[float | None, dict]:
+        """(Gold per unit or None, where it came from)."""
+        learned = self.fees.get(item_id)
+        if learned and learned.get("gold_per_unit") is not None:
+            return float(learned["gold_per_unit"]), {"source": "your trades", "trades": int(learned.get("trades", 0))}
+        if self.assumed is not None:
+            return float(self.assumed), {"source": "your assumption"}
+        return None, {"source": "unknown"}
+
+    def _fields(self, gold: float | None, profit: float | None, passes_per_hour: float | None,
+                orders: int, profit_per_hour: float | None, sources: list[dict]) -> dict:
+        """Trailing fields shared by every kind of plan. `gold` and `profit` are per one pass."""
+        minutes = orders * self.minutes_per_order
+        return {
+            "gold": _num(gold, 4),
+            "gold_per_hour": (_num(gold * passes_per_hour, 4)
+                              if gold is not None and passes_per_hour is not None else None),
+            # A zero fee would make this infinite: say nothing rather than something silly.
+            "chaos_per_1000_gold": _num(1000 * profit / gold, 4) if gold and profit is not None else None,
+            "gold_sources": sources,
+            "orders": orders, "minutes": _num(minutes, 3),
+            "profit_per_own_hour": (_num(profit_per_hour * 60 / minutes, 4)
+                                    if minutes > 0 and profit_per_hour is not None else None),
+        }
+
+    def flip(self, plan: dict) -> dict:
+        """Gold and time for a flip: one pass buys one unit and sells it; two orders a batch."""
+        fee, source = self.fee(plan["id"])
+        edge = (plan["sell"] or 0) - (plan["buy"] or 0)
+        # Units flipped per hour, from the same (possibly bankroll-capped) profit the plan shows.
+        units = (plan["profit_per_hour"] or 0) / edge if edge > 0 else plan.get("units_per_hour")
+        return plan | self._fields(2 * fee if fee is not None else None, edge, units, 2,
+                                   plan["profit_per_hour"], [{"id": plan["id"], **source}])
+
+    def conversion(self, row: dict, chaos_id: str) -> dict:
+        """Buy `need` inputs, sell `gives` results; a result that is Chaos needs no sell order."""
+        fee_in, src_in = self.fee(row["id"])
+        sources, orders = [{"id": row["id"], **src_in}], 1
+        gold = None if fee_in is None else row["need"] * fee_in
+        if row["reward_id"] != chaos_id:
+            fee_out, src_out = self.fee(row["reward_id"])
+            sources.append({"id": row["reward_id"], **src_out})
+            orders += 1
+            gold = None if gold is None or fee_out is None else gold + row["gives"] * fee_out
+        profit = (row["proceeds"] or 0) - (row["cost"] or 0)
+        return row | self._fields(gold, profit, row["sets_per_hour"], orders, row["profit_per_hour"], sources)
+
+    def loop(self, row: dict) -> dict:
+        """Per unit of the first item: buy it, give each item along the path, sell the last."""
+        units, gold, sources = 1.0, 0.0, []
+        for k, step in enumerate(row["path"]):
+            fee, source = self.fee(step["id"])
+            sources.append({"id": step["id"], **source})
+            if fee is None:
+                gold = None
+            elif gold is not None:
+                # Buying the first item, then giving each item up (a swap, or the final sale).
+                gold += (1.0 if k == 0 else 0.0) * fee + units * fee
+            if k < len(row["rates"]):
+                units *= row["rates"][k] or 0
+        profit = (row["buy"] or 0) * (row["edge"] or 0)  # per unit of the first item
+        per_day = row.get("profit_per_day")
+        passes = per_day / profit / DAY if profit > 0 and per_day is not None else None
+        out = self._fields(gold, profit, passes, len(row["path"]) + 1,
+                           per_day / DAY if per_day is not None else None, sources)
+        out["gold_per_day"] = _num(out["gold_per_hour"] * DAY, 4) if out["gold_per_hour"] is not None else None
+        return row | out
+
+
+def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None = None,
+                 max_picks: int = 12) -> dict:
+    """The flips to run in one sitting with `bankroll` Chaos, one per item.
+
+    A plan is eligible if one whole lot fits the bankroll and the same rule sold at least twice and
+    made money over the last week. Each item gets a quarter of the bankroll, or one whole lot if a lot
+    costs more. A stake of S earns margin x min(flow value, S / 2) an hour (the purse turns over at
+    most once per buy-then-sell).
+
+    Without a Gold budget, plans are taken by Chaos earned per Chaos staked. With `gold_budget`
+    (Gold to spend this session), they are taken by Chaos per 1,000 Gold. Gold is charged when an
+    order is posted, so a plan's Gold against the budget is posting its buy and sell orders once at
+    the size of its stake: stake / buy price units, times the Gold per unit flipped (both sides).
+    A stake is shrunk to what the remaining Gold pays for (skipped if not even one lot fits).
+    Plans whose Gold is unknown cannot be ranked that way; they are listed in `gold_unknown`.
+    """
+    def earns(r: dict, stake: float) -> float:
+        flow = r.get("flow_value")
+        return r["margin"] * min(flow if flow is not None else math.inf, stake / 2)
+
+    eligible = [r for r in plans if (r.get("lot_cost") or 0) > 0 and r["lot_cost"] <= bankroll
+                and r.get("margin") is not None and r.get("replay")
+                and (r["replay"].get("return") or 0) > 0 and (r["replay"].get("sales") or 0) >= 2]
+    def per_gold(r: dict) -> float | None:
+        """Chaos per 1,000 Gold; a plan whose orders cost no Gold at all ranks first."""
+        if r.get("gold") == 0:
+            return math.inf
+        return r.get("chaos_per_1000_gold")
+
+    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], bankroll / 4)]]
+    unknown: list[dict] = []
+    if gold_budget is not None:
+        unknown = [r for r, _, _ in sized if per_gold(r) is None]
+        sized = [x for x in sized if per_gold(x[0]) is not None]
+        sized.sort(key=lambda x: (-per_gold(x[0]), -x[2]))
+    else:
+        sized.sort(key=lambda x: (-x[2] / x[1], -x[2]))  # most earned per Chaos tied up
+    picks, taken = [], set()
+    left, gold_left = bankroll, gold_budget
+    for r, stake, _ in sized:
+        if len(picks) >= max_picks:
+            break
+        if r["id"] in taken or r["lot_cost"] > left:
+            continue
+        stake = min(stake, left)
+        posted = None
+        if gold_left is not None:
+            per_chaos = (r.get("gold") or 0) / r["buy"] if r.get("buy") else 0.0  # Gold per Chaos staked
+            posted = stake * per_chaos
+            if posted > gold_left + 1e-9:
+                # Like Chaos running short: shrink the stake to what the Gold left pays to post.
+                stake = gold_left / per_chaos
+                if stake < r["lot_cost"]:
+                    continue
+                posted = gold_left
+            gold_left -= posted
+        est = earns(r, stake)
+        ratio = per_gold(r)
+        # Informative only: Gold an hour at this stake's expected fills.
+        gold_hour = None if ratio is None else 0.0 if ratio == math.inf else est * 1000 / ratio
+        taken.add(r["id"])
+        left -= stake
+        picks.append({"id": r["id"], "name": r["name"], "category": r.get("category"), "kind": r["kind"],
+                      "buy_order": r["buy_order"], "sell_order": r["sell_order"], "margin": r["margin"],
+                      "lot_cost": r["lot_cost"], "replay": r["replay"],
+                      "chaos_per_1000_gold": r.get("chaos_per_1000_gold"), "gold_sources": r.get("gold_sources"),
+                      "minutes": r.get("minutes"),
+                      "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour})
+    return {
+        "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
+        "expected_per_hour": sum(p["est"] for p in picks), "deployed": bankroll - left,
+        "gold_used": gold_budget - gold_left if gold_budget is not None else None,
+        "minutes": sum(p["minutes"] or 0 for p in picks),
+        "gold_unknown": [{"id": r["id"], "name": r["name"], "kind": r["kind"]} for r in unknown],
+    }
+
+
 def _age(price: np.ndarray) -> np.ndarray:
     """Hours since each column last had a value (a large number if it never did)."""
     printed = ~np.isnan(price)
@@ -322,7 +491,7 @@ class Desk:
         }
 
     def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5,
-              bankroll: float | None = None) -> list[dict]:
+              bankroll: float | None = None, costs: Costs | None = None) -> list[dict]:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
 
         Each plan buys on one leg and sells on another (or the same) at levels the
@@ -391,6 +560,7 @@ class Desk:
                 plan["sell_order"]["item_units"] * (plan["buy"] or 0)), 4)
         if bankroll:
             plans = [fitted for plan in plans if (fitted := self._fit(plan, bankroll, min_margin))]
+        plans = [(costs or Costs()).flip(plan) for plan in plans]  # after _fit: Gold follows the capped profit
         plans.sort(key=lambda plan: -(plan["profit_per_hour"] or 0))
         return plans
 
@@ -451,7 +621,7 @@ class Desk:
             current = self.panel.items[j]
         return chain
 
-    def conversions(self, share: float = 0.1) -> list[dict]:
+    def conversions(self, share: float = 0.1, costs: Costs | None = None) -> list[dict]:
         """Fixed conversions against what they produce: divination card sets, shards and splinters
         that combine into their item, and three-to-one vendor upgrades of essences and oils -
         including chains of them (nine of one tier for one of the tier two above)."""
@@ -493,11 +663,12 @@ class Desk:
                     "value_24h": _num(value_24h[i]),
                     "reward_value_24h": _num(value_24h[j]) if j >= 0 else None,
                 })
+        out = [(costs or Costs()).conversion(row, ANCHORS[self.realm][0]) for row in out]
         out.sort(key=lambda row: -(row["profit_per_hour"] or 0))
         return out
 
     def loops(self, min_edge: float = 0.03, min_value: float = 200.0, chaos_only: bool = False,
-              share: float = 0.1) -> list[dict]:
+              share: float = 0.1, costs: Costs | None = None) -> list[dict]:
         """Round trips through item-for-item markets: buy A, swap A for B (and B for C), sell.
 
         Each hop uses that market's typical traded rate over the last day; entry is the cheaper of
@@ -561,6 +732,7 @@ class Desk:
                     if c != a:
                         emit([a, b_id, c], [rate_ab, rate_bc], min(value_ab, value_bc), min(hours_ab, hours_bc),
                              min(rest_ab, rest_bc))
+        out = [(costs or Costs()).loop(row) for row in out]
         out.sort(key=lambda row: -(row["profit_per_day"] or 0))
         return out
 

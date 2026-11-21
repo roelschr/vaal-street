@@ -132,3 +132,29 @@ def test_api_orders_sessions_and_recipe_checks(server):
     after = call(f"{server}/api/ledger")[1]
     assert next(r for r in after["recipes"] if r["key"] == key)["check"]["status"] == "confirmed"
     assert after["recipe_checks"][0]["label"] != key
+
+
+def test_api_gold_fields_settings_and_session_plan(server):
+    flips = call(f"{server}/api/flips?min_margin=0.01")[1]
+    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+    assert all(p["gold"] is None and p["minutes"] == 2 for p in flips["flips"]), "no fee until you give one"
+    assert "session" not in flips, "no bankroll, no session plan"
+
+    assert call(f"{server}/api/settings", {"assumed_gold_fee": 3, "minutes_per_order": 2})[0] == 200
+    assert call(f"{server}/api/settings", {"league": "x"})[0] == 400, "only the desk's own settings"
+    assert call(f"{server}/api/settings", {"minutes_per_order": -1})[0] == 400
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9, "gold": 50})[0] == 200
+    flips = call(f"{server}/api/flips?min_margin=0.01&bankroll=5000&gold_budget=1000000")[1]
+    mine = next(p for p in flips["flips"] if p["id"] == ITEM)
+    assert mine["gold"] == 10 and mine["gold_sources"][0]["source"] == "your trades", "a learned fee beats the assumption"
+    assert all(p["gold"] == 6 for p in flips["flips"] if p["id"] != ITEM) and mine["minutes"] == 4
+    session = flips["session"]
+    assert session["gold_budget"] == 1000000 and session["gold_unknown"] == []
+    assert session["flips"] and all(p["chaos_per_1000_gold"] for p in session["flips"])
+    tight = call(f"{server}/api/flips?min_margin=0.01&bankroll=5000&gold_budget=500")[1]["session"]
+    assert tight["gold_used"] <= 500 + 1e-9 and tight["expected_per_hour"] < session["expected_per_hour"]
+
+    arb = call(f"{server}/api/arbitrage")[1]
+    assert arb["conversions"][0]["gold"] is not None and arb["loops"][0]["chaos_per_1000_gold"] is not None
+    assert call(f"{server}/api/settings", {"assumed_gold_fee": ""})[0] == 200
+    assert call(f"{server}/api/flips")[1]["settings"]["assumed_gold_fee"] is None
