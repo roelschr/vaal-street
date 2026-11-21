@@ -576,6 +576,58 @@ async function viewLab(main) {
 // An empty field means "not recorded", which is not the same as zero.
 const optional = v => (v === '' || v == null ? null : +v);
 
+// What you hold, valued now: typed in, or the positions your recorded trades add up to.
+async function stashPanel(names) {
+  const source = localStorage.stashSource === 'ledger' ? 'ledger' : 'stash';
+  const p = panel('Stash', 'c12', `<div class="seg" id="stsrc" title="Value what you typed in, or the positions your recorded trades add up to">${[['stash', 'What I entered'], ['ledger', 'My ledger positions']].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === source ? 'on' : ''}">${l}</button>`).join('')}</div>`);
+  let d;
+  try { d = await api(withLeague('/api/stash', source === 'ledger' ? { source } : {})); }
+  catch (err) { p.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); return p; }
+  const t = d.total, body = document.createElement('div'); body.className = 'body';
+  body.innerHTML = `<div class="kpis" style="margin-bottom:10px">
+      <div class="kpi"><span>Worth at fair value</span><b>${money(t.value)}</b></div>
+      <div class="kpi" title="Every line's low added up, and every line's high: assumes all prices are wrong the same way at once, so the true range is narrower"><span>Range</span><b>${money(t.low)} <span class="dim">to</span> ${money(t.high)}</b></div>
+      <div class="kpi" title="Each line sold in whichever market pays more for it, at that market's own price"><span>Sold in the better market</span><b>${money(t.best)}</b></div>
+    </div>
+    ${source === 'stash' ? `<form class="bar" style="margin:0 0 4px" autocomplete="off">
+      <label class="f">Item<input type="text" name="what" list="items" placeholder="Start typing…" style="width:240px"></label>
+      <label class="f">Units you hold<input type="number" name="units" min="0" step="any" title="0 removes the line"></label>
+      <button class="btn primary">Set</button><button type="button" class="btn ghost" data-clear>Clear the stash</button>
+      <span class="muted small" style="padding-bottom:7px">Setting 0 units removes a line. Kept on this machine, per league.</span></form>`
+    : '<p class="note">Valued from the units your recorded trades leave you holding. Switch to “What I entered” to type in a stash instead.</p>'}
+    ${d.unpriced ? `<p class="note">${d.unpriced} item${d.unpriced === 1 ? ' has' : 's have'} no price in this league and ${d.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
+  const better = r => {
+    if (!r.best) return '<span class="dim">neither trades steadily</span>';
+    const word = r.best === 'divine' ? 'Divine' : 'Chaos';
+    return r.best_by == null ? `<span class="tag ${r.best}">${word}</span> <span class="dim">the only market trading steadily</span>` : `<span class="tag ${r.best}">${word}</span> pays ${plainPct(r.best_by, 1)} more`;
+  };
+  const tbl = table([
+    { h: 'Item', l: 1, f: r => itemCell(r, r.note ? esc(r.note) : ''), s: r => r.name },
+    { h: 'Units', f: r => fmt(r.units), s: r => r.units },
+    { h: 'Worth', f: r => money(r.value), s: r => r.value, title: 'Units at fair value' },
+    { h: 'Low – high', f: r => r.value == null ? '–' : `${money(r.low)} <span class="dim">–</span> ${money(r.high)}`, s: r => r.high, title: 'Units at the low and high end of where fair value plausibly sits' },
+    { h: 'Chaos market', f: r => money(r.chaos?.value), s: r => r.chaos?.value, title: 'Units at the Chaos market’s own price' },
+    { h: 'Divine market', f: r => money(r.divine?.value), s: r => r.divine?.value, title: 'Units at the Divine market’s own price, converted at the current Divine price' },
+    { h: 'Better market', l: 1, f: r => r.value == null ? '' : better(r), s: r => r.best_by },
+    { h: 'Selling it all', l: 1, f: r => r.value == null || !r.best ? '' : r.thin ? `<span class="gold" title="More than three hours of that market's volume: selling it all will push the price">thin market${r.hours != null ? ` · ${dur(r.hours)} of volume` : ''}</span>` : `<span class="muted">${dur(r.hours)} of volume</span>`, s: r => r.hours, title: 'How many hours of the better market’s volume this holding is' },
+    ...(source === 'stash' ? [{ h: '', f: r => `<button class="btn ghost" data-edit="${esc(r.name)}" data-units="${r.units}" title="Change the units">Edit</button><button class="btn ghost" data-rm="${esc(r.name)}" title="Remove this line">✕</button>` }] : []),
+  ], d.rows, { sort: 2, onRow: r => openItem(r.id), empty: source === 'stash' ? 'Enter what you hold to see what it is worth and where to sell it.' : 'Your recorded trades leave you holding nothing in this league.' });
+  p.append(body, tbl);
+  const set = async (item, units) => { try { await api('/api/stash', { league: state.league, item, units }); route(); } catch (err) { toast(err.message, true); } };
+  $('#stsrc', p).onclick = e => { const s = e.target.dataset.s; if (s) { localStorage.stashSource = s; route(); } };
+  const form = $('form', body);
+  if (form) {
+    form.onsubmit = e => { e.preventDefault(); const item = form.elements.what.value.trim(); if (!item) return toast('Pick an item from the list.', true); set(item, +form.elements.units.value || 0); };
+    $('[data-clear]', form).onclick = async () => { if (!confirm('Remove every line of the stash you entered?')) return; try { await api('/api/stash', { league: state.league, clear: true }); route(); } catch (err) { toast(err.message, true); } };
+  }
+  tbl.addEventListener('click', e => {
+    const rm = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]');
+    if (rm) set(rm.dataset.rm, 0);
+    if (ed && form) { form.elements.what.value = ed.dataset.edit; form.elements.units.value = ed.dataset.units; form.elements.units.focus(); form.elements.units.select(); }
+  });
+  return p;
+}
+
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger'));
@@ -702,7 +754,8 @@ async function viewLedger(main) {
   ], d.alerts, { empty: 'Open an item to add a price alert.' });
   at.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/alert', { delete: +b.dataset.del }); route(); } };
   al.append(at);
-  $('#g', main).append(ses, ord, pos, tr, fee, rc, al);
+  const stash = await stashPanel(names);
+  $('#g', main).append(ses, ord, pos, stash, tr, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ drawer
