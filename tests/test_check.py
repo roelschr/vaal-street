@@ -13,8 +13,7 @@ import sqlite3
 
 import pytest
 
-from conftest import ITEM, NEW
-from test_desk_app import call, server  # noqa: F401  (the server fixture)
+from conftest import ITEM, NEW, call
 from vaalstreet import check
 from vaalstreet.desk import Desk
 from vaalstreet.ledger import Ledger, _SCHEMA
@@ -129,7 +128,7 @@ def test_stash_table_is_added_to_an_existing_ledger(tmp_path):
     assert ledger.stash("L") == {}
 
 
-def test_api_check_and_stash(server):  # noqa: F811
+def test_api_check_and_stash(server):
     status, r = call(f"{server}/api/check", {"item": "Test Orb", "market": "chaos", "side": "buy", "ratio": "1:9"})
     assert status == 200 and r["verdict"] == "go"
     status, r = call(f"{server}/api/check", {"item": "Test Orb", "market": "divine", "side": "sell",
