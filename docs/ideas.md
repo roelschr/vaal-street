@@ -74,8 +74,8 @@ Waves run in order. Within a wave, the tasks touch different files, so they can 
 | --- | --- | --- |
 | Queue model | Build, wave 3 | We use the published resting stock as the queue ahead of you, instead of a flat share of volume. We test it on full history. |
 | Gold-aware backtests | Build, wave 1 | Each order is charged Gold, and the run stops posting when the budget runs out. The fee is a parameter, because the schedule is not published. |
-| Strategy search | After the sync, wave 4 | We sweep parameters and report what holds up on leagues the search did not see. It is built together with walk-forward evaluation. |
-| Walk-forward evaluation | After the sync, wave 4 | We tune on earlier leagues and test on the next one. This needs several leagues on disk. |
+| Strategy search | Built, wave 4 | We sweep parameters and report what holds up on leagues the search did not see. It is built together with walk-forward evaluation. |
+| Walk-forward evaluation | Built, wave 4 | We tune on earlier leagues and test on the next one. This needs several leagues on disk. |
 | Portfolio view | Build, wave 3 | Several strategies share one bankroll and compete for its capital. |
 | Inventory risk | Build, wave 3 | It shows what a plan stands to lose on what it holds, using the fair-value range from wave 1. |
 | Session simulator | Build, wave 1 | Backtests follow a play schedule, such as "3 hours on weekday evenings". Orders stand while you are away, as `attention` already does. |
