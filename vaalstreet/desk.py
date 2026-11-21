@@ -353,11 +353,19 @@ class Desk:
         realm: str = "poe1",
         days: int = 30,
         root: Path | None = None,
+        as_of: int | None = None,
     ) -> "Desk":
-        last = con.execute("SELECT epoch(max(hour))::BIGINT FROM prices WHERE league = ?", [league]).fetchall()[0][0]
+        """Build the desk from the league's last `days` days. With `as_of` (unix seconds), the desk is the
+        one that stood at that hour: nothing published after it is read."""
+        if as_of is None:
+            last = con.execute("SELECT epoch(max(hour))::BIGINT FROM prices WHERE league = ?", [league]).fetchall()[0][0]
+        else:
+            last = con.execute("SELECT epoch(max(hour))::BIGINT FROM prices WHERE league = ? AND hour <= to_timestamp(?)",
+                               [league, int(as_of)]).fetchall()[0][0]
         if last is None:
-            raise LookupError(f"No prices for league {league!r}")
-        panel = Panel.load(con, league, CORE + LEGS, since=last - days * DAY * HOUR)
+            raise LookupError(f"No prices for league {league!r}" + ("" if as_of is None else " by that hour"))
+        panel = Panel.load(con, league, CORE + LEGS, since=last - days * DAY * HOUR,
+                           until=None if as_of is None else last)
         fv = pricing.fair_value(panel["price"], panel["value"])
         # A print is compared with the fair value known *before* it, so a leg cannot explain itself.
         prior = np.vstack([fv.fair[:1], fv.fair[:-1]])[-SWING_WINDOW:]
@@ -386,12 +394,12 @@ class Desk:
             SELECT item, quote, sum(volume) AS volume, median(volume_quote / volume) AS rate, count(*) AS hours,
                    arg_max(stock_lo, hour) AS item_resting, arg_max(quote_stock_lo, hour) AS quote_resting
             FROM legs
-            WHERE league = $league AND hour > to_timestamp($since) AND volume > 0 AND volume_quote > 0
+            WHERE league = $league AND hour > to_timestamp($since) AND hour <= to_timestamp($last) AND volume > 0 AND volume_quote > 0
               AND item NOT IN ($ref, $bridge) AND quote NOT IN ($ref, $bridge) AND item < quote
             GROUP BY item, quote
             HAVING count(*) >= 6
             """,
-            {"league": league, "since": last - DAY * HOUR, "ref": ref, "bridge": bridge},
+            {"league": league, "since": last - DAY * HOUR, "last": last, "ref": ref, "bridge": bridge},
         ).fetchall()
         root = root or data_dir()
         return cls(
