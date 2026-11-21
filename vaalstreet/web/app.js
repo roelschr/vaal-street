@@ -289,6 +289,8 @@ async function viewFlips(main) {
       picks.push({ ...r, stake, est: earns(r, stake) });
     }
     const total = picks.reduce((a, r) => a + r.est, 0);
+    // Kept so the Ledger can start a session against this plan.
+    state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
     const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(bank - left)} deployed</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
@@ -488,6 +490,9 @@ async function viewLab(main) {
   show();
 }
 
+// An empty field means "not recorded", which is not the same as zero.
+const optional = v => (v === '' || v == null ? null : +v);
+
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger'));
@@ -505,8 +510,18 @@ async function viewLedger(main) {
       <div class="seg" id="side"><button data-s="buy" class="on">Bought</button><button data-s="sell">Sold</button></div>
       <label class="f">Units<input type="number" id="tu" min="0" step="any"></label>
       <label class="f">Price each (c)<input type="number" id="tp" min="0" step="any"></label>
+      <label class="f">Gold paid<input type="number" id="tg" min="0" step="any" placeholder="optional" title="The Gold this trade cost. The desk learns each item's fee from these."></label>
       <label class="f">Note<input type="text" id="tn" style="width:160px"></label>
       <button class="btn primary" id="add">Add</button></div></section>
+    <section class="panel" style="margin-bottom:14px"><header><h2>Record an order you posted</h2></header><div class="body bar" style="margin:0">
+      <label class="f">Item<input type="text" id="oi" list="items" placeholder="Start typing…" style="width:240px"></label>
+      <div class="seg" id="oside"><button data-s="buy" class="on">Buying</button><button data-s="sell">Selling</button></div>
+      <label class="f">Items<input type="number" id="oiu" min="1" step="1" title="The ratio as posted: this many items…"></label>
+      <label class="f">for<input type="number" id="ocu" min="1" step="1" title="…for this many Chaos or Divine"></label>
+      <div class="seg" id="omkt"><button data-m="chaos" class="on">Chaos</button><button data-m="divine">Divine</button></div>
+      <label class="f">Total items<input type="number" id="ou" min="0" step="any"></label>
+      <label class="f">Gold paid<input type="number" id="og" min="0" step="any" placeholder="optional"></label>
+      <button class="btn primary" id="oadd">Add</button></div></section>
     <div class="grid" id="g"></div>`;
   let side = 'buy';
   $('#side', main).onclick = e => { const s = e.target.dataset.s; if (s) { side = s; main.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s)); } };
@@ -514,9 +529,71 @@ async function viewLedger(main) {
   $('#add', main).onclick = async () => {
     const row = state.market.find(r => r.name === $('#ti', main).value);
     if (!row) return toast('Pick an item from the list.', true);
-    try { await api('/api/trade', { league: state.league, item: row.id, side, units: +$('#tu', main).value, price: +$('#tp', main).value, note: $('#tn', main).value }); route(); }
+    try { await api('/api/trade', { league: state.league, item: row.id, side, units: +$('#tu', main).value, price: +$('#tp', main).value, gold: optional($('#tg', main).value), note: $('#tn', main).value }); route(); }
     catch (err) { toast(err.message, true); }
   };
+  let oside = 'buy', omkt = 'chaos';
+  $('#oside', main).onclick = e => { const s = e.target.dataset.s; if (s) { oside = s; main.querySelectorAll('#oside button').forEach(b => b.classList.toggle('on', b.dataset.s === s)); } };
+  $('#omkt', main).onclick = e => { const m = e.target.dataset.m; if (m) { omkt = m; main.querySelectorAll('#omkt button').forEach(b => b.classList.toggle('on', b.dataset.m === m)); } };
+  $('#oadd', main).onclick = async () => {
+    const row = state.market.find(r => r.name === $('#oi', main).value);
+    if (!row) return toast('Pick an item from the list.', true);
+    try { await api('/api/order', { league: state.league, item: row.id, side: oside, market: omkt, item_units: +$('#oiu', main).value, currency_units: +$('#ocu', main).value, units: +$('#ou', main).value, gold: optional($('#og', main).value) }); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  const post = async (path, body) => { try { await api(path, { league: state.league, ...body }); route(); } catch (err) { toast(err.message, true); } };
+  const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
+  const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>');
+  const ot = table([
+    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
+    { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${r.market === 'divine' ? 'Divine' : 'Chaos'}` },
+    { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
+    { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
+    { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>` },
+    { h: '', f: r => r.status === 'filled'
+      ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
+      : `<button class="btn ghost" data-fill="${r.id}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
+  ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
+  ot.onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.close) post('/api/order', { id: +b.dataset.close, status: 'closed' });
+    if (b.dataset.cancel) post('/api/order', { id: +b.dataset.cancel, status: 'cancelled' });
+    if (b.dataset.fill) { const n = prompt('How many items filled?', b.dataset.left); if (n) post('/api/order', { fill: +b.dataset.fill, units: +n }); }
+  };
+  ord.append(ot);
+  const running = d.sessions.find(s => s.running), plan = state.sessionPlan && state.sessionPlan.league === d.league ? state.sessionPlan : null;
+  const ses = panel('Sessions', 'c12', running
+    ? `<label class="f" style="flex-direction:row;align-items:center;gap:6px">Gold earned<input type="number" id="sge" min="0" step="any" placeholder="optional" style="width:110px"></label><button class="btn primary" id="sstop">Stop session</button>`
+    : `<span class="muted small">${plan ? `Starts against the Flips session plan: about ${money(plan.expected_per_hour)} an hour` : 'Open Flips with a bankroll first to compare against its plan'}</span><button class="btn primary" id="sstart">Start session</button>`);
+  ses.append(table([
+    { h: 'Started', l: 1, f: r => new Date(r.started * 1000).toLocaleString() + (r.running ? ' <span class="gold">running</span>' : '') },
+    { h: 'Hours', f: r => fmt(r.hours) }, { h: 'Profit', f: r => `<span class="${r.profit >= 0 ? 'up' : 'down'}">${money(r.profit)}</span>`, title: 'Profit realised by sales in the session, against what you paid' },
+    { h: 'Per hour', f: r => money(r.per_hour) }, { h: 'Plan said', f: r => r.expected_per_hour == null ? '–' : money(r.expected_per_hour) + '/h' },
+    { h: 'Gold spent', f: r => fmt(r.gold_spent) }, { h: 'Gold earned', f: r => r.gold_earned == null ? '–' : fmt(r.gold_earned) },
+    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this session">✕</button>` },
+  ], d.sessions, { empty: 'Start a session when you sit down to trade; it reports what you made per hour.' }));
+  ses.onclick = e => { const b = e.target.closest('[data-del]'); if (b) post('/api/session', { delete: +b.dataset.del }); };
+  const start = $('#sstart', ses), stop = $('#sstop', ses);
+  if (start) start.onclick = () => post('/api/session', plan ? { expected_per_hour: plan.expected_per_hour, plan } : {});
+  if (stop) stop.onclick = () => post('/api/session', { stop: running.id, gold_earned: optional($('#sge', ses).value) });
+  const fee = panel('Gold fees you paid', 'c12', '<span class="muted small">Learned from the Gold you record; the game does not publish its fees.</span>');
+  fee.append(table([
+    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Gold per item', f: r => fmt(r.gold_per_unit), title: 'The middle value over your records' },
+    { h: 'From', f: r => `${r.trades} record${r.trades === 1 ? '' : 's'}` },
+  ], d.gold_fees, { empty: 'Unknown until you record the Gold a trade or order cost.' }));
+  const rc = panel('Recipe checks', 'c12', '<span class="muted small">Did a conversion or round trip work when you tried it in game? Kept for every league.</span>');
+  const rform = document.createElement('div'); rform.className = 'body bar'; rform.style.margin = '0';
+  rform.innerHTML = `<label class="f">Recipe<select id="rk" style="max-width:420px">${d.recipes.map(r => `<option value="${esc(r.key)}">${esc(r.label)}${r.check ? ` (${r.check.status})` : ''}</option>`).join('')}</select></label>
+    <label class="f">Note<input type="text" id="rn" style="width:200px"></label>
+    <button class="btn" data-st="confirmed">Worked</button><button class="btn" data-st="failed">Did not work</button>`;
+  rform.onclick = e => { const st = e.target.dataset.st; if (st && $('#rk', rform).value) post('/api/recipe_check', { key: $('#rk', rform).value, status: st, note: $('#rn', rform).value }); };
+  const rt = table([
+    { h: 'Recipe', l: 1, f: r => esc(r.label) }, { h: 'Result', l: 1, f: r => r.status === 'confirmed' ? '<span class="up">Worked</span>' : '<span class="down">Did not work</span>' },
+    { h: 'Note', l: 1, f: r => esc(r.note) }, { h: 'Checked', l: 1, f: r => new Date(r.t * 1000).toLocaleDateString() },
+    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this check">✕</button>` },
+  ], d.recipe_checks, { empty: 'No recipe checked yet.' });
+  rt.onclick = e => { const b = e.target.closest('[data-del]'); if (b) post('/api/recipe_check', { delete: +b.dataset.del }); };
+  rc.append(rform, rt);
   const pos = panel('Positions', 'c12');
   pos.append(table([
     { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name }, { h: 'Units', f: r => fmt(r.units), s: r => r.units },
@@ -528,6 +605,7 @@ async function viewLedger(main) {
   const tt = table([
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() }, { h: 'Item', l: 1, f: r => esc(r.name) },
     { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Bought' : 'Sold' }, { h: 'Units', f: r => fmt(r.units) }, { h: 'Price', f: r => money(r.price) },
+    { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
     { h: 'Note', l: 1, f: r => esc(r.note) }, { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this trade">✕</button>` },
   ], d.trades, { empty: 'Nothing recorded.' });
   tt.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/trade', { delete: +b.dataset.del }); route(); } };
@@ -541,7 +619,7 @@ async function viewLedger(main) {
   ], d.alerts, { empty: 'Open an item to add a price alert.' });
   at.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/alert', { delete: +b.dataset.del }); route(); } };
   al.append(at);
-  $('#g', main).append(pos, tr, al);
+  $('#g', main).append(ses, ord, pos, tr, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ drawer
