@@ -14,7 +14,10 @@ the ledger only learns fees from what you recorded (`gold_fees`) and says nothin
 The stash is what you say you hold, typed in by hand: it is separate from the positions the
 trades build, so you can value loot you never recorded buying.
 
-Recipe checks are game facts, not market state, so they are kept once for all leagues.
+Recipe checks are game facts, not market state, so they are kept once for all leagues. So are
+the conversions you enter yourself (`fixed_conversions`): a recipe (N of A, and maybe more inputs,
+make M of B) or a vendor price (a vendor sells B for N of A). No public source we may use carries
+either, so the desk ships none and only knows the ones you type in.
 """
 
 from __future__ import annotations
@@ -61,6 +64,10 @@ CREATE INDEX IF NOT EXISTS recipe_checks_key ON recipe_checks(key, t, id);
 CREATE TABLE IF NOT EXISTS stash(
     league TEXT NOT NULL, item TEXT NOT NULL, units REAL NOT NULL CHECK(units > 0), updated INTEGER NOT NULL,
     PRIMARY KEY(league, item));
+CREATE TABLE IF NOT EXISTS fixed_conversions(
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('recipe','vendor')),
+    inputs TEXT NOT NULL, output TEXT NOT NULL, gives REAL NOT NULL CHECK(gives > 0),
+    note TEXT NOT NULL DEFAULT '', t INTEGER NOT NULL);
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"}}
@@ -78,6 +85,16 @@ def recipe_key(kind: str, item_ids: list[str]) -> str:
     a two-item round trip from colliding with a conversion between the same items.
     """
     return f"{kind}:" + ">".join(item_ids)
+
+
+def fixed_key(kind: str, inputs: list[tuple[str, float]], output: str, gives: float) -> str:
+    """The recipe key of a conversion you entered: "recipe:3*a+1*b>1*c" or "vendor:5*a>1*c".
+
+    The counts are part of the key, so correcting a ratio starts the corrected recipe unchecked
+    instead of letting it inherit a check of the wrong one.
+    """
+    left = "+".join(f"{float(n):g}*{item}" for item, n in inputs)
+    return f"{kind}:{left}>{float(gives):g}*{output}"
 ALERT_FIELDS = {"price": "Price", "chaos": "Chaos-market price", "divine": "Divine-market price",
                 "premium": "Divine premium", "change_24h": "24h change", "z": "Surprise (z)"}
 
@@ -372,6 +389,43 @@ class Ledger:
 
     def clear_stash(self, league: str) -> None:
         self._run("DELETE FROM stash WHERE league = ?", (league,))
+
+    # ---------------------------------------------------- your conversions
+    def add_fixed(self, kind: str, inputs: list, output: str, gives: float = 1, note: str = "",
+                  t: int | None = None) -> int:
+        """Store a recipe ("recipe") or a vendor price ("vendor") you entered. Kept for every league.
+
+        `inputs` is [[item id, units], ...]; a vendor price has exactly one input, the currency it asks for.
+        """
+        if kind not in ("recipe", "vendor"):
+            raise ValueError("A conversion is a recipe or a vendor price.")
+        clean = []
+        for item, units in inputs or []:
+            units = float(units)
+            if not item or not (math.isfinite(units) and units > 0):
+                raise ValueError("Every input needs an item and a positive count.")
+            clean.append([str(item), units])
+        gives = float(gives)
+        if not clean or not output or not (math.isfinite(gives) and gives > 0):
+            raise ValueError("A conversion needs at least one input, an output and a positive count.")
+        if kind == "vendor" and len(clean) != 1:
+            raise ValueError("A vendor price takes one currency.")
+        if any(item == output for item, _ in clean):
+            raise ValueError("The output cannot also be an input.")
+        return self._run("INSERT INTO fixed_conversions(kind, inputs, output, gives, note, t) VALUES (?,?,?,?,?,?)",
+                         (kind, json.dumps(clean), str(output), gives, str(note)[:200], int(t or time.time())))
+
+    def delete_fixed(self, fixed_id: int) -> None:
+        self._run("DELETE FROM fixed_conversions WHERE id = ?", (int(fixed_id),))
+
+    def fixed_conversions(self) -> list[dict]:
+        """Your recipes and vendor prices, oldest first, each with its recipe key."""
+        out = []
+        for row in self._all("SELECT * FROM fixed_conversions ORDER BY id"):
+            row["inputs"] = [(item, units) for item, units in json.loads(row["inputs"])]
+            row["key"] = fixed_key(row["kind"], row["inputs"], row["output"], row["gives"])
+            out.append(row)
+        return out
 
     # ------------------------------------------------------------ watchlist
     def watchlist(self, league: str) -> list[str]:
