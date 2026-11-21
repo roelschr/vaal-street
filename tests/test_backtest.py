@@ -130,6 +130,7 @@ def test_schedule_parser_reads_days_hours_and_windows():
     late = backtest.parse_schedule("fri 22-2")
     assert sorted(map(tuple, np.argwhere(late))) == [(4, 22), (4, 23), (5, 0), (5, 1)], "runs past midnight"
     assert backtest.parse_schedule("18-20").sum() == 7 * 2, "no days means every day"
+    assert backtest.parse_schedule("sat 0-24").sum() == 24
     assert backtest.parse_schedule("fri-mon 1-2").any(axis=1).tolist() == [1, 0, 0, 0, 1, 1, 1]
     for bad in ("", "mon", "someday 1-2", "mon 25-3", "mon 3-3", "mon 19:00-22:00"):
         with pytest.raises(ValueError):
@@ -221,6 +222,18 @@ def test_gold_is_charged_per_unit_posted_and_again_on_a_repost():
     assert backtest.Simulation(tiny_panel([10] * 5)).run(Requote()).summary()["chaos_per_1000_gold"] is None
 
 
+def test_a_whole_lot_requote_that_rounds_to_the_standing_order_is_not_a_new_post():
+    class Same:
+        def step(self, ctx):
+            if ctx.t in (0, 1):
+                ctx.buy(0, 25, 3.31)
+
+    sim = backtest.Simulation(tiny_panel([4] * 4), capital=1000, whole_lots=True, gold_per_unit=3)
+    result = sim.run(Same())
+    # Both quotes become "33 Chaos for 10", two lots: 20 units posted once, 60 Gold.
+    assert result.gold.tolist() == [60, 60, 60, 60]
+
+
 def test_a_spent_gold_budget_stops_new_orders_but_standing_ones_still_fill():
     sim = backtest.Simulation(tiny_panel([10, 10, 10, 9, 9]), capital=1000, participation=1.0,
                               gold_per_unit=3, gold_budget=50)
@@ -239,7 +252,8 @@ def test_new_options_stay_causal_when_the_league_is_cut_short(con):
     options = dict(capital=600, participation=0.1, whole_lots=True, gold_per_unit=0.5, gold_budget=4000,
                    schedule="mon-fri 17-23; sat,sun 8-20", attention=2)
     whole = backtest.Simulation(full, **options).run(backtest.Swing(per_item=0.5, warmup=24))
-    assert whole.fills > 0 and whole.gold[-1] > 0
+    assert whole.fills > 0 and whole.gold[-1] > 0 and np.all(np.diff(whole.gold) >= 0)
+    assert whole.gold[59] > 0 and whole.cash[59] != whole.cash[0], "the shortest cut already traded and paid Gold"
     for cut in (60, 101, 150):
         part = backtest.Simulation(full.window(0, cut), **options).run(backtest.Swing(per_item=0.5, warmup=24))
         np.testing.assert_allclose(part.equity, whole.equity[:cut])
@@ -253,3 +267,4 @@ def test_whole_lots_and_gold_on_the_synthetic_league(con):
                          gold_per_unit={"Metadata/Items/Currency/CurrencyTestOrb": 1.0})
     assert whole.fills > 0 and 0 < whole.total_return <= loose.total_return + 0.05
     assert whole.gold_spent > 0 and whole.summary()["chaos_per_1000_gold"] > 0
+    assert np.all(np.diff(whole.gold) >= 0), "Gold is never given back"

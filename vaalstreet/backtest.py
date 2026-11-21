@@ -66,7 +66,7 @@ def parse_schedule(spec: str) -> np.ndarray:
             if any(c.isdigit() for c in words[-1]):
                 start, end = _hours(words[-1])
                 for day in days or range(7):
-                    for h in range(start, end if end > start else end + 24):
+                    for h in range(start, end if end > start else end + 24):  # "22-2" wraps
                         mask[(day + h // 24) % 7, h % 24] = True
                 days = []
     if days:
@@ -89,7 +89,7 @@ def _hours(text: str) -> tuple[int, int]:
         start, end = (int(x) for x in text.split("-"))
     except ValueError:
         raise ValueError(f"Cannot read hours {text!r}; write them like 19-22 (UTC, end not included).") from None
-    if not (0 <= start <= 23 and 0 <= end <= 24) or start == end % 24:
+    if not (0 <= start <= 23 and 0 <= end <= 24) or start == end:
         raise ValueError(f"Hours {text!r} must lie between 0 and 24 and not be empty.")
     return start, end
 
@@ -536,24 +536,30 @@ class Simulation:
                 old_limit, old_units = getattr(old, f"{side}_limit"), getattr(old, f"{side}_units")
                 # quote() may hand over fresh arrays; take writable copies before changing them.
                 limit, units, ratio, lot = (np.array(a, dtype=float) for a in (limit, units, ratio, lot))
+                old_ratio, old_lot = getattr(old, f"{side}_ratio"), getattr(old, f"{side}_lot")
                 live = ~np.isnan(limit) & (units > 0)
                 same_limit = (limit == old_limit) | (np.isnan(limit) & np.isnan(old_limit))
-                changed = live & ~(same_limit & (units <= old_units + 1e-9))
-                for i in np.flatnonzero(live & ~changed):  # an untouched order keeps its stated lot
-                    ratio[i], lot[i] = old.__dict__[f"{side}_ratio"][i], old.__dict__[f"{side}_lot"][i]
+                untouched = live & same_limit & (units == old_units)
+                ratio[untouched], lot[untouched] = old_ratio[untouched], old_lot[untouched]
                 ratio[~live], lot[~live] = np.nan, 1.0
-                for i in np.flatnonzero(changed):
+                for i in np.flatnonzero(live & ~untouched):
                     if self.whole_lots:
                         fitted = self._fit(side, float(limit[i]), float(units[i]), unit, cash, i)
                         if fitted is None:
                             limit[i], units[i], ratio[i], lot[i] = np.nan, 0.0, np.nan, 1.0
                             continue
                         limit[i], units[i], ratio[i], lot[i] = fitted
-                    grown = units[i] - old_units[i] if same_limit[i] else units[i]
-                    fee = self.gold_fee[i] * grown
+                    # Judge "the same order" on what would really stand: a re-quote that rounds to the
+                    # standing ratio is no new post, and only units beyond the standing ones pay again.
+                    if np.isfinite(ratio[i]) or np.isfinite(old_ratio[i]):
+                        same = ratio[i] == old_ratio[i] and lot[i] == old_lot[i]
+                    else:
+                        same = bool(same_limit[i])
+                    if same:
+                        limit[i] = old_limit[i]  # keep the standing order's price as it was posted
+                    fee = self.gold_fee[i] * (max(units[i] - old_units[i], 0.0) if same else units[i])
                     if fee > 0 and self.gold_spent + fee > self.gold_budget + 1e-9:
-                        limit[i], units[i] = old_limit[i], old_units[i]
-                        ratio[i], lot[i] = old.__dict__[f"{side}_ratio"][i], old.__dict__[f"{side}_lot"][i]
+                        limit[i], units[i], ratio[i], lot[i] = old_limit[i], old_units[i], old_ratio[i], old_lot[i]
                         continue
                     self.gold_spent += fee
                     if side == "buy" and self.whole_lots and np.isfinite(ratio[i]):
@@ -563,7 +569,9 @@ class Simulation:
                 setattr(book, f"{side}_ratio", ratio)
                 setattr(book, f"{side}_lot", lot)
 
-    def _fit(self, side: str, limit: float, units: float, unit: float, cash: float, item: int):
+    def _fit(
+        self, side: str, limit: float, units: float, unit: float, cash: float, item: int
+    ) -> tuple[float, float, float, float] | None:
         """(limit, units, stated ratio, lot) for one whole-lot order, or None if it cannot be posted."""
         if side == "buy" and math.isinf(limit) or side == "sell" and limit <= 0:  # market order
             whole = math.floor(min(units, self.position[item] if side == "sell" else units) + 1e-9)
