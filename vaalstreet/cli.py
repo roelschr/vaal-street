@@ -241,6 +241,17 @@ def _check(args: argparse.Namespace) -> None:
         print(f"  - {reason}")
 
 
+def _screen(args: argparse.Namespace) -> None:
+    # Only the companion's own settings file; never the archive or the ledger, which may live in
+    # another operating system's filesystem when this runs under Windows next to a desk in WSL.
+    from vaalstreet import screen
+
+    try:
+        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region)
+    except (RuntimeError, ValueError) as err:
+        sys.exit(str(err))
+
+
 def _stash(args: argparse.Namespace) -> None:
     from vaalstreet import check
     from vaalstreet.desk import Desk
@@ -684,6 +695,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--stock", type=float, help="how many items are on offer at that ratio, if the window shows it")
     p.add_argument("--league")
     p.set_defaults(run=_check)
+
+    p = commands.add_parser(
+        "screen", help="press a key to read an offer off the exchange window and check it (optional extra)",
+        description="A companion to run next to the game, under Windows Python. Each press of the hotkey takes "
+                    "one screenshot (of the area you set with --calibrate), reads the offer's item, ratio and "
+                    "stock, and shows the desk's verdict here and in the desk's hideout window. It sends "
+                    "nothing to the game and keeps no screenshot.",
+        epilog='Needs the optional libraries: pip install "vaalstreet[screen]". The desk itself '
+               "(vaalstreet serve) can run in WSL; this companion reaches it at http://localhost:<port>.")
+    p.add_argument("--desk", default="http://localhost:3000", help="the desk's address (default %(default)s)")
+    p.add_argument("--hotkey", help="the key to press, in pynput's form (default <ctrl>+<alt>+<f9>)")
+    p.add_argument("--calibrate", action="store_true", help="capture once, then save the area around the exchange window")
+    p.add_argument("--region", help='save this area and use it: "left top width height" in pixels')
+    p.add_argument("--league")
+    p.set_defaults(run=_screen)
 
     p = commands.add_parser(
         "stash", help="value what you hold, and say which market pays more for each item",
