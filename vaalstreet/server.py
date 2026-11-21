@@ -193,6 +193,19 @@ class App:
                 self._ninja = ninja.Ninja(self.root, self.ninja_base_url)
             return self._ninja
 
+    def ninja_status(self) -> dict:
+        """The footer's poe.ninja line. After a restart the in-memory state is empty until the next
+        hourly refresh, so the newest time in the cache stands in; reading the cache sends nothing."""
+        out = dict(self.ninja_state, on=self.ninja_on(), credit=ninja.CREDIT, from_cache=False)
+        if out["last_run"] is None:
+            try:
+                newest = max((r["fetched"] for r in self.ninja().status() if r["fetched"]), default=None)
+            except Exception:  # a broken cache must not take the status answer down
+                newest = None
+            if newest is not None:
+                out.update(last_run=int(newest), from_cache=True)
+        return out
+
     def ninja_on(self) -> bool:
         if self._practice():
             return False  # poe.ninja knows only today's prices: in a rehearsal they would leak the future
@@ -370,7 +383,7 @@ class App:
             "archive_start": archive.FIRST_HOUR[REALM],
             "generation": self._generation,
             "ready": db.has_data(self.root, REALM),
-            "ninja": dict(self.ninja_state, on=self.ninja_on(), credit=ninja.CREDIT),
+            "ninja": self.ninja_status(),
         }
         if out["ready"]:
             try:

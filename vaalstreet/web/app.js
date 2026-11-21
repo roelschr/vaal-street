@@ -107,7 +107,7 @@ const PAGES = [['desk', 'Desk'], ['markets', 'Markets'], ['flips', 'Flips'], ['a
 function ninjaLine() {
   const n = state.status?.ninja;
   if (!n) return '';
-  const what = !n.on ? 'off' : n.last_run ? `fetched ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
+  const what = state.practice ? 'not used in practice (its prices are today’s)' : !n.on ? 'off' : n.last_run ? `${n.from_cache ? 'last fetched' : 'fetched'} ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
   return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
 }
 function renderNav(page) {
