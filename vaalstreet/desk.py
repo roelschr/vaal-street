@@ -174,6 +174,17 @@ class Desk:
             return None
         return value if math.isfinite(value) else None
 
+    def fair_range(self, item_id: str) -> tuple[float, float, float] | None:
+        """Latest (low, fair, high) of an item id: fair value and one sd of its uncertainty either side."""
+        if item_id == ANCHORS[self.realm][0]:
+            return 1.0, 1.0, 1.0
+        try:
+            i = self.panel.index(item_id)
+        except KeyError:
+            return None
+        out = tuple(float(a[-1, i]) for a in (self.fv.low, self.fv.fair, self.fv.high))
+        return out if all(math.isfinite(x) for x in out) else None
+
     def _age(self) -> np.ndarray:
         """Hours since each item last printed."""
         return _age(self.panel["price"])
@@ -195,6 +206,7 @@ class Desk:
         p, fv = self.panel, self.fv
         T = len(p.hours)
         fair = fv.fair
+        fair_low, fair_high = fv.low[-1], fv.high[-1]
         age = self._age()
         value_24h = np.nansum(p["value"][-DAY:], axis=0)
         active = pricing.activity(p["price"], DAY)[-1]
@@ -223,6 +235,8 @@ class Desk:
                 "name": p.names[i],
                 "category": p.categories[i],
                 "price": _num(fair[-1, i]),
+                # Fair value one sd either side: where the item's worth plausibly sits right now.
+                "fair_low": _num(fair_low[i]), "fair_high": _num(fair_high[i]),
                 "last": _num(p["price"][last_row, i]) if age[i] < T else None,
                 "age": int(age[i]),
                 "z": _num(fv.z[-1, i], 3),
@@ -249,7 +263,8 @@ class Desk:
         rows = slice(-hours if hours else None, None)
         cols = {
             "t": p.hours[rows].tolist(),
-            "price": p["price"][rows, i], "fair": self.fv.fair[rows, i], "value": p["value"][rows, i],
+            "price": p["price"][rows, i], "fair": self.fv.fair[rows, i],
+            "fair_low": self.fv.low[rows, i], "fair_high": self.fv.high[rows, i], "value": p["value"][rows, i],
             "bridge": p.bridge[rows],
             "chaos": p["r_price"][rows, i], "chaos_lo": p["r_lo"][rows, i], "chaos_hi": p["r_hi"][rows, i],
             "divine": p["b_price"][rows, i], "divine_lo": p["b_lo"][rows, i], "divine_hi": p["b_hi"][rows, i],
