@@ -15,6 +15,7 @@ async function api(path, body) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) throw new Error(data.error || res.statusText);
+  practiceFrom(data);
   return data;
 }
 const bankQuery = () => (+state.filters.capital > 0 ? { bankroll: +state.filters.capital } : {});
@@ -119,11 +120,11 @@ function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
-    <select id="leagueSel" title="League">${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
+    <select id="leagueSel" title="${state.practice ? 'Stop the practice to change league' : 'League'}" ${state.practice ? 'disabled' : ''}>${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
     ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
-    <div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>` : ''}
+    ${state.practice ? `<div class="stat"><b class="violet">${esc(practiceTime(state.practice))}</b><span>practice hour</span></div>` : `<div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>`}` : ''}
     <span class="grow"></span>
     <div class="sync" title="${esc(sync.error || '')}"><span class="dot ${sync.error ? 'err' : sync.running ? 'busy' : ''}"></span>${esc(sync.error ? 'Sync failed' : sync.message)}</div>
     <div class="seg" id="unitSeg" title="Show prices in Chaos or Divine"><button class="${state.unit === 'chaos' ? 'on' : ''}" data-u="chaos">Chaos</button><button class="${state.unit === 'divine' ? 'on' : ''}" data-u="divine">Divine</button></div>
@@ -607,6 +608,7 @@ async function viewLeague(main) {
   g.append(cheap, rich);
   $('#hz', main).onclick = e => { const h = +e.target.dataset.h; if (h) { v.horizon = h; route(); } };
   $('#lu', main).onclick = e => { const u = e.target.dataset.u; if (u) { v.unit = u; route(); } };
+  g.prepend(rehearsePanel());
   await leagueExtras(g, d);
 }
 
@@ -1233,6 +1235,105 @@ function openCheck(item) {
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
+// --------------------------------------------------------------- rehearsal
+// While a past league is replayed, every API answer carries `rehearsal`; the banner follows it, so
+// practice can never pass for the live market.
+// "Old day 3, 14:00": the hour within the league day, so the clock never runs backwards inside a day.
+const practiceTime = b => `${b.league} day ${b.league_day}, ${String(b.league_hour % 24).padStart(2, '0')}:00`;
+const practiceDate = b => new Date(b.hour * 1000).toLocaleString(undefined, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' UTC';
+const SPEEDS = [[0, 'by hand'], [1, '1 game hour a minute'], [2, '2 game hours a minute'], [6, '6 game hours a minute'], [24, '24 game hours a minute']];
+let practiceSeen = null, practiceResult = null, practiceTimer = null, practiceTimerSpeed = 0;
+function practiceFrom(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  const b = data.rehearsal || (data.running === true && data.hour ? data : null);
+  const was = state.practice;
+  state.practice = b || null;
+  if (b && !was) { state.league = b.league; state.summary = null; }
+  // Back to live: forget the practice league and let the server's live default fill it in again.
+  if (!b && was) { state.league = null; state.summary = null; }
+  drawPractice();
+  // A new practice hour means new prices on every page.
+  if (b && practiceSeen != null && b.hour !== practiceSeen) { practiceSeen = b.hour; refreshPracticeResult(); setTimeout(route, 0); }
+  practiceSeen = b ? b.hour : null;
+  // With the clock running by itself, look in every 15 s so the pages follow it.
+  const want = b && b.speed > 0 && !b.done ? b.speed : 0;
+  if (want !== practiceTimerSpeed) {
+    clearInterval(practiceTimer); practiceTimerSpeed = want;
+    if (want) practiceTimer = setInterval(() => api('/api/rehearsal').catch(() => {}), 15000);
+  }
+}
+async function refreshPracticeResult() {
+  try { const r = await fetch('/api/rehearsal').then(x => x.json()); practiceResult = r.result || null; drawPractice(); } catch { /* next step tries again */ }
+}
+function resultLine(r) {
+  if (!r) return '';
+  return `Practice profit <b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)} c</b> over ${r.hours} h · holding Divines with ${fmt(r.bankroll)} c: <b>${fmt(r.hold_divines)} c</b> · you are <b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)} c</b> against it`;
+}
+function drawPractice() {
+  let bar = $('#practice');
+  const b = state.practice;
+  document.body.classList.toggle('practice', !!b);
+  if (!b) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'practice'; bar.setAttribute('role', 'status'); document.body.prepend(bar); }
+  bar.innerHTML = `<div class="pline"><b class="ptag">PRACTICE</b><span class="ptime" title="Hours since the league's first trade">${esc(practiceTime(b))}</span><span class="muted">${esc(practiceDate(b))}</span>
+      <span class="muted">Not the live market.</span>${b.done ? '<b class="gold">End of the data for this league.</b>' : ''}
+      <span class="grow"></span>
+      <span class="pbtns">${[1, 6, 24].map(h => `<button class="btn" data-step="${h}" ${b.done ? 'disabled' : ''}>+${h} h</button>`).join('')}</span>
+      <select id="pspeed" title="How fast the practice clock runs">${SPEEDS.map(([v, l]) => `<option value="${v}" ${+b.speed === v ? 'selected' : ''}>${l}</option>`).join('')}${SPEEDS.some(([v]) => v === +b.speed) ? '' : `<option selected value="${b.speed}">${b.speed} game hours a minute</option>`}</select>
+      <button class="btn" id="pstop">Stop</button></div>
+    <div class="pline small"><span>${resultLine(practiceResult) || 'Practice profit appears after your first trade.'}</span><span class="grow"></span><span class="muted">Practice trades, orders and alerts go to a separate practice file, never your real ledger.</span></div>`;
+  bar.onclick = async e => {
+    const step = e.target.closest('[data-step]');
+    if (step) { step.disabled = true; try { practiceFrom(await api('/api/rehearsal/step', { hours: +step.dataset.step })); } catch (err) { toast(err.message, true); } }
+    if (e.target.id === 'pstop') stopPractice();
+  };
+  $('#pspeed', bar).onchange = async e => { try { practiceFrom(await api('/api/rehearsal/step', { speed: +e.target.value })); } catch (err) { toast(err.message, true); } };
+}
+async function stopPractice() {
+  try {
+    const r = await api('/api/rehearsal', { stop: true });
+    practiceFrom(r);
+    practiceResult = null; showPracticeEnd(r.result); route();
+  } catch (err) { toast(err.message, true); }
+}
+function showPracticeEnd(r) {
+  if (!r) return;
+  const box = document.createElement('div'); box.className = 'panel pend';
+  box.innerHTML = `<header><h2>Practice over: ${esc(r.league)}, ${r.hours} hours</h2><span class="grow"></span><button class="btn ghost" data-x>✕</button></header>
+    <div class="body"><div class="kpis" style="margin-bottom:8px">
+      <div class="kpi"><span>Practice profit</span><b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)} c</b><i class="muted">${pct(r.return)}</i></div>
+      <div class="kpi"><span>Holding Divines instead</span><b>${fmt(r.hold_divines)} c</b><i class="muted">${fmt(r.divine_then)} → ${fmt(r.divine_now)} c</i></div>
+      <div class="kpi"><span>Against holding Divines</span><b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)} c</b></div></div>
+      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)} c realised, ${fmt(r.unrealized)} c in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)} c. ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
+  box.querySelector('[data-x]').onclick = () => box.remove();
+  document.body.append(box);
+}
+// The entry point, on League start.
+function rehearsePanel() {
+  const p = panel('Rehearse a past league', 'c12', '<span class="muted small">Practise a league start: the desk plays a past league forward as if it were live, using only prices published by then.</span>');
+  const leagues = (state.status.leagues || []).filter(l => l.hours >= 24);
+  const form = document.createElement('form'); form.className = 'body bar'; form.style.margin = '0'; form.autocomplete = 'off';
+  form.innerHTML = `<label class="f">League<select name="league">${leagues.map(l => `<option value="${esc(l.league)}">${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select></label>
+    <label class="f">Start on league day<input type="number" name="start_day" value="0" min="0" step="1"></label>
+    <label class="f">Clock<select name="speed">${SPEEDS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+    <label class="f" title="Only used to size the comparison with holding Divines">Compare with holding Divines worth (c)<input type="number" name="bankroll" value="1000" min="1" step="any"></label>
+    <button class="btn primary">Start practice</button>
+    <span class="muted small" style="padding-bottom:7px">Practice trades go to a separate file, emptied when the next practice starts; your real ledger is never touched.</span>`;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const v = k => form.elements[k].value;
+    try {
+      const r = await api('/api/rehearsal', { league: v('league'), start_day: +v('start_day') || 0, speed: +v('speed'), bankroll: +v('bankroll') || 1000 });
+      if (r.previous) showPracticeEnd(r.previous);
+      practiceResult = r.result; practiceFrom(r);
+      toast(`Practice started: ${practiceTime(r)}.`);
+      if (location.hash !== '#/desk') location.hash = '#/desk'; else route();
+    } catch (err) { toast(err.message, true); }
+  };
+  p.append(form);
+  return p;
+}
+
 // ----------------------------------------------------------------- hideout
 // Fired alerts in the hideout window: a browser notification and/or the title read aloud, both opt-in.
 // Only events after the last one this window has seen; nothing is ever sent to the game.
@@ -1273,7 +1374,7 @@ function ringControls() {
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
     <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
   $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
