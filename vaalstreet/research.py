@@ -130,14 +130,20 @@ def _fmt(v) -> str:
 
 # ---- League splits and the forecast verdict --------------------------------------------------
 def splits(seasons: list[Season]) -> list[tuple[Season, list[Season]]]:
-    """Each league that has training leagues, with those leagues: the ones that ended before it
-    began. A league overlapping the test league in time is never used to fit. A test league that
-    counts toward a verdict trains only on leagues that count too; the others, shown for
-    information, may train on whatever came before them."""
-    ordered = sorted(seasons, key=lambda s: s.start)
+    """Each league that has training leagues, with those leagues, by the fold rule of strategy search
+    (`search.ended_before`): only leagues whose last hour came before the test league's first hour.
+    A league overlapping the test league in time is never used to fit. A test league that counts
+    toward a verdict trains only on leagues that count too; the others, shown for information, may
+    train on whatever came before them."""
+    from vaalstreet import search
+
+    rows = [{"league": s.name, "first_hour": s.start, "last_hour": s.end, "season": s}
+            for s in sorted(seasons, key=lambda s: (s.start, s.name))]
     out = []
-    for test in ordered:
-        train = [s for s in ordered if s.end < test.start and (s.counts or not test.counts)]
+    for row in rows:
+        test = row["season"]
+        pool = [r for r in rows if r["season"].counts or not test.counts]
+        train = [r["season"] for r in search.ended_before(pool, test.start)]
         if train:
             out.append((test, train))
     return out
@@ -787,23 +793,25 @@ def spread(seasons: list[Season]) -> Result:
     return r
 
 
-def queue_vs_share(panels: list[Panel], strategies: tuple[str, ...] | None = None) -> Result:
-    """The built-in strategies under both fill models, and how far apart their returns are."""
-    from vaalstreet import backtest
+def queue_vs_share(con, leagues: list[str] | None = None, strategies: tuple[str, ...] | None = None) -> Result:
+    """The built-in strategies under both fill models, and how far apart their returns are.
+
+    Leagues come from `search.league_rows` (every challenge league by default) and each backtest runs
+    through `search.Runner`, so this is the same league set and the same runs a strategy search sees.
+    Nothing is tuned here, so there are no folds to hold out."""
+    from vaalstreet import backtest, search
 
     t0 = time.perf_counter()
     rows = []
-    for panel in panels:
-        for name in strategies or tuple(backtest.STRATEGIES):
-            out = {}
-            for model in backtest.FILL_MODELS:
-                sim = backtest.Simulation(panel, **backtest._options(panel, 0.0, fill_model=model))
-                res = sim.run(backtest.STRATEGIES[name](), name)
-                out[model] = (res.total_return, res.fills)
-            rows.append({"league": panel.league, "strategy": name,
-                         "return, share of volume": out["share"][0], "return, queue": out["queue"][0],
-                         "gap": out["queue"][0] - out["share"][0],
-                         "fills, share": out["share"][1], "fills, queue": out["queue"][1]})
+    league_names = [r["league"] for r in search.league_rows(con, leagues)]
+    for name in strategies or tuple(backtest.STRATEGIES):
+        runner = search.Runner(con, name, {})
+        for league in league_names:
+            out = {m: runner(league, {"fill_model": m}) for m in backtest.FILL_MODELS}
+            rows.append({"league": league, "strategy": name,
+                         "return, share of volume": out["share"]["return"], "return, queue": out["queue"]["return"],
+                         "gap": out["queue"]["return"] - out["share"]["return"],
+                         "fills, share": out["share"]["fills"], "fills, queue": out["queue"]["fills"]})
     r = Result("queue-vs-share", REPORT if rows else THIN, 1, None, {}, rows,
                notes=["Return is profit over the starting stake for the whole run. A large gap means the fill "
                       "model, not the strategy, drives the result."])
@@ -834,21 +842,22 @@ def ladder_rates(con, league: str) -> Result:
 
 # ---- loading from the archive -------------------------------------------------------------------
 def seasons_from(con, leagues: list[str] | None = None) -> list[Season]:
-    """Challenge leagues (or the ones named), each loaded from its first hour, with whether it counts."""
+    """Challenge leagues (or the ones named), each loaded from its first hour, with whether it counts:
+    family "challenge" (from `leagues.classify`), a start inside the archive, and enough days."""
+    from vaalstreet import search
     from vaalstreet.leagues import LeagueBook
 
-    book = LeagueBook(con)
-    known = {r["league"]: r for r in book.leagues()}
-    names = leagues or list(known)
+    known = {r["league"]: r for r in LeagueBook(con).leagues()}
     out = []
-    for name in names:
-        info = known.get(name)
-        if info is None:
-            why = "not a challenge league"
-        elif info["truncated"]:
+    for row in search.league_rows(con, leagues):
+        name, info = row["league"], known.get(row["league"])
+        days = (row["last_hour"] - row["first_hour"]) // (24 * HOUR)
+        if row["family"] != "challenge":
+            why = f"family {row['family']}, not challenge"
+        elif info is None or info["truncated"]:
             why = "started before the archive"
-        elif info["days"] < MIN_DAYS:
-            why = f"only {info['days']} days"
+        elif days < MIN_DAYS:
+            why = f"only {days} days"
         else:
             why = ""
         panel = Panel.load(con, name, CORE + LEGS, min_value=MIN_ITEM_VALUE)
@@ -871,14 +880,11 @@ def run(con, name: str, leagues: list[str] | None = None) -> Result:
 
 
 def _run(con, name: str, leagues: list[str] | None) -> Result:
-    from vaalstreet import backtest
-
     if name == "ladder-rates":
         league = (leagues or [_latest(con)])[0]
         return ladder_rates(con, league)
     if name == "queue-vs-share":
-        names = leagues or [_latest(con)]
-        return queue_vs_share([backtest._load(con, n, 0.0, None, 150)[0] for n in names])
+        return queue_vs_share(con, leagues)
     seasons = seasons_from(con, leagues)
     fn = {"two-market": two_market, "premium": premium, "orderbook": orderbook, "spread": spread,
           "regime": regime, "relationships": relationships, "recipes": recipes}[name]

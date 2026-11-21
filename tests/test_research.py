@@ -292,3 +292,15 @@ def test_cli_runs_every_measurement_on_the_test_archive(archive_root, monkeypatc
     for name in ("two-market", "premium", "orderbook", "relationships", "recipes"):
         assert f"{name}: {THIN}" in out
     assert "pass" not in [line.split(": ")[-1] for line in out.splitlines() if line and not line.startswith(" ")]
+
+
+def test_only_the_challenge_family_counts(con):
+    """The synthetic archive also holds event leagues, a Hardcore twin and Standard: shown when
+    named, never counted, whatever their length."""
+    rows = con.execute("SELECT league, family FROM leagues").fetchall()
+    seasons = {s.name: s for s in research.seasons_from(con, [name for name, _ in rows])}
+    for name, family in rows:
+        if family != "challenge":
+            assert not seasons[name].eligible and family in seasons[name].why_not
+    default = {s.name for s in research.seasons_from(con)}
+    assert default == {name for name, family in rows if family == "challenge"}
