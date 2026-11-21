@@ -33,7 +33,7 @@ python -m vaalstreet sync --all      # every hour since July 2024, newest first,
 | **Arbitrage** | Conversions — divination card sets, shards and splinters that combine, three-for-one vendor upgrades of essences and oils (chained across tiers) — against what they produce, and round trips of one or two swaps through item-for-item markets. |
 | **League start** | The Divine price by league day across leagues, a playbook of what rose and fell over the next 3/7/14/30 days from today's league day, and what is cheap or dear compared with the same day of past leagues. |
 | **Backtest lab** | Replay a strategy over any league and compare it with simply holding Divines. |
-| **Ledger** | Record your trades; positions are marked at fair value with realised and unrealised profit. |
+| **Ledger** | Record your trades and the Gold they cost; positions are marked at fair value with realised and unrealised profit. Record the orders you post, and the desk says for each one whether to keep it, re-price it (with the ratio to post instead), cancel it (it now pays more, or asks less, than its market) or collect it; a fill adds the trade for you. Start and stop a session to see the profit, Gold spent and Chaos per hour it made, next to what the Flips session plan expected. Mark whether a recipe or round trip worked when you tried it in game; these checks hold for every league. |
 
 **Hideout mode** (press `H`) opens a small always-on-top window with the top flips, your watchlist and alerts, so it can sit over the game. Prices can be shown in Chaos or Divine anywhere. `/` jumps to search.
 
@@ -69,7 +69,7 @@ You can check the model on any league: `python -m vaalstreet scorecard --league 
 
 Read flip and backtest figures as a ceiling, not a forecast.
 
-- **Gold.** Every order costs Gold, and the fee schedule is not published. It is not modelled. Gold is often the real limit on how much you can flip.
+- **Gold.** Every order costs Gold, and the fee schedule is not published. The desk does not guess it: it learns the Gold per item from the trades and orders you record in the Ledger (the middle value of your records), and shows the fee as unknown until you have recorded some. Gold is often the real limit on how much you can flip.
 - **Queue position.** Orders at the same ratio fill in time order. The desk shows how many hours of volume already rest on each side, but cannot know where you would stand.
 - **Hourly granularity.** A level is counted as reached only when the whole hour's average traded through it, which is conservative; the path inside the hour is unknown.
 - **Small samples.** There have only been a handful of leagues since the exchange launched. League-start patterns are precedents, not odds.
@@ -147,7 +147,7 @@ data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as serv
 data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
-data/desk.sqlite                           your ledger, watchlist, alerts — the only file worth backing up
+data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts — the only file worth backing up
 ```
 
 To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
@@ -158,7 +158,7 @@ Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification s
 vaalstreet/archive.py   download         vaalstreet/desk.py      market table, flips, arbitrage
 vaalstreet/ingest.py    raw -> Parquet   vaalstreet/leagues.py   league-start analytics
 vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and strategies
-vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, watchlist, alerts
+vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipe checks, alerts
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
 ```
 
