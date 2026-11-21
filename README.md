@@ -43,7 +43,7 @@ python -m vaalstreet sync --all      # every hour since July 2024, newest first,
 
 **Prices.** The hourly price of a market is its volume-weighted average (Chaos paid ÷ items received). Divine-market prices are converted at that same hour's Divine price. The two markets of an item are kept apart, because they are not the same price: the Divine market is typically several percent dearer. The published lowest/highest ratios are not used to set levels — single-unit rounding and joke trades (a Divine for one Chaos) pollute them in most hours.
 
-**Fair value.** A local-level Kalman filter on log price per item. The item's own returns are split into real movement and bounce (negative lag-one autocovariance), hours that traded more value count for more, and prints far outside the forecast are down-weighted. Parameters are re-fitted on trailing data only, so the series is causal: the value shown for an hour used nothing from after it.
+**Fair value.** A local-level Kalman filter on log price per item. The item's own returns are split into real movement and bounce (negative lag-one autocovariance), hours that traded more value count for more, and prints far outside the forecast are down-weighted. A print very far out is set aside until the next print confirms it, and only an hour that traded at least half its usual number of items can confirm it: two thin hours of joke trades in a row do not move the value. Parameters are re-fitted on trailing data only, so the series is causal: the value shown for an hour used nothing from after it.
 
 You can check the model on any league: `python -m vaalstreet scorecard --league Mirage` compares fair value with the latest print as a predictor of where the item trades over the following six hours.
 

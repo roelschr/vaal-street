@@ -61,6 +61,21 @@ def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
     assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
 
 
+def test_two_thin_joke_prints_in_a_row_do_not_reprice_an_item():
+    # As seen live on Tainted Armourer's Scrap's Divine market: ~100 units an hour at about 6.5,
+    # then 2 and 12 units at half a Divine (~107), then 260 units back at 8. Known answer: the
+    # value never leaves the old level, while a real crash (full volume) is still believed.
+    _, seen = noisy_walk(noise=0.02, N=2)
+    units = np.full(seen.shape, 100.0)
+    seen[300:302] *= 16
+    units[300:302] = [[2, 2], [12, 12]]
+    seen[302:, 1] *= 16  # column 1: the move is real and keeps trading at full volume
+    fv = pricing.fair_value(seen, seen * units)
+    assert abs(math.log(fv.fair[301, 0] / fv.fair[299, 0])) < 0.1, "thin prints confirm nothing"
+    assert abs(math.log(fv.fair[310, 0] / seen[310, 0])) < 0.1
+    assert fv.fair[302, 1] == pytest.approx(seen[302, 1]), "a full-volume print confirms the move"
+
+
 def test_scorecard_measures_fair_value_against_the_last_print():
     true, seen = noisy_walk(T=800, noise=0.05)
     value = np.ones_like(seen)
