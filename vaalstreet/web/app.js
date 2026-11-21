@@ -608,11 +608,90 @@ function download(name, data) {
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+const LAB_MODES = `<div class="seg" id="labMode"><button data-mode="run">Run a backtest</button><button data-mode="search">Search settings</button></div>`;
+const SCORE_WORDS = { divine: 'Return over holding Divines', return: 'Return in Chaos', drawdown: 'Return over the worst drop' };
+// "0.2, 0.3" -> [0.2, 0.3]; words stay words.
+const gridValues = text => text.split(',').map(x => x.trim()).filter(Boolean).map(x => (x !== '' && isFinite(+x) ? +x : x));
+const settingText = (s, strategy) => Object.entries(s || {}).map(([k, v]) => { const p = STRATS[strategy]?.params[k]; return `${esc(p ? p[1].toLowerCase() : STRATS_PARAM_WORDS[k] || k)}: ${esc(p?.[2]?.[v] ?? v)}`; }).join(', ') || 'the defaults';
+const STRATS_PARAM_WORDS = { attention: 'hours between visits' };
+
+// Strategy search: try a small grid, judged on leagues the settings were not chosen on.
+async function viewSearch(main, lab) {
+  const s = lab.search ||= { strategy: 'swing', grid: {}, attention: '', leagues: [], score: 'divine', capital: 10000, result: null };
+  const leagues = state.status.leagues.filter(l => l.family === 'challenge' && l.hours >= 72);
+  const sdef = STRATS[s.strategy];
+  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Search a few settings of a built-in strategy, judged the way you would have used them: each league is scored with the setting that did best on leagues that had ended before it began.</p></div><span class="grow"></span>${LAB_MODES}</div>
+    <p class="note">The desk tries at most 12 settings and 48 backtests per search, because it waits for the answer; use <code>search</code> on the command line for bigger grids. The more settings you try, the better the best one looks by luck, which is why only results on later leagues count.</p>
+    <div class="grid"><section class="panel c4"><header><h2>Search</h2></header><form class="body" id="sform" style="display:grid;gap:10px" autocomplete="off">
+      <label class="f">Strategy<select name="strategy">${Object.entries(STRATS).map(([k, x]) => `<option value="${k}" ${k === s.strategy ? 'selected' : ''}>${x.label}</option>`).join('')}</select></label>
+      <div class="muted small">${sdef.text} Give each setting one value or several, separated by commas; leave it empty to keep its default.</div>
+      ${Object.entries(sdef.params).map(([k, [def, text, options]]) => options
+        ? `<div class="f ctl">${text} <span class="dim">(none ticked: ${esc(options[def])})</span><div>${Object.entries(options).map(([v, l]) => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-go="${k}" value="${esc(v)}" ${(s.grid[k] || []).includes(v) ? 'checked' : ''}>${esc(l)}</label>`).join('')}</div></div>`
+        : `<label class="f">${text} <span class="dim">(default ${esc(def)})</span><input type="text" data-g="${k}" value="${esc((s.grid[k] || []).join(', '))}" placeholder="e.g. ${esc(def)}"></label>`).join('')}
+      <label class="f">Hours between visits <span class="dim">(a run option, default 1)</span><input type="text" data-g="attention" value="${esc((s.grid.attention || []).join(', '))}" placeholder="e.g. 1, 4"></label>
+      <div class="f ctl">Leagues <span class="dim">(none ticked: every challenge league)</span><div>${leagues.map(l => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-l="${esc(l.league)}" ${s.leagues.includes(l.league) ? 'checked' : ''}>${esc(l.league)}</label>`).join('')}</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label class="f">Score<select name="score">${Object.entries(SCORE_WORDS).map(([k, l]) => `<option value="${k}" ${k === s.score ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Bankroll (c)<input type="number" name="capital" value="${s.capital}" style="width:auto"></label>
+      </div>
+      <div id="serr" class="down small" role="alert"></div>
+      <button class="btn primary">Search</button></form></section>
+    <section class="panel c8"><header><h2>Results on later leagues</h2><span class="grow"></span><button class="btn" id="sexp" ${s.result ? '' : 'hidden'} title="Save the setting it would pick next, with this table, as a strategy file. Nothing is uploaded.">Export</button></header><div class="body" id="sout"><div class="empty">Enter a few values and search.</div></div></section></div>`;
+  $('#labMode', main).querySelector(`[data-mode=search]`).classList.add('on');
+  $('#labMode', main).onclick = e => { const m = e.target.dataset.mode; if (m) { lab.mode = m; route(); } };
+  const form = $('#sform', main);
+  const read = () => {
+    s.strategy = form.elements.strategy.value; s.score = form.elements.score.value; s.capital = form.elements.capital.value;
+    s.grid = {}; form.querySelectorAll('[data-g]').forEach(i => { const v = gridValues(i.value); if (v.length) s.grid[i.dataset.g] = v; });
+    form.querySelectorAll('[data-go]:checked').forEach(c => (s.grid[c.dataset.go] ||= []).push(c.value));
+    s.leagues = [...form.querySelectorAll('[data-l]:checked')].map(c => c.dataset.l);
+  };
+  form.elements.strategy.onchange = () => { s.strategy = form.elements.strategy.value; s.grid = {}; route(); };
+  const show = () => {
+    const r = s.result, out = $('#sout', main);
+    if (!r) return;
+    const p = r.pooled;
+    out.innerHTML = `<div class="kpi" style="margin-bottom:12px"><span>Settings tried</span><b>${r.settings_tried}</b><i class="muted">${r.backtests} backtests in ${+(+r.seconds).toFixed(1)} s · score: ${esc(SCORE_WORDS[r.score] || r.score)}</i></div>
+      <div id="stbl"></div>
+      <p class="muted" style="margin:10px 0 0">Average over ${p.folds} later league${p.folds === 1 ? '' : 's'}: <b class="num">${pct(p.score)}</b> with the chosen settings, against <b class="num">${pct(p.default_score)}</b> with the defaults; better than the defaults in ${p.beat_default} of ${p.folds}. ${r.stability.of ? `The choice changed ${r.stability.changes} time${r.stability.changes === 1 ? '' : 's'} in ${r.stability.of} steps.` : ''}</p>
+      <p class="muted" style="margin:6px 0 0">For the next league it would pick ${settingText(r.next.setting, r.strategy)}, chosen on ${r.next.tuned_on.map(esc).join(', ')}.</p>`;
+    $('#stbl', out).append(table([
+      { h: 'League', l: 1, f: f => esc(f.league) },
+      { h: 'Chosen on', l: 1, f: f => `<span class="muted">${f.tuned_on.map(esc).join(', ')}</span>` },
+      { h: 'Setting', l: 1, f: f => settingText(f.setting, r.strategy) },
+      { h: 'Score there', f: f => pct(f.score), title: 'The chosen setting on a league it was not chosen on' },
+      { h: 'Defaults', f: f => pct(f.default_score), title: 'The strategy’s default settings on the same league' },
+      { h: 'Holding Divines', f: f => pct(f.divine_return), title: 'What the same Chaos made held as Divine Orbs' },
+      { h: 'Return', f: f => pct(f.return), title: 'The chosen setting’s return in Chaos' },
+      { h: 'Fit on earlier leagues', f: f => `<span class="dim">${pct(f.fit_on_earlier).replace(/class="(up|down|muted)"/, 'class="dim"')}</span>`, title: 'The best score on the leagues it was chosen on: the best of many tries, so it flatters' },
+    ], r.folds));
+  };
+  form.onsubmit = async e => {
+    e.preventDefault(); read();
+    const err = $('#serr', form), btn = form.querySelector('button.primary');
+    err.textContent = ''; btn.disabled = true; btn.textContent = 'Searching…';
+    try {
+      s.result = await api('/api/search', { strategy: s.strategy, grid: s.grid, leagues: s.leagues.length ? s.leagues : null, score: s.score, capital: +s.capital });
+      $('#sexp', main).hidden = false; show();
+    } catch (x) { err.textContent = x.message; }
+    btn.disabled = false; btn.textContent = 'Search';
+  };
+  $('#sexp', main).onclick = async () => {
+    try {
+      const doc = await api('/api/strategy_export', { strategy: s.result.strategy, walk_forward: s.result });
+      download(`${s.result.strategy}-search.json`, doc);
+      toast('Saved the setting it would pick next, with its results, to your downloads. Nothing was uploaded.');
+    } catch (x) { toast(x.message, true); }
+  };
+  show();
+}
+
 async function viewLab(main) {
   if (!state.summary) await loadDesk();
   renderTop();
   const leagues = state.status.leagues.filter(l => l.kind === 'challenge' && l.hours >= 72);
   const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'share', results: [], ran: null };
+  if (lab.mode === 'search') return viewSearch(main, lab);
   const several = lab.members.length > 1;
   const member = (m, n) => {
     const sdef = STRATS[m.strategy];
@@ -624,7 +703,7 @@ async function viewLab(main) {
         ? `<label class="f">${text}<select data-p="${k}">${Object.entries(options).map(([v, l]) => `<option value="${v}" ${(m.params[k] ?? def) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<label class="f">${text}<input type="text" data-p="${k}" value="${esc(m.params[k] ?? def)}"></label>`).join('')}</div>`;
   };
-  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div><span class="grow"></span>${LAB_MODES}</div>
     <p class="note">A resting order fills at its limit only in hours whose average price traded through it; an aggressive order pays the average plus slippage. Results are in Chaos, on a fixed bankroll. Gold is charged only at the fee per unit you enter, because the real fee for each item is not known, so treat maker results as a ceiling.</p>
     <div class="grid"><section class="panel c4"><header><h2>Setup</h2></header><div class="body" id="form" style="display:grid;gap:10px">
       ${lab.members.map(member).join('')}
@@ -647,6 +726,8 @@ async function viewLab(main) {
       <div id="err" class="down small" role="alert"></div>
       <button class="btn primary" id="run">Run backtest</button></div></section>
     <section class="panel c8" id="res"><header><h2>Results</h2><span class="grow"></span><button class="btn" id="exp" hidden title="Save this strategy, its settings and its results as a file you can share. Nothing is uploaded.">Export</button></header><div class="body" id="out"><div class="empty">Pick a strategy and run it.</div></div></section></div>`;
+  $('#labMode', main).querySelector('[data-mode=run]').classList.add('on');
+  $('#labMode', main).onclick = e => { const m = e.target.dataset.mode; if (m) { lab.mode = m; route(); } };
   const form = $('#form', main);
   form.querySelectorAll('[data-m]').forEach(box => {
     const m = lab.members[+box.dataset.m];

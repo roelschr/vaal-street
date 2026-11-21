@@ -546,6 +546,17 @@ class App:
         spec = body.get("strategy")
         if spec not in backtest.STRATEGIES:
             raise ApiError("The desk exports built-in strategies only; use the CLI for your own modules.")
+        report = body.get("walk_forward")
+        if report is not None:
+            # A strategy search: the setting it would pick next and its out-of-sample table, as `search --export`.
+            try:
+                setting = report["next"]["setting"]
+                params, _ = search._split(setting, spec)
+                options = {**(report.get("options") or {}), **setting}
+                return sharing.document(spec, params, options, search.export_rows(report),
+                                        extra={"walk_forward": report})
+            except (KeyError, TypeError, ValueError) as err:
+                raise ApiError(f"That is not a search result: {err}") from err
         params, options, results = body.get("params") or {}, body.get("options") or {}, body.get("results") or []
         if not (isinstance(params, dict) and isinstance(options, dict) and isinstance(results, list)):
             raise ApiError("params and options must be sets of named values, results a list.")
