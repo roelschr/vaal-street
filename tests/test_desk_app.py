@@ -215,3 +215,21 @@ def test_api_strategy_export_matches_the_cli_file(server):
     assert status == 200 and doc["format"] == sharing.FORMAT and doc["params"] == {"reach": 0.3}
     assert doc == sharing.document("swing", body["params"], body["options"], body["results"])
     assert call(f"{server}/api/strategy_export", {"strategy": "my.py:Mine"})[0] == 400
+
+
+def test_market_change_is_blank_when_the_window_starts_before_the_item_traded(con, archive_root):
+    # New runs 8 days (192 hours), so the 7-day change compares with hours 21-23. Blank the orb's
+    # prints up to hour 22: that window now starts before its first trade, so there is no 7-day
+    # change, while the 24-hour change still has a full earlier window and stays.
+    from vaalstreet.desk import Desk
+
+    def row(desk):
+        return next(r for r in desk.market() if r["id"] == ITEM)
+
+    assert row(Desk.build(con, NEW, root=archive_root))["change_7d"] is not None
+    desk = Desk.build(con, NEW, root=archive_root)
+    T = len(desk.panel.hours)
+    assert T - 3 - 7 * 24 == 21
+    desk.panel["price"][:22, desk.panel.index(ITEM)] = float("nan")
+    changed = row(desk)
+    assert changed["change_7d"] is None and changed["change_24h"] is not None

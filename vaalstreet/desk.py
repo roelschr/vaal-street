@@ -449,13 +449,23 @@ class Desk:
         value_24h = np.nansum(p["value"][-DAY:], axis=0)
         active = pricing.activity(p["price"], DAY)[-1]
 
+        traded = np.isfinite(p["price"])
+        first_print = np.where(traded.any(axis=0), traded.argmax(axis=0), T)
+
         def change(back: int) -> np.ndarray:
-            """Move over `back` hours between two 3-hour medians, so one odd print cannot fake a trend."""
-            if T <= back + 3:
+            """Move over `back` hours between two 3-hour medians, so one odd print cannot fake a trend.
+
+            No change when the earlier window starts before the league's first hour or before the
+            item's first trade: league-start prices are not a level to compare with, and early
+            league prices can be hundreds of times off, which reads as +66,700%.
+            """
+            if T < back + 3:
                 return np.full(fair.shape[1], np.nan)
             with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
                 warnings.simplefilter("ignore", category=RuntimeWarning)
-                return np.nanmedian(fair[-3:], axis=0) / np.nanmedian(fair[-3 - back : -back], axis=0) - 1
+                out = np.nanmedian(fair[-3:], axis=0) / np.nanmedian(fair[T - 3 - back : T - back], axis=0) - 1
+            out[first_print > T - 3 - back] = np.nan
+            return out
 
         chg_24, chg_7d = change(DAY), change(7 * DAY)
         spark_rows = np.arange(max(0, T - 72), T, 3)
