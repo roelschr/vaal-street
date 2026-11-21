@@ -15,6 +15,10 @@ patient orders fill - check the in-game book before committing size.
 
 from __future__ import annotations
 
+import dataclasses
+import functools
+import inspect
+import json
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -83,6 +87,35 @@ class Leg:
 def kind_currency(plan: dict, side: str) -> bool:
     """Whether a plan's buy or sell order is denominated in the bridge currency (Divine)."""
     return plan[f"{side}_order"]["currency"] != "Chaos"
+
+
+def _key_part(value: Any) -> Any:
+    if dataclasses.is_dataclass(value):
+        return dataclasses.asdict(value)
+    return repr(value)
+
+
+def _memo(method):
+    """Remember a list-of-rows answer on the Desk, keyed by every argument.
+
+    A Desk is built once per published hour and then asked the same questions by several pages,
+    so the walk is done once. Arguments such as your conversions and your Gold fees are part of
+    the key, so changing them computes afresh. Each call gets its own copy of the rows, so a
+    caller that adds fields to them does not change what the next caller sees.
+    """
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        named = {k: v for k, v in bound.arguments.items() if k != "self"}
+        key = (method.__name__, json.dumps(named, sort_keys=True, default=_key_part))
+        if key not in self._cache:
+            self._cache[key] = method(self, *args, **kwargs)
+        return [dict(row) for row in self._cache[key]]
+
+    return wrapper
 
 
 @dataclass
@@ -290,6 +323,7 @@ class Desk:
     meta: dict[str, dict] = field(default_factory=dict)
     cross: list[dict] = field(default_factory=list)  # item-vs-item markets, trailing day
     _replays: dict = field(default_factory=dict, repr=False)
+    _cache: dict = field(default_factory=dict, repr=False)  # see `_memo`
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -511,6 +545,7 @@ class Desk:
             "profit_per_hour": _num(margin * min(flow_value, bankroll / 2), 4),
         }
 
+    @_memo
     def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5,
               bankroll: float | None = None, costs: Costs | None = None) -> list[dict]:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
@@ -642,6 +677,7 @@ class Desk:
             current = self.panel.items[j]
         return chain
 
+    @_memo
     def conversions(self, share: float = 0.1, fixed: list[dict] | None = None,
                     costs: Costs | None = None) -> list[dict]:
         """Fixed conversions against what they produce: divination card sets, shards and splinters
@@ -748,6 +784,7 @@ class Desk:
             "fixed_id": recipe.get("id"), "note": recipe.get("note", ""),
         }
 
+    @_memo
     def loops(self, min_edge: float = 0.03, min_value: float = 200.0, chaos_only: bool = False,
               share: float = 0.1, swaps: int = 3, fixed: list[dict] | None = None,
               costs: Costs | None = None) -> list[dict]:

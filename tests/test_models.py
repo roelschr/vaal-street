@@ -434,3 +434,25 @@ def test_your_recipes_are_priced_like_the_built_in_ones(desk):
     chaos = next(r for r in yours if r["fixed_id"] == 8)  # 3 Chaos for 2 shards worth 2 each
     assert chaos["margin"] == pytest.approx(2 * desk.fair(OTHER) / 3 - 1, rel=1e-3)
     json.dumps(rows, allow_nan=False)
+
+
+def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
+    from vaalstreet.desk import Costs
+
+    first = desk.loops(min_value=10)
+    size = len(desk._cache)
+    desk.cross = []  # a fresh walk would now find no side-market round trips
+    again = desk.loops(min_value=10)
+    assert again == first and len(desk._cache) == size, "the second call is the remembered answer"
+    again[0]["check"] = "confirmed"
+    assert "check" not in desk.loops(min_value=10)[0], "a caller's added fields do not leak into the cache"
+    # Positional and keyword forms of the same question share one entry.
+    assert desk.loops(0.03, 10) == first and len(desk._cache) == size
+
+    desk.loops(min_value=10, swaps=2)
+    assert len(desk._cache) == size + 1, "a different argument is a different question"
+    priced = desk.loops(min_value=10, costs=Costs(assumed=2.0))
+    assert len(desk._cache) == size + 2 and priced[0]["gold"] is not None and first[0]["gold"] is None
+    assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
+    mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
+    assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
