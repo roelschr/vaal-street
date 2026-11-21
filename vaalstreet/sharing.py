@@ -33,6 +33,13 @@ def code_version() -> str:
 
 def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
     """Write a strategy file and return what was written."""
+    doc = document(spec, params, options, summaries)
+    Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
+    return doc
+
+
+def document(spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
+    """The strategy file's contents, as `export` writes them; the desk hands this to the browser to save."""
     from vaalstreet.backtest import STRATEGIES
 
     doc: dict = {
@@ -53,7 +60,6 @@ def export(path: Path, spec: str, params: dict, options: dict, summaries: list[d
         doc["file"] = source.name
         doc["strategy"] = f"{source.name}:{doc['class']}"  # not the folder: it would name your home directory
         doc["source"] = source.read_text(encoding="utf-8")
-    Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     return doc
 
 

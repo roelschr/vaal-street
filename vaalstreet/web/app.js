@@ -516,21 +516,43 @@ const STRATS = {
   reversion: { label: 'Dip buyer (taker)', text: 'Pay the spread to buy prints far below the model, sell when they normalise.', params: { entry_z: [-2, 'Buy below this surprise score'], exit_z: [0, 'Sell above this score'], top: [40, 'Most-traded items'], per_item: [0.05, 'Max share of bankroll per item'] } },
   momentum: { label: 'Momentum (taker)', text: 'Once a day, hold the liquid items that rose most.', params: { lookback: [72, 'Hours of history ranked'], hold: [10, 'Items held'], top: [60, 'Most-traded items considered'] } },
 };
+const FILL_MODELS = {
+  share: ['Share of volume', 'A resting order takes at most the share of each hour’s volume set below.'],
+  queue: ['Wait in line', 'Your order waits behind the stock already on offer on your side, then can take all the volume through your price.'],
+};
+const paramsOf = m => {
+  const out = {};
+  for (const [k, [def]] of Object.entries(STRATS[m.strategy].params)) { const raw = m.params[k] ?? def; out[k] = typeof def === 'number' ? +raw : String(raw); }
+  return out;
+};
+function download(name, data) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1) + '\n'], { type: 'application/json' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 async function viewLab(main) {
   if (!state.summary) await loadDesk();
   renderTop();
   const leagues = state.status.leagues.filter(l => l.kind === 'challenge' && l.hours >= 72);
-  const lab = state.lab ||= { strategy: 'swing', leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', params: {}, results: [] };
-  const sdef = STRATS[lab.strategy];
-  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div></div>
-    <p class="note">A resting order fills at its limit only in hours whose average price traded through it, for at most the chosen share of that hour's volume; an aggressive order pays the average plus slippage. Results are sized on a fixed bankroll, in Chaos. No Gold fees and no queue priority are modelled, so treat maker results as a ceiling.</p>
-    <div class="grid"><section class="panel c4"><header><h2>Setup</h2></header><div class="body" id="form" style="display:grid;gap:10px">
-      <label class="f">Strategy<select id="st">${Object.entries(STRATS).map(([k, s]) => `<option value="${k}" ${k === lab.strategy ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
+  const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'share', results: [], ran: null };
+  const several = lab.members.length > 1;
+  const member = (m, n) => {
+    const sdef = STRATS[m.strategy];
+    return `<div class="member" data-m="${n}">
+      <div style="display:flex;gap:8px;align-items:flex-end"><label class="f" style="flex:1">${several ? `Strategy ${n + 1}` : 'Strategy'}<select data-ms="${n}">${Object.entries(STRATS).map(([k, s]) => `<option value="${k}" ${k === m.strategy ? 'selected' : ''}>${s.label}</option>`).join('')}</select></label>
+      ${several ? `<button type="button" class="btn ghost" data-mrm="${n}" title="Take this strategy out of the portfolio">✕</button>` : ''}</div>
       <div class="muted small">${sdef.text}</div>
       ${Object.entries(sdef.params).map(([k, [def, text, options]]) => options
-        ? `<label class="f">${text}<select data-p="${k}">${Object.entries(options).map(([v, l]) => `<option value="${v}" ${(lab.params[k] ?? def) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
-        : `<label class="f">${text}<input type="text" data-p="${k}" value="${esc(lab.params[k] ?? def)}"></label>`).join('')}
-      <div class="f">Leagues<div>${leagues.map(l => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-l="${esc(l.league)}" ${lab.leagues.includes(l.league) ? 'checked' : ''}>${esc(l.league)}</label>`).join('')}</div></div>
+        ? `<label class="f">${text}<select data-p="${k}">${Object.entries(options).map(([v, l]) => `<option value="${v}" ${(m.params[k] ?? def) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
+        : `<label class="f">${text}<input type="text" data-p="${k}" value="${esc(m.params[k] ?? def)}"></label>`).join('')}</div>`;
+  };
+  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div></div>
+    <p class="note">A resting order fills at its limit only in hours whose average price traded through it; an aggressive order pays the average plus slippage. Results are in Chaos, on a fixed bankroll. Gold is charged only at the fee per unit you enter, because the real fee for each item is not known, so treat maker results as a ceiling.</p>
+    <div class="grid"><section class="panel c4"><header><h2>Setup</h2></header><div class="body" id="form" style="display:grid;gap:10px">
+      ${lab.members.map(member).join('')}
+      <button type="button" class="btn ghost" id="madd" style="justify-self:start" title="Run several strategies together on one bankroll">+ Add a strategy to run alongside</button>
+      ${several ? '<div class="muted small">Together they share one bankroll, one Gold budget and each hour’s volume. Strategy 1 fills first every hour, the next ones from what is left.</div>' : ''}
+      <div class="f ctl">Leagues<div>${leagues.map(l => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-l="${esc(l.league)}" ${lab.leagues.includes(l.league) ? 'checked' : ''}>${esc(l.league)}</label>`).join('')}</div></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label class="f">Bankroll (c)<input type="number" data-o="capital" value="${lab.capital}" style="width:auto"></label>
         <label class="f">Hours between visits<input type="number" data-o="attention" value="${lab.attention}" min="1" style="width:auto"></label>
@@ -538,42 +560,88 @@ async function viewLab(main) {
         <label class="f">Slippage when taking<input type="number" data-o="slippage" value="${lab.slippage}" step="0.01" style="width:auto"></label>
         <label class="f">Start on league day<input type="number" data-o="start_day" value="${lab.start_day}" min="0" style="width:auto"></label>
         <label class="f">Run for days<input type="number" data-o="days" value="${lab.days}" placeholder="to the end" style="width:auto"></label>
+        <label class="f" title="Charged for every unit you post, including re-posts">Gold per unit<input type="number" data-o="gold_per_unit" value="${lab.gold_per_unit}" min="0" step="any" placeholder="none" style="width:auto"></label>
+        <label class="f" title="Once spent, no new orders go up; standing orders can still fill">Gold budget<input type="number" data-o="gold_budget" value="${lab.gold_budget}" min="0" step="1000" placeholder="no limit" style="width:auto"></label>
       </div>
+      <label class="f">When you play (UTC, end hour not included)<input type="text" data-o="schedule" value="${esc(lab.schedule)}" placeholder="e.g. mon-fri 19-22, sat-sun 10-18"></label>
+      <div class="f ctl">How resting orders fill<div class="seg" id="fm">${Object.entries(FILL_MODELS).map(([k, [l]]) => `<button type="button" data-fm="${k}" class="${lab.fill_model === k ? 'on' : ''}">${l}</button>`).join('')}</div><span class="muted small" style="color:var(--muted)">${FILL_MODELS[lab.fill_model][1]}</span></div>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input type="checkbox" data-o="whole_lots" ${lab.whole_lots ? 'checked' : ''}> Whole lots: trade whole-number ratios your cash can pay for, like a real purse</label>
+      <div id="err" class="down small" role="alert"></div>
       <button class="btn primary" id="run">Run backtest</button></div></section>
-    <section class="panel c8" id="res"><header><h2>Results</h2></header><div class="body" id="out"><div class="empty">Pick a strategy and run it.</div></div></section></div>`;
-  $('#st', main).onchange = e => { lab.strategy = e.target.value; lab.params = {}; route(); };
-  main.querySelectorAll('[data-p]').forEach(i => i.onchange = () => { lab.params[i.dataset.p] = i.value; });
-  main.querySelectorAll('[data-o]').forEach(i => i.onchange = () => { lab[i.dataset.o] = i.value; });
-  main.querySelectorAll('[data-l]').forEach(i => i.onchange = () => { lab.leagues = [...main.querySelectorAll('[data-l]:checked')].map(c => c.dataset.l); });
+    <section class="panel c8" id="res"><header><h2>Results</h2><span class="grow"></span><button class="btn" id="exp" hidden title="Save this strategy, its settings and its results as a file you can share. Nothing is uploaded.">Export</button></header><div class="body" id="out"><div class="empty">Pick a strategy and run it.</div></div></section></div>`;
+  const form = $('#form', main);
+  form.querySelectorAll('[data-m]').forEach(box => {
+    const m = lab.members[+box.dataset.m];
+    box.querySelectorAll('[data-p]').forEach(i => i.onchange = () => { m.params[i.dataset.p] = i.value; });
+  });
+  form.querySelectorAll('[data-ms]').forEach(s => s.onchange = () => { lab.members[+s.dataset.ms] = { strategy: s.value, params: {} }; route(); });
+  form.querySelectorAll('[data-mrm]').forEach(b => b.onclick = () => { lab.members.splice(+b.dataset.mrm, 1); route(); });
+  $('#madd', form).onclick = () => { lab.members.push({ strategy: 'hold', params: {} }); route(); };
+  $('#fm', form).onclick = e => { const k = e.target.dataset.fm; if (k) { lab.fill_model = k; route(); } };
+  form.querySelectorAll('[data-o]').forEach(i => i.onchange = () => { lab[i.dataset.o] = i.type === 'checkbox' ? i.checked : i.value; });
+  form.querySelectorAll('[data-l]').forEach(i => i.onchange = () => { lab.leagues = [...form.querySelectorAll('[data-l]:checked')].map(c => c.dataset.l); });
+  const options = () => ({ capital: +lab.capital, participation: +lab.participation, slippage: +lab.slippage, attention: +lab.attention, start_day: +lab.start_day, days: lab.days || null,
+    whole_lots: !!lab.whole_lots, gold_per_unit: +lab.gold_per_unit || 0, gold_budget: lab.gold_budget === '' ? null : +lab.gold_budget, schedule: lab.schedule.trim() || null, fill_model: lab.fill_model });
   const show = () => {
     const out = $('#out', main);
+    $('#exp', main).hidden = !(lab.results.length && lab.ran && lab.ran.members.length === 1);
     if (!lab.results.length) return;
-    out.innerHTML = `<div id="rt"></div><div class="legend" style="margin-top:14px" id="rl"></div><div id="rc"></div><div id="tops" class="small muted" style="margin-top:8px"></div>`;
+    out.innerHTML = `<div id="rt"></div><div class="legend" style="margin-top:14px" id="rl"></div><div id="rc"></div><div id="tops" class="small muted" style="margin-top:8px"></div><div id="mix" style="margin-top:12px"></div>`;
     const pick = r => {
       const s = r.summary;
-      $('#rl', out).innerHTML = `<span><i style="background:#b2ef78"></i>${esc(s.strategy)} on ${esc(s.league)}</span><span><i style="background:#8fb8f2"></i>Same Chaos held as Divine Orbs</span>`;
+      $('#rl', out).innerHTML = `<span><i style="background:#b2ef78"></i>${esc(s.strategy.split(' + ').map(k => STRATS[k]?.label || k).join(' + '))} on ${esc(s.league)}</span><span><i style="background:#8fb8f2"></i>Same Chaos held as Divine Orbs</span>`;
       drawChart($('#rc', out), { series: [{ label: 'Strategy', color: '#b2ef78', x: r.t, y: r.equity, width: 2 }, { label: 'Hold Divine', color: '#8fb8f2', x: r.t, y: r.divine, width: 1.3 }], yFormat: x => compact(x) + ' c', tickFormat: tick('c'), log: true, height: 280 });
       $('#tops', out).innerHTML = s.top_items.length ? 'Biggest contributors: ' + s.top_items.map(t => `${esc(t.name)} <span class="num ${t.profit >= 0 ? 'up' : 'down'}">${t.profit >= 0 ? '+' : ''}${compact(t.profit)}</span>`).join(' · ') : '';
+      const mix = $('#mix', out); mix.replaceChildren();
+      if (s.strategies?.length) {
+        mix.insertAdjacentHTML('beforeend', `<h2 style="margin-bottom:6px">Each strategy on ${esc(s.league)}</h2>`);
+        mix.append(table([
+          { h: 'Strategy', l: 1, f: m => esc(STRATS[m.strategy]?.label || m.strategy) },
+          { h: 'Profit', f: m => `<span class="${m.profit >= 0 ? 'up' : 'down'}">${fmt(m.profit)} c</span>` },
+          { h: 'Share of profit', f: m => plainPct(m.profit_share, 0) },
+          { h: 'Gold spent', f: m => fmt(Math.round(m.gold_spent)) },
+          { h: 'Most tied up', f: m => fmt(m.peak_capital) + ' c', title: 'The most Chaos this strategy had in items at once' },
+          { h: 'Average tied up', f: m => fmt(m.average_capital) + ' c' },
+          { h: 'Worst drop', f: m => fmt(m.peak_risk) + ' c', title: 'What its holdings could lose on a bad day (1 in 20), at the worst hour' },
+          { h: 'Fills', f: m => m.fills.toLocaleString('en-US') },
+        ], s.strategies));
+      }
     };
-    $('#rt', out).append(table([
+    $('#rt', out).replaceChildren(table([
       { h: 'League', l: 1, f: r => esc(r.summary.league), s: r => r.summary.league },
       { h: 'Days', f: r => r.summary.days }, { h: 'Return', f: r => pct(r.summary.return, 0), s: r => r.summary.return },
       { h: 'Hold Divine', f: r => pct(r.summary.divine_return, 0), title: 'The same Chaos converted to Divine Orbs after day one' },
       { h: 'Per day', f: r => fmt(r.summary.per_day) + ' c', s: r => r.summary.per_day },
       { h: 'Worst drawdown', f: r => plainPct(r.summary.max_drawdown, 1) },
       { h: 'Fills', f: r => r.summary.fills.toLocaleString('en-US') }, { h: 'Turnover', f: r => r.summary.turnover + '×', title: 'Traded value over bankroll' },
+      { h: 'Gold spent', f: r => fmt(Math.round(r.summary.gold_spent)), s: r => r.summary.gold_spent },
+      { h: 'Per 1,000 Gold', f: r => r.summary.chaos_per_1000_gold == null ? '–' : fmt(r.summary.chaos_per_1000_gold) + ' c', s: r => r.summary.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold spent' },
+      { h: 'Most held', f: r => fmt(r.summary.peak_holdings) + ' c', s: r => r.summary.peak_holdings, title: 'The most Chaos you had in items at any hour, at fair value' },
+      { h: 'Worst drop', f: r => fmt(r.summary.peak_risk) + ' c', s: r => r.summary.peak_risk, title: 'What your holdings could lose on a bad day for these items (about 1 day in 20), at the riskiest hour' },
+      { h: 'Avg drop', f: r => fmt(r.summary.average_risk) + ' c', s: r => r.summary.average_risk, title: 'The same bad-day loss, averaged over the run' },
     ], lab.results, { onRow: pick }));
     pick(lab.results[0]);
   };
-  $('#run', main).onclick = async e => {
-    if (!lab.leagues.length) return toast('Choose at least one league.', true);
-    e.target.disabled = true; e.target.textContent = 'Running…'; lab.results = [];
-    const params = {};
-    for (const [k, [def]] of Object.entries(sdef.params)) { const raw = lab.params[k] ?? def; params[k] = typeof def === 'number' ? +raw : String(raw); }
+  $('#exp', main).onclick = async () => {
+    const ran = lab.ran, m = ran.members[0];
     try {
-      for (const league of lab.leagues) lab.results.push(await api('/api/backtest', { league, strategy: lab.strategy, params, capital: +lab.capital, participation: +lab.participation, slippage: +lab.slippage, attention: +lab.attention, start_day: +lab.start_day, days: lab.days || null }));
-      show();
+      const doc = await api('/api/strategy_export', { strategy: m.strategy, params: m.params, options: ran.options, results: lab.results.map(r => r.summary) });
+      download(`${m.strategy}-${lab.results.map(r => r.summary.league).join('-').replace(/[^A-Za-z0-9-]+/g, '_')}.json`, doc);
+      toast('Saved the strategy file to your downloads. Nothing was uploaded.');
     } catch (err) { toast(err.message, true); }
+  };
+  $('#run', main).onclick = async e => {
+    const err = $('#err', form); err.textContent = '';
+    if (!lab.leagues.length) { err.textContent = 'Choose at least one league.'; return; }
+    e.target.disabled = true; e.target.textContent = 'Running…'; lab.results = [];
+    const members = lab.members.map(m => ({ strategy: m.strategy, params: paramsOf(m) })), opts = options();
+    try {
+      for (const league of lab.leagues) {
+        lab.results.push(await api('/api/backtest', members.length > 1 ? { league, strategies: members, ...opts } : { league, ...members[0], ...opts }));
+      }
+      lab.ran = { members, options: opts };
+      show();
+    } catch (x) { err.textContent = x.message; lab.ran = null; show(); }
     e.target.disabled = false; e.target.textContent = 'Run backtest';
   };
   show();

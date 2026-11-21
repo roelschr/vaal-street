@@ -145,3 +145,4 @@ body.hideout #main{padding:10px}
 body.hideout .panel{margin-bottom:10px}
 body.hideout th,body.hideout td{padding:5px 8px}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid var(--bg)}
+.member{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}

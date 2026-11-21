@@ -204,3 +204,14 @@ def test_api_recipe_takes_names_or_ids(server):
     fixed = call(f"{server}/api/arbitrage")[1]["fixed"]
     assert [f["output"] for f in fixed] == [ITEM, ITEM]
     assert fixed[0]["inputs"][0]["name"] == "Chaos Orb" and fixed[0]["check"] == "unchecked"
+
+
+def test_api_strategy_export_matches_the_cli_file(server):
+    from vaalstreet import sharing
+
+    body = {"strategy": "swing", "params": {"reach": 0.3}, "options": {"capital": 500, "whole_lots": True},
+            "results": [{"league": NEW, "return": 0.1}]}
+    status, doc = call(f"{server}/api/strategy_export", body)
+    assert status == 200 and doc["format"] == sharing.FORMAT and doc["params"] == {"reach": 0.3}
+    assert doc == sharing.document("swing", body["params"], body["options"], body["results"])
+    assert call(f"{server}/api/strategy_export", {"strategy": "my.py:Mine"})[0] == 400

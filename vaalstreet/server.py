@@ -424,6 +424,18 @@ class App:
             "divine": [_num(v * result.start_capital) for v in result.divine[::step]],
         }
 
+    def api_strategy_export(self, body: dict) -> dict:
+        """The strategy file for a lab run, as `backtest --export` writes it; the browser saves it."""
+        from vaalstreet import sharing
+
+        spec = body.get("strategy")
+        if spec not in backtest.STRATEGIES:
+            raise ApiError("The desk exports built-in strategies only; use the CLI for your own modules.")
+        params, options, results = body.get("params") or {}, body.get("options") or {}, body.get("results") or []
+        if not (isinstance(params, dict) and isinstance(options, dict) and isinstance(results, list)):
+            raise ApiError("params and options must be sets of named values, results a list.")
+        return sharing.document(spec, params, options, results)
+
     def fill_calibration(self, desk, default: float = 0.1) -> list[dict]:
         """Share of the flow your orders caught, from orders and volume up to the desk's last hour."""
         rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default)
@@ -743,6 +755,8 @@ def make_handler(app: App):
                 raise ApiError("Content-Type must be application/json.", 415)
             if url.path == "/api/backtest":
                 self._json(app.api_backtest({}, body))
+            elif url.path == "/api/strategy_export":
+                self._json(app.api_strategy_export(body))
             elif url.path == "/api/check":
                 self._json(app.api_check(body))
             elif url.path == "/api/stash":
