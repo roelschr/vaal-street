@@ -95,9 +95,9 @@ const ICONS = {
   desk: '<path d="M3 12l9-8 9 8M5 10v10h14V10"/>', markets: '<path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-7"/>',
   flips: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>', arbitrage: '<path d="M12 3l8 5v8l-8 5-8-5V8zM12 3v18M4 8l16 8M20 8L4 16"/>',
   league: '<path d="M5 21V4M5 4h12l-2 4 2 4H5"/>', lab: '<path d="M9 3v6l-5 10a1 1 0 001 2h14a1 1 0 001-2L15 9V3M8 3h8M7 15h10"/>',
-  ledger: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6"/>',
+  ledger: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6"/>', ladder: '<path d="M7 3v18M17 3v18M7 7h10M7 12h10M7 17h10"/>',
 };
-const PAGES = [['desk', 'Desk'], ['markets', 'Markets'], ['flips', 'Flips'], ['arbitrage', 'Arbitrage'], ['league', 'League start'], ['lab', 'Backtest lab'], ['ledger', 'Ledger']];
+const PAGES = [['desk', 'Desk'], ['markets', 'Markets'], ['flips', 'Flips'], ['arbitrage', 'Arbitrage'], ['ladder', 'Ladder'], ['league', 'League start'], ['lab', 'Backtest lab'], ['ledger', 'Ledger']];
 function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
@@ -833,6 +833,49 @@ async function viewLedger(main) {
   $('#g', main).append(ses, ord, pos, stash, tr, fee, rc, al);
 }
 
+// ------------------------------------------------------------------ ladder
+async function viewLadder(main) {
+  if (!state.summary) await loadDesk();
+  const v = state.ladder ||= { purse: localStorage.ladderPurse || 25, hours: localStorage.ladderHours || 6, target: '' };
+  const d = await api(withLeague('/api/ladder', { bankroll: v.purse, hours: v.hours, share: state.share, ...(v.target ? { target: v.target } : {}) }));
+  state.bridge = d.summary.bridge; renderTop();
+  main.innerHTML = `<div class="head"><div><h1>Ladder</h1><p>Growing a small purse: what each purse size can run, what opens up at each step, and when to switch plans as the purse grows.</p></div></div>
+    <div class="bar">
+      <label class="f">Starting purse (c)<input type="number" id="lp" value="${esc(v.purse)}" min="1" step="5"></label>
+      <label class="f">Hours you will play<input type="number" id="lh" value="${esc(v.hours)}" min="1" step="1"></label>
+      <label class="f" title="Instead of a number of hours, play until the purse reaches this many Chaos">Or until the purse reaches (c)<input type="number" id="lt" value="${esc(v.target)}" min="0" step="50" placeholder="optional"></label>
+    </div>
+    <p class="note"><b>${esc(d.note)}</b></p>
+    <div class="grid" id="g"></div>`;
+  const g = $('#g', main);
+  const plan = panel(`From ${+d.start.toFixed(1)} c${d.target ? ` to ${+d.target.toFixed(1)} c` : ` over ${+d.hours.toFixed(1)} hours`}`, 'c12');
+  plan.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0">${d.schedule_text.map(t => `<p style="margin:0 0 6px">${esc(t)}</p>`).join('') || '<p class="muted">Nothing this purse can run grows it.</p>'}</div>`);
+  plan.append(table([
+    { h: 'Hours', l: 1, f: r => r.to_hour == null ? `from ${+r.from_hour.toFixed(1)} h` : `${+r.from_hour.toFixed(1)}–${+r.to_hour.toFixed(1)} h` },
+    { h: 'Purse', f: r => money(r.purse) },
+    { h: 'Run', l: 1, f: r => r.plans.map(p => `${esc(p.label)} <span class="dim">stake ${fmt(p.stake)} c</span>`).join('<br>') || '<span class="dim">nothing</span>' },
+    { h: 'Per hour', f: r => money(r.rate), title: 'The lower of what the plans promise now and what they made over the last week' },
+    { h: 'You end near', f: r => r.end_purse == null ? '–' : money(r.end_purse) },
+    { h: 'Why it stops', l: 1, f: r => ({ 'session ends': 'your session ends', 'target reached': 'you reach your target', 'next rung': `the purse reaches ${fmt(r.switch_at)} c: switch to the next step’s plan`, 'nothing earns at this purse': 'nothing earns at this purse', 'top of the ladder': 'the top step: keep going' })[r.reason] || esc(r.reason) },
+    { h: 'Next step', f: r => r.next_rung == null ? '–' : `${money(r.next_rung)}<div class="muted small">${r.hours_to_next == null ? '' : dur(r.hours_to_next) + ' away'}</div>` },
+  ], d.schedule, { empty: 'Nothing this purse can run grows it.' }));
+  const rungs = panel('What each purse size can run', 'c12', '<span class="muted small">Flips, conversions and round trips that purse can start, and what opens up that the step below could not run.</span>');
+  rungs.append(table([
+    { h: 'Purse', l: 1, f: r => `<b>${esc(r.label)}</b><div class="muted small">${fmt(r.chaos)} c</div>` },
+    { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${r.counts.flips} flips · ${r.counts.conversions} conversions · ${r.counts.round_trips} round trips</div>` },
+    { h: 'What opens up here', l: 1, f: r => r.opens?.length ? r.opens.slice(0, 6).map(o => `${esc(o.label)} <span class="dim">· one lot ${fmt(o.lot_cost)} c</span>`).join('<br>') + (r.opens.length > 6 ? `<br><span class="dim">and ${r.opens.length - 6} more</span>` : '') : '<span class="dim">nothing new</span>' },
+    { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => esc(p.label)).join('<br>') : '<span class="dim">no flip fits</span>' },
+    { h: 'Promised / hour', f: r => money(r.session?.expected_per_hour), title: 'What the session plan’s flips promise at today’s prices' },
+    { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week, replayed on recent prices: a rough guide, small lots round worse' },
+    { h: 'To next step', f: r => r.next == null ? '–' : r.hours_to_next == null ? '<span class="dim">does not grow</span>' : dur(r.hours_to_next) },
+  ], d.ladder));
+  g.append(plan, rungs);
+  const set = (key, store) => e => { v[key] = e.target.value; if (store) localStorage[store] = e.target.value; route(); };
+  $('#lp', main).onchange = set('purse', 'ladderPurse');
+  $('#lh', main).onchange = set('hours', 'ladderHours');
+  $('#lt', main).onchange = set('target');
+}
+
 // ------------------------------------------------------------------ drawer
 async function openItem(id, hours = 168) {
   const drawer = $('#drawer');
@@ -974,7 +1017,7 @@ async function openHideout() {
 }
 
 // ------------------------------------------------------------------- router
-const VIEWS = { desk: viewDesk, markets: viewMarkets, flips: viewFlips, arbitrage: viewArbitrage, league: viewLeague, lab: viewLab, ledger: viewLedger };
+const VIEWS = { desk: viewDesk, markets: viewMarkets, flips: viewFlips, arbitrage: viewArbitrage, ladder: viewLadder, league: viewLeague, lab: viewLab, ledger: viewLedger };
 let routing = 0;
 async function route() {
   const main = $('#main'), turn = ++routing;
