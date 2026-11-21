@@ -420,6 +420,24 @@ def _divine_timing(args: argparse.Namespace) -> None:
                len(out["curve"]))
 
 
+def _meta(args: argparse.Namespace) -> None:
+    from vaalstreet.leagues import LeagueBook
+
+    con = connect()
+    out = LeagueBook(con).meta(_league(con, args))
+    print(f"{out['league']} day {out['day']}: items whose demand (units traded in the last 24 hours against day 1) "
+          f"grew faster than in any past league by the same hour ({', '.join(out['precedents']) or 'none on disk'})")
+    if out["note"]:
+        print(out["note"])
+        return
+    if not out["items"]:
+        print("Nothing is growing faster than past leagues did.")
+        return
+    _table(out["items"], [("name", "Item", ""), ("growth", "Growth", ".2f"), ("past_low", "Past low", ".2f"),
+                          ("past_median", "Past median", ".2f"), ("past_high", "Past high", ".2f"),
+                          ("n", "Leagues", "")], args.rows)
+
+
 def _cross_league(args: argparse.Namespace) -> None:
     from vaalstreet.leagues import LeagueBook
 
@@ -700,6 +718,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--league")
     p.add_argument("--max-day", type=int, default=30, help="look at league days up to this one (default 30)")
     p.set_defaults(run=_divine_timing)
+
+    p = commands.add_parser("meta", help="items whose demand is growing faster than in any past league: meta shifts")
+    p.add_argument("--league")
+    p.add_argument("--rows", type=int, default=30)
+    p.set_defaults(run=_meta)
 
     p = commands.add_parser("cross-league", help="the same items in this league's Hardcore, Ruthless and Standard: "
                                                  "which price gaps are real and which close")

@@ -383,6 +383,7 @@ class App:
         out["divine_outlook"] = book.divine_outlook(league)
         out["family"] = book.family_of(league)
         out["divine_timing"] = book.divine_timing(league)
+        out["meta"] = book.meta(league)
         out["launch"] = book.launch(league, unit=q.get("launch_unit", "chaos"), limit=int(q.get("launch_rows", 150)))
         return out
 

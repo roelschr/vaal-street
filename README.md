@@ -86,6 +86,8 @@ Precedents come from the same family of league, and only from leagues that have 
 
 **When to buy Divines.** `divine-timing` looks at the Divine's daily price in Chaos in each past league of the family, finds the day it was cheapest (when Chaos bought the most Divines), and names the three-day stretch that holds the most of those days, for example "In 4 of 5 past leagues the Divine was cheapest in Chaos between day 1 and day 3". It always says how many leagues that rests on, and where today's league day stands.
 
+**Meta shifts.** `meta` compares each item's demand, the units traded in the last 24 hours against league day 1, with the same league hours in every past league of the family. Units, not Chaos, because Chaos loses value through a league; day 1 rather than day 0, because the first day is a scramble. An item whose demand grew at least 1.5 times and faster than in any past league is a candidate for a meta shift: players are using it for something they did not before. Each row shows the growth against the past leagues' lowest, median and highest, and how many leagues that is.
+
 **Other leagues' prices.** `cross-league` puts the same item, on the same hour, next to its price in this league's Hardcore, Ruthless and Hardcore Ruthless versions and in Standard. Each league has its own Chaos, worth a different number of Divines, so items are compared in each league's own Divines, and the Chaos and Divine markets are compared separately. The Divine's price in Chaos gets its own line. Over the last week, the gap is taken per day (the median of the hours both leagues traded), and it is called **structural** when it held on at least 3 days and 12 hours, kept the same sign on 80% of the days, is at least 3%, and moves less from day to day than its own size. A gap that flips or closes is **noise**, and one that stays within 3% is **none**. Items cannot move between leagues, so a gap is not a trade: it tells you which differences are real when you read prices from another league, and which will close.
 
 **Backtests.** One league is replayed hour by hour. Orders posted at hour *t* meet hour *t+1*.
@@ -135,6 +137,7 @@ python -m vaalstreet ladder --from 25 --hours 6  # what each purse size can run,
 python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
 python -m vaalstreet playbook --launch           # the first 72 hours of past leagues, item by item
 python -m vaalstreet divine-timing               # on which league days the Divine was cheapest in Chaos
+python -m vaalstreet meta                        # items in more demand than any past league at this point
 python -m vaalstreet cross-league                # the same items in Hardcore, Ruthless and Standard: real gaps or noise
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
 python -m vaalstreet backtest swing --fill-model queue   # orders wait behind the stock already on offer

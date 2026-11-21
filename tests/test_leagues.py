@@ -126,3 +126,20 @@ def test_divine_timing(con, archive_root, monkeypatch, capsys):
     monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
     cli.main(["divine-timing", "--league", BLITZ])
     assert "In the one past event league on disk (Flash), the Divine was cheapest in Chaos on day 2" in capsys.readouterr().out
+
+
+def test_meta_shift(con, archive_root, monkeypatch, capsys):
+    book = LeagueBook(con)
+    out = book.meta(NEW)
+    # New trades the lure at 200 * (1 + h/24) units an hour; Old flat. Hours 168-191 against 24-47:
+    # (1 + 179.5/24) / (1 + 35.5/24) = 3.42 against Old's 1.0. Every other item grows 1x in both.
+    assert out["hours"] == [168, 191] and out["precedents"] == [OLD]
+    [lure] = out["items"]
+    assert lure["id"] == LURE and abs(lure["growth"] - 3.42) < 0.01 and lure["past_high"] == 1 and lure["n"] == 1
+    assert book.meta(OLD)["note"].startswith("No past league")
+
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["meta", "--league", NEW])
+    assert "Test Lure" in capsys.readouterr().out

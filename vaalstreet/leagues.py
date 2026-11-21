@@ -55,6 +55,9 @@ LAUNCH_HOURS = 72
 LAUNCH_CHECKS = (6, 24, 72)  # league hours at which the launch playbook reports a move
 FIRST_MOVE = 0.05  # a launch price "moves first" when it leaves its opening price by this much
 
+META_GROWTH = 1.5  # a meta-shift candidate's demand grew at least this much since day 1...
+META_MIN_UNITS = 24  # ...from at least one unit an hour on day 1
+
 
 def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, str]]:
     """League name -> (family, base league), from the names and the dates each league traded.
@@ -524,6 +527,71 @@ class LeagueBook:
                 m = len(rel) // 2
                 out["curve"].append({"day": d, "dearer": _num(rel[m] if len(rel) % 2 else (rel[m - 1] + rel[m]) / 2, 4),
                                      "n": len(rel)})
+        return out
+
+    # ----------------------------------------------------------- meta shifts
+    def meta(self, current: str, *, limit: int = 100) -> dict:
+        """Items whose demand has grown faster since day 1 than in any past league by the same point.
+
+        Demand is units traded, not Chaos, because Chaos loses value through a league. The current league's
+        last 24 hours are set against its day 1 (league hours 24-47: day 0 is the launch scramble), and each
+        past league in the family is measured over the very same league hours. An item is a candidate for a
+        meta shift when its growth beats every past league's, is at least META_GROWTH, and it traded at least
+        META_MIN_UNITS on day 1 here and in each past league counted. Only data up to now is used here, and
+        past leagues are ended ones of the same family.
+        """
+        past = self.precedents(current)
+        now = self._rows("SELECT date_diff('hour', first_hour, last_hour) AS h FROM leagues WHERE league = $l",
+                         {"l": current})
+        if not now:
+            raise LookupError(f"Unknown league {current!r}")
+        h1 = int(now[0]["h"])
+        out = {"league": current, "day": h1 // 24, "hours": [h1 - 23, h1], "precedents": past, "items": [],
+               "note": None}
+        if h1 < 71:
+            out["note"] = "Too early: demand growth is measured from league day 1, so it needs a full day after it."
+            return out
+        if not past:
+            out["note"] = "No past league of this family is on disk to compare with."
+            return out
+        rows = self._rows(
+            """
+            WITH h AS (
+                SELECT p.league, p.item, date_diff('hour', l.first_hour, p.hour) AS h, p.volume
+                FROM prices p JOIN leagues l USING (league)
+                WHERE p.league IN $leagues
+            ), g AS (
+                SELECT league, item,
+                       sum(CASE WHEN h BETWEEN 24 AND 47 THEN volume ELSE 0 END) AS base,
+                       sum(CASE WHEN h BETWEEN $h0 AND $h1 THEN volume ELSE 0 END) AS recent
+                FROM h WHERE h BETWEEN 24 AND $h1 GROUP BY league, item
+            ), reached AS (
+                SELECT league FROM leagues WHERE league IN $leagues AND date_diff('hour', first_hour, last_hour) >= $h1
+            )
+            SELECT g.league, g.item, g.base, g.recent FROM g JOIN reached USING (league) WHERE g.base >= $min_units
+            """,
+            {"leagues": [current] + past, "h0": h1 - 23, "h1": h1, "min_units": META_MIN_UNITS},
+        )
+        growth: dict[str, dict[str, float]] = {}
+        for r in rows:
+            growth.setdefault(r["item"], {})[r["league"]] = r["recent"] / r["base"]
+        names = {r["item"]: r for r in self._rows("SELECT item, name, category FROM items")}
+        for item, by in growth.items():
+            mine = by.pop(current, None)
+            if mine is None or not by:
+                continue
+            then = sorted(by.values())
+            if mine >= META_GROWTH and mine > then[-1]:
+                m = len(then) // 2
+                out["items"].append({
+                    "id": item, "name": names.get(item, {}).get("name", item),
+                    "category": names.get(item, {}).get("category"), "growth": _num(mine, 3), "n": len(then),
+                    "past_low": _num(then[0], 3), "past_median": _num(then[m] if len(then) % 2 else (then[m - 1] + then[m]) / 2, 3),
+                    "past_high": _num(then[-1], 3), "vs_past_high": _num(mine / then[-1], 3),
+                    "by_league": [{"league": k, "growth": _num(v, 3)} for k, v in sorted(by.items())],
+                })
+        out["items"].sort(key=lambda r: -(r["vs_past_high"] or 0))
+        out["items"] = out["items"][:limit]
         return out
 
     # --------------------------------------------------------- cross-league
