@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, db, items
+from vaalstreet import archive, backtest, check, db, items
 from vaalstreet.desk import Desk, _num
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
@@ -341,6 +341,41 @@ class App:
             **self._recipes(desk),
         }
 
+    def api_check(self, body: dict) -> dict:
+        """Go / no-go for an offer typed from the order window. The ratio is items first."""
+        desk = self.desk(body.get("league"))
+        try:
+            market = str(body["market"]).lower()
+            if body.get("ratio") is not None:
+                item_units, currency_units = check.parse_ratio(str(body["ratio"]), market)
+            else:
+                item_units, currency_units = float(body["item_units"]), float(body["currency_units"])
+            stock = float(body["stock"]) if body.get("stock") not in (None, "") else None
+            return check.check(desk, str(body["item"]), market, str(body["side"]), item_units, currency_units, stock)
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+
+    def api_stash(self, q: dict) -> dict:
+        """Your stash (or, with source=ledger, the ledger's positions) valued at today's prices."""
+        desk = self.desk(q.get("league"))
+        if q.get("source") == "ledger":
+            holdings = {k: p["units"] for k, p in self.ledger.positions(desk.league).items() if p["units"] > 1e-9}
+        else:
+            holdings = self.ledger.stash(desk.league)
+        return check.stash_value(desk, holdings) | {"source": q.get("source") or "stash"}
+
+    def api_stash_post(self, body: dict) -> dict:
+        """Set a line (units 0 removes it), or clear the stash; answers with the new valuation."""
+        desk = self.desk(body.get("league"))
+        try:
+            if body.get("clear"):
+                self.ledger.clear_stash(desk.league)
+            else:
+                self.ledger.set_stash(desk.league, check.resolve(desk, str(body["item"])), body.get("units", 0))
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+        return self.api_stash({"league": desk.league})
+
     def _advise(self, desk) -> list[dict]:
         """Open orders with advice, from today's prices and the flip plan's own order levels."""
         prices = {r["id"]: {"fair": r["price"], "chaos": r["chaos"], "divine": r["divine"]} for r in desk.market()}
@@ -442,7 +477,7 @@ class App:
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
     "/api/arbitrage": "api_arbitrage", "/api/league": "api_league", "/api/curve": "api_curve",
-    "/api/ledger": "api_ledger",
+    "/api/ledger": "api_ledger", "/api/stash": "api_stash",
 }
 
 
@@ -530,6 +565,10 @@ def make_handler(app: App):
                 raise ApiError("Content-Type must be application/json.", 415)
             if url.path == "/api/backtest":
                 self._json(app.api_backtest({}, body))
+            elif url.path == "/api/check":
+                self._json(app.api_check(body))
+            elif url.path == "/api/stash":
+                self._json(app.api_stash_post(body))
             else:
                 self._json(app.api_post(url.path, body))
 

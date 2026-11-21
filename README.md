@@ -57,6 +57,10 @@ You can check the model on any league: `python -m vaalstreet scorecard --league 
 
 **Round trips.** Some items trade directly for each other in small side markets. The desk walks every path of one or two swaps — buy A, swap for B (then C), sell — at the rates those markets typically traded at over the last day. They are thin, so each path also shows what went through its thinnest swap in a day and the value of orders resting there in the latest hour — whether the swap can be taken now or needs an order of your own.
 
+**Trade check.** Type an offer you see in the order window — the item, the market, whether you would buy or sell, and the ratio with the items first ("64 items for 1 Divine") — and the desk answers go, caution or no-go. The offer is judged against the value of *its own market*, because the Chaos and Divine markets of an item are different prices; a Divine-market ratio is converted to Chaos at the current Divine price. A buyer gets "go" when the price is under that value by more than the model's uncertainty (never less than 2%, since whole-number ratios and Gold fees eat that much), and "no-go" when it is over by as much; a seller the other way round; in between is "caution". A market that traded in fewer than a quarter of the last day's hours, or not in the last six, never gets more than caution. The answer also shows the offer against the item's overall fair value and range, whether it beats, matches (within 4%) or misses the flip plan's order for that side and market, the market's volume per hour, and how many hours of that volume the stock on offer is.
+
+**Stash.** Enter what you hold, or use the positions your recorded trades add up to. Each line is valued at fair value with a low and a high, and at the Chaos market's and the Divine market's own prices, so you see which market pays more and by how much. Each line also says how many hours of that market's volume it is; above three hours, selling it all at that price will push the price. The total's low and high add up every line's low and high, which assumes every price is wrong in the same direction at once — wider than the truth, on purpose. The stash you enter is kept in your ledger file.
+
 **Small bankrolls.** The exchange trades whole lots: "64 decks for 1 Divine" cannot be sold by someone holding ten decks. Enter your bankroll and every flip is re-cut to whole-number orders that purse can post, its margin recomputed from the prices those orders really state; plans that cannot be run are dropped, and below the price of one Divine everything stays in the Chaos markets. The Arbitrage page filters to conversions and round trips the bankroll can start.
 
 **League start.** Leagues are aligned on days since their first trade. The playbook takes every item on today's league day in each past league and measures its move over the chosen horizon, in Divine by default (Chaos loses value through a league, so Chaos returns flatter everything). Every row shows the per-league outcomes and how many leagues it rests on. A league whose start is not on disk is left out rather than misaligned.
@@ -91,6 +95,9 @@ Everything the desk shows is also available from the shell.
 python -m vaalstreet status                      # leagues and coverage
 python -m vaalstreet price "Divine Orb"          # latest hourly prices, both markets
 python -m vaalstreet flips --kind cross          # maker plans for the live league
+python -m vaalstreet check "Orb of Alteration" --market divine --side buy --ratio "64 items = 1 divine" --stock 300
+                                                 # go / no-go for an offer in the order window (items first)
+python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone lists it, stash --ledger values your positions
 python -m vaalstreet arb                         # sets against their rewards
 python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
@@ -154,7 +161,7 @@ data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as serv
 data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
-data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts — the only file worth backing up
+data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash — the only file worth backing up
 ```
 
 To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
@@ -165,8 +172,9 @@ Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification s
 vaalstreet/archive.py   download         vaalstreet/desk.py      market table, flips, arbitrage
 vaalstreet/ingest.py    raw -> Parquet   vaalstreet/leagues.py   league-start analytics
 vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and strategies
-vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipe checks, alerts
+vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipe checks, alerts, stash
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
+vaalstreet/check.py     trade check and stash valuation
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.

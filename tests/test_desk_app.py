@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import threading
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
 
-from conftest import ITEM, NEW
+from conftest import ITEM, NEW, call
 from vaalstreet.ledger import Ledger
-from vaalstreet.server import App, make_handler
 
 
 def test_ledger_average_cost_and_realised_profit(tmp_path):
@@ -52,27 +48,6 @@ def test_alerts_fire_once_per_crossing_and_rearm(tmp_path):
     assert ledger.watchlist("L") == []
     ledger.set("league", "L")
     assert ledger.get("league") == "L" and ledger.get("missing", 3) == 3
-
-
-@pytest.fixture()
-def server(archive_root, tmp_path, monkeypatch):
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    app = App(archive_root, sync=False)
-    app.ledger = Ledger(tmp_path)  # keep the shared fixture clean
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{httpd.server_port}"
-    httpd.shutdown()
-
-
-def call(url, body=None, headers=None):
-    data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **(headers or {})})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.status, json.loads(response.read())
-    except urllib.error.HTTPError as err:
-        return err.code, json.loads(err.read() or b"{}")
 
 
 def test_api_serves_every_desk_page(server):

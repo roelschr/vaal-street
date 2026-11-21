@@ -11,6 +11,9 @@ the Gold it cost; an order carries the Gold paid to post it, and the trade its f
 carries none, so no Gold is ever counted twice. GGG does not publish the fee schedule, so
 the ledger only learns fees from what you recorded (`gold_fees`) and says nothing otherwise.
 
+The stash is what you say you hold, typed in by hand: it is separate from the positions the
+trades build, so you can value loot you never recorded buying.
+
 Recipe checks are game facts, not market state, so they are kept once for all leagues.
 """
 
@@ -55,6 +58,9 @@ CREATE TABLE IF NOT EXISTS recipe_checks(
     id INTEGER PRIMARY KEY, key TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('confirmed','failed')),
     note TEXT NOT NULL DEFAULT '', t INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS recipe_checks_key ON recipe_checks(key, t, id);
+CREATE TABLE IF NOT EXISTS stash(
+    league TEXT NOT NULL, item TEXT NOT NULL, units REAL NOT NULL CHECK(units > 0), updated INTEGER NOT NULL,
+    PRIMARY KEY(league, item));
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"}}
@@ -346,6 +352,26 @@ class Ledger:
         for row in self._all("SELECT * FROM recipe_checks ORDER BY t, id"):
             out[row["key"]] = row
         return out
+
+    # ---------------------------------------------------------------- stash
+    def stash(self, league: str) -> dict[str, float]:
+        """item -> units you entered as held in this league."""
+        rows = self._all("SELECT item, units FROM stash WHERE league = ? ORDER BY item", (league,))
+        return {r["item"]: r["units"] for r in rows}
+
+    def set_stash(self, league: str, item: str, units: float, t: int | None = None) -> None:
+        """Set how many of an item you hold; zero removes the line."""
+        units = float(units)
+        if not math.isfinite(units) or units < 0:
+            raise ValueError("Units must be zero or more.")
+        if units == 0:
+            self._run("DELETE FROM stash WHERE league = ? AND item = ?", (league, item))
+            return
+        self._run("INSERT INTO stash VALUES (?, ?, ?, ?) ON CONFLICT(league, item) DO UPDATE SET "
+                  "units = excluded.units, updated = excluded.updated", (league, item, units, int(t or time.time())))
+
+    def clear_stash(self, league: str) -> None:
+        self._run("DELETE FROM stash WHERE league = ?", (league,))
 
     # ------------------------------------------------------------ watchlist
     def watchlist(self, league: str) -> list[str]:

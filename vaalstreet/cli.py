@@ -165,6 +165,61 @@ def _flips(args: argparse.Namespace) -> None:
                    ("capital", "Capital", ",.0f")], args.rows)
 
 
+def _check(args: argparse.Namespace) -> None:
+    from vaalstreet import check
+    from vaalstreet.desk import Desk
+
+    con = connect()
+    desk = Desk.build(con, _league(con, args))
+    item_units, currency_units = check.parse_ratio(args.ratio, args.market)
+    r = check.check(desk, args.item, args.market, args.side, item_units, currency_units, args.stock)
+    print(f"{r['name']}: {args.side} {item_units:g} for {currency_units:g} {args.market.title()} "
+          f"in {desk.league} (Divine {desk.bridge:.1f}c)")
+    print(f"\n  {r['verdict'].upper()}\n")
+    for reason in r["reasons"]:
+        print(f"  - {reason}")
+
+
+def _stash(args: argparse.Namespace) -> None:
+    from vaalstreet import check
+    from vaalstreet.desk import Desk
+    from vaalstreet.ledger import Ledger
+
+    con = connect()
+    desk = Desk.build(con, _league(con, args))
+    ledger = Ledger(data_dir())
+    if args.action == "set":
+        if not args.item or args.units is None:
+            sys.exit('Usage: stash set "<item>" <units>   (0 units removes the line)')
+        ledger.set_stash(desk.league, check.resolve(desk, args.item), args.units)
+    elif args.action == "clear":
+        ledger.clear_stash(desk.league)
+    if args.ledger:
+        holdings = {k: p["units"] for k, p in ledger.positions(desk.league).items() if p["units"] > 1e-9}
+    else:
+        holdings = ledger.stash(desk.league)
+    out = check.stash_value(desk, holdings)
+    if not out["rows"]:
+        print(f"Nothing held in {desk.league}. Add a line with: stash set \"<item>\" <units>")
+        return
+    for row in out["rows"]:
+        for name in ("chaos", "divine"):
+            row[f"{name}_price"] = (row.get(name) or {}).get("price")
+        row["best_text"] = (f"{row['best'].title()} +{row['best_by']:.1%}" if row.get("best_by") is not None
+                            else (row.get("best") or "-").title())
+        row["thin_text"] = "hard to sell" if row.get("thin") else ""
+    print(f"{desk.league} - {'ledger positions' if args.ledger else 'your stash'} at fair value (Divine {desk.bridge:.1f}c)")
+    _table(out["rows"], [("name", "Item", ""), ("units", "Units", ",.6g"), ("value", "Value", ",.0f"),
+                         ("low", "Low", ",.0f"), ("high", "High", ",.0f"), ("chaos_price", "Chaos mkt", ",.4g"),
+                         ("divine_price", "Divine mkt", ",.4g"), ("best_text", "Pays more", ""),
+                         ("hours", "Hours of volume", ",.1f"), ("thin_text", "", "")], 200)
+    t = out["total"]
+    print(f"\nTotal {t['value']:,.0f} Chaos (between {t['low']:,.0f} and {t['high']:,.0f}); "
+          f"{t['best']:,.0f} if each line sells in the market that pays more.")
+    if out["unpriced"]:
+        print(f"{out['unpriced']} line(s) have no price in this league and are not counted.")
+
+
 def _arb(args: argparse.Namespace) -> None:
     from vaalstreet.desk import Desk
 
@@ -314,6 +369,34 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-margin", type=float, default=0.02)
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_flips)
+
+    p = commands.add_parser(
+        "check", help="go / no-go for an offer you see in the in-game order window",
+        description="Type an offer from the order window and see whether taking it is a good idea, "
+                    "against that market's fair value, the flip plan and the market's volume.",
+        epilog='The ratio is always items first, then currency: "64:1" with --market divine means 64 items for '
+               '1 Divine; "1:140" with --market chaos means 1 item for 140 Chaos. You can also write '
+               '"64 items = 1 divine" or "1 = 140 chaos".')
+    p.add_argument("item", help='item name or ID, e.g. "Orb of Alteration"')
+    p.add_argument("--market", choices=["chaos", "divine"], required=True, help="which currency the offer is priced in")
+    p.add_argument("--side", choices=["buy", "sell"], required=True,
+                   help="buy: you would pay currency for the items; sell: you would give items for currency")
+    p.add_argument("--ratio", required=True, help='items first, e.g. "64:1" or "64 items = 1 divine"')
+    p.add_argument("--stock", type=float, help="how many items are on offer at that ratio, if the window shows it")
+    p.add_argument("--league")
+    p.set_defaults(run=_check)
+
+    p = commands.add_parser(
+        "stash", help="value what you hold, and say which market pays more for each item",
+        description="Keep a list of what you hold and value it at fair value, with a low and a high. "
+                    "The list is saved in your ledger file.")
+    p.add_argument("action", nargs="?", choices=["list", "set", "clear"], default="list",
+                   help='list (default); set "<item>" <units> to add or change a line (0 removes it); clear to empty it')
+    p.add_argument("item", nargs="?")
+    p.add_argument("units", nargs="?", type=float)
+    p.add_argument("--ledger", action="store_true", help="value the positions your recorded trades add up to instead")
+    p.add_argument("--league")
+    p.set_defaults(run=_stash)
 
     p = commands.add_parser("arb", help="card sets and shards against what they turn into")
     p.add_argument("--league")
