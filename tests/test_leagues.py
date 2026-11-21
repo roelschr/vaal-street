@@ -30,6 +30,8 @@ def test_family_rules_from_names_and_dates():
         league("HC Ruthless Settlers", 0, 118), league("Mercenaries", 121, 130),  # live, 9 days old
         league("Ruthless", 0, 130), league("Hardcore", 0, 130), league("Mine (PL123)", 3, 4),
         league("Ruthless Mine (PL9)", 3, 4), league("Keepers Event", 125, 130),
+        # GGG's short form "R" for Ruthless: the base is Phrecia, an event, not a new "R Phrecia".
+        league("HC R Phrecia", 50, 50), league("R Phrecia", 40, 75),
     ]
     got = {k: f for k, (f, _base) in classify(rows).items()}
     assert got == {
@@ -37,6 +39,7 @@ def test_family_rules_from_names_and_dates():
         "HC Ruthless Settlers": "challenge_hc_ruthless", "Mercenaries": "challenge",
         "Ruthless": "standard_ruthless", "Hardcore": "standard_hardcore", "Mine (PL123)": "private",
         "Ruthless Mine (PL9)": "private", "Keepers Event": "event",
+        "HC R Phrecia": "event_hc_ruthless", "R Phrecia": "event_ruthless",
     }
 
 

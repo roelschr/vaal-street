@@ -33,10 +33,12 @@ DAY = 24 * 3600
 PRIVATE = re.compile(r"\(PL\d+\)$")
 EVENT_NAME = re.compile(r"(?i)\bevent\b")
 # Hardcore / Ruthless prefixes, longest first so "HC Ruthless X" is not read as "HC" + "Ruthless X".
+# GGG also shortens Ruthless to "R" ("HC R Ancestors"); without that, the base would be "R Ancestors",
+# which is not in the archive and so would count as a challenge league.
 VARIANTS = (
-    (re.compile(r"^(?:HC|Hardcore) Ruthless (.+)$"), "hc_ruthless"),
+    (re.compile(r"^(?:HC|Hardcore) (?:Ruthless|R) (.+)$"), "hc_ruthless"),
     (re.compile(r"^(?:HC|Hardcore) (.+)$"), "hardcore"),
-    (re.compile(r"^Ruthless (.+)$"), "ruthless"),
+    (re.compile(r"^(?:Ruthless|R) (.+)$"), "ruthless"),
     (re.compile(r"^(?:SSF|Solo) (.+)$"), "ssf"),
 )
 PERMANENT = {"Standard": "standard", "Hardcore": "standard_hardcore", "Ruthless": "standard_ruthless",
@@ -67,7 +69,7 @@ def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, s
     1. A name ending in "(PLnnnn)" is a private league: family "private".
     2. The permanent leagues: "Standard" is "standard"; "Hardcore", "Ruthless" and "Hardcore Ruthless"
        are "standard_hardcore", "standard_ruthless" and "standard_hc_ruthless".
-    3. A name starting with "Hardcore "/"HC ", "Ruthless ", "HC Ruthless "/"Hardcore Ruthless ", or
+    3. A name starting with "Hardcore "/"HC ", "Ruthless "/"R ", "HC Ruthless "/"HC R "/"Hardcore Ruthless ", or
        "SSF "/"Solo " is a variant of the league named by the rest (its base). It takes its base's
        family with "_hardcore", "_ruthless", "_hc_ruthless" or "_ssf" added; a base not in the archive
        counts as a challenge league.
