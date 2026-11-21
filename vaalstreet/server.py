@@ -26,6 +26,7 @@ from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert
 from vaalstreet.paths import data_dir, icons_dir
+from vaalstreet.rehearsal import PRACTICE_FILE, Rehearsal, league_hours
 
 WEB = Path(__file__).parent / "web"
 HOUR = 3600
@@ -48,7 +49,10 @@ class App:
         self._ninja: ninja.Ninja | None = None
         # Kept apart from sync_state: a poe.ninja failure must not hold up the exchange sync.
         self.ninja_state = {"last_run": None, "league_id": None, "types": [], "errors": []}
-        self.ledger = Ledger(self.root)
+        self._ledger = Ledger(self.root)
+        self.rehearsal: Rehearsal | None = None
+        self._rehearsal_alerts: int | None = None  # the rehearsal hour practice alerts were last checked at
+        self._thread = threading.local()  # the sync thread marks itself: it always works on the live desk
         self.bootstrap_days = bootstrap_days
         self._lock = threading.RLock()
         self._con = None
@@ -63,7 +67,24 @@ class App:
             threading.Thread(target=self._sync_loop, name="vaal-sync", daemon=True).start()
 
     # ----------------------------------------------------------------- data
+    def _practice(self) -> Rehearsal | None:
+        """The running rehearsal, unless this is the sync thread, which only ever sees the live market."""
+        return None if getattr(self._thread, "live", False) else self.rehearsal
+
+    @property
+    def ledger(self) -> Ledger:
+        """The real ledger, or the practice ledger while a rehearsal runs."""
+        practice = self._practice()
+        return practice.ledger if practice else self._ledger
+
+    @ledger.setter
+    def ledger(self, value: Ledger) -> None:
+        self._ledger = value
+
     def cursor(self):
+        practice = self._practice()
+        if practice:
+            return practice.cursor()
         with self._lock:
             if self._con is None:
                 if not db.has_data(self.root, REALM):
@@ -79,6 +100,8 @@ class App:
             self._desks.clear()
             self._book = None
             self._generation += 1
+            if self.rehearsal:
+                self.rehearsal.reset_data()
 
     def leagues(self) -> list[dict]:
         cur = self.cursor()
@@ -92,6 +115,9 @@ class App:
 
     def default_league(self) -> str:
         """The live challenge league with the most trade; the user's choice wins if it still exists."""
+        practice = self._practice()
+        if practice:
+            return practice.league
         leagues = self.leagues()
         if not leagues:
             raise ApiError("No leagues in the archive yet.", 503)
@@ -104,6 +130,9 @@ class App:
         return max(challenge, key=lambda l: l["value"] / max(l["hours"], 1))["league"]
 
     def desk(self, league: str | None = None) -> Desk:
+        practice = self._practice()
+        if practice:
+            return practice.desk(league)
         league = league or self.default_league()
         with self._lock:
             if league not in self._desks:
@@ -111,6 +140,9 @@ class App:
             return self._desks[league]
 
     def book(self) -> LeagueBook:
+        practice = self._practice()
+        if practice:
+            return practice.book()
         with self._lock:
             if self._book is None:
                 self._book = LeagueBook(self.cursor(), REALM)
@@ -118,6 +150,7 @@ class App:
 
     # ----------------------------------------------------------------- sync
     def _sync_loop(self) -> None:
+        self._thread.live = True
         while not self._stop.is_set():
             self.sync_once()
             self.refresh_ninja()  # at most hourly per category; the client enforces it
@@ -712,6 +745,70 @@ class App:
             raise ApiError(f"Bad request: {err}") from err
         return {"ok": True}
 
+    # ------------------------------------------------------------- rehearsal
+    def rehearsal_banner(self) -> dict | None:
+        """What every answer carries during a rehearsal; also checks practice alerts once per new hour."""
+        practice = self.rehearsal
+        if not practice:
+            return None
+        banner = practice.banner()
+        if self._rehearsal_alerts != banner["hour"]:
+            self._rehearsal_alerts = banner["hour"]
+            try:
+                self._after_refresh()  # the request thread: desk and ledger are the practice ones
+            except Exception:  # an alert must never take an answer down
+                traceback.print_exc()
+        return banner
+
+    def api_rehearsal(self, q: dict) -> dict:
+        practice = self.rehearsal
+        if not practice:
+            return {"running": False}
+        return {"running": True, **practice.banner(), "bankroll": practice.bankroll, "result": practice.result()}
+
+    def api_rehearsal_post(self, path: str, body: dict) -> dict:
+        try:
+            if path == "/api/rehearsal/step":
+                if not self.rehearsal:
+                    raise ApiError("No rehearsal is running.", 409)
+                if body.get("speed") is not None:
+                    self.rehearsal.set_speed(float(body["speed"]))
+                else:
+                    self.rehearsal.step(int(body.get("hours", 1)))
+                return self.api_rehearsal({})
+            if body.get("stop"):
+                return self.stop_rehearsal()
+            return self.start_rehearsal(body)
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+
+    def start_rehearsal(self, body: dict) -> dict:
+        """Start practice on a past league; any running rehearsal ends first (its result is returned too)."""
+        ended = self.stop_rehearsal()["result"] if self.rehearsal else None
+        league = str(body["league"])
+        first, last = league_hours(self.cursor(), league)
+        if body.get("start") not in (None, ""):
+            start = int(body["start"])
+        else:
+            start = first + int(float(body.get("start_day") or 0) * 24) * HOUR
+        bankroll = body.get("bankroll")
+        practice = Rehearsal(self.root, league, first, last, start, realm=REALM, speed=float(body.get("speed") or 0),
+                             bankroll=float(bankroll) if bankroll not in (None, "") else 1000.0,
+                             ledger_path=self._ledger.path.with_name(PRACTICE_FILE))
+        with self._lock:
+            self.rehearsal, self._rehearsal_alerts = practice, None
+        return self.api_rehearsal({}) | {"previous": ended}
+
+    def stop_rehearsal(self) -> dict:
+        """End the rehearsal and report its result; the practice ledger stays on disk until the next one."""
+        with self._lock:
+            practice, self.rehearsal = self.rehearsal, None
+        if not practice:
+            return {"running": False, "result": None}
+        result = practice.result()
+        practice.close()
+        return {"running": False, "result": result}
+
     # ---------------------------------------------------------------- icons
     def icon(self, item_id: str) -> bytes | None:
         art = (items.load(self.root, REALM).get(item_id) or {}).get("art")
@@ -749,6 +846,7 @@ GET_ROUTES = {
     "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
+    "/api/rehearsal": "api_rehearsal",
 }
 
 
@@ -769,6 +867,9 @@ def make_handler(app: App):
             self.wfile.write(body)
 
         def _json(self, payload, status: int = 200) -> None:
+            if isinstance(payload, dict) and app.rehearsal and "rehearsal" not in payload:
+                # Every answer says it is practice, so the page can show a banner and never pass for live.
+                payload = payload | {"rehearsal": app.rehearsal_banner()}
             self._send(status, json.dumps(payload, separators=(",", ":"), default=_default).encode(), "application/json")
 
         def _local(self) -> bool:
@@ -802,6 +903,14 @@ def make_handler(app: App):
 
         def do_POST(self) -> None:
             self._guarded(self._post)
+
+        def do_DELETE(self) -> None:
+            self._guarded(self._delete)
+
+        def _delete(self) -> None:
+            if urllib.parse.urlparse(self.path).path != "/api/rehearsal":
+                raise ApiError("Unknown endpoint.", 404)
+            self._json(app.stop_rehearsal())
 
         def _get(self) -> None:
             url = urllib.parse.urlparse(self.path)
@@ -846,6 +955,8 @@ def make_handler(app: App):
                 self._json(app.api_event(body))
             elif url.path == "/api/stash":
                 self._json(app.api_stash_post(body))
+            elif url.path in ("/api/rehearsal", "/api/rehearsal/step"):
+                self._json(app.api_rehearsal_post(url.path, body))
             else:
                 self._json(app.api_post(url.path, body))
 
