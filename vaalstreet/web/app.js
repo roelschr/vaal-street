@@ -158,7 +158,7 @@ async function viewDesk(main) {
 
   const flips = panel(+state.filters.capital > 0 ? `Best flips for ${fmt(+state.filters.capital)} c` : 'Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
   flips.append(table([
-    { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
+    { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
     { h: 'Buy order', f: r => order(r.buy_order, true), title: 'Currency you pay, for how many items' },
     { h: 'Sell order', f: r => order(r.sell_order, false), title: 'Items you give, for how much currency' },
     { h: 'Margin', f: r => pct(r.margin) },
@@ -264,14 +264,14 @@ const goldCell = (r, value) => r.gold == null
   ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. Record the Gold of a trade in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
   : `${value}<div class="muted small">${feeSource(r)}</div>`;
 const flipCols = () => [
-  { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`), s: r => r.name },
+  { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`), s: r => r.name },
   { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
   { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
   { h: 'Units / hour', f: r => `<span title="${esc(shareTitle(r))}">${fmt(r.units_per_hour)}${r.share_source?.startsWith('your fills') ? ' <span class="dim" title="Measured from your orders">✓</span>' : ''}</span>`, s: r => r.units_per_hour },
   { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
-  { h: 'Last 7 days', f: r => r.replay ? `${pct(r.replay.return, 0)} <span class="dim">· ${r.replay.sales} sale${r.replay.sales === 1 ? '' : 's'}</span>` : '<span class="dim">no fills</span>', s: r => r.replay?.return, title: 'This plan’s rule replayed over the last 7 days on a fixed stake, re-posting orders every 4 hours: profit as a share of the stake (inventory still held is valued at fair value), and the number of hours with a sale' },
+  { h: 'Last 7 days', f: r => replayCell(r.replay), s: r => r.replay?.vs_divine ?? r.replay?.return, title: replayTitle },
   { h: 'Capital', f: r => money(r.capital), s: r => r.capital, title: 'Roughly six hours of buying held as inventory' },
   { h: 'Bid queue', f: r => dur(r.bid_queue_hours), s: r => r.bid_queue_hours, title: 'Resting bids already in the buy market, in hours of that market’s volume' },
   { h: 'Offer queue', f: r => dur(r.ask_queue_hours), s: r => r.ask_queue_hours, title: 'Items already on offer in the sell market, in hours of that market’s volume' },
@@ -282,6 +282,17 @@ const flipCols = () => [
 ];
 // Where a plan's share of the flow comes from: your recorded orders, or the share you set.
 const shareTitle = r => r.share == null ? '' : `Assumes you get ${plainPct(r.share, 1)} of the flow: ${/^default \d+%$/.test(r.share_source || '') ? 'the share you set on this page' : r.share_source}`;
+// A flip's last week, against holding Divines first: at a league start the Divine rises fast, so a
+// gain in Chaos can be a loss next to it.
+function replayCell(rp, sales = true) {
+  if (!rp) return '<span class="dim">no fills</span>';
+  const vs = rp.vs_divine == null ? '' : `${pct(rp.vs_divine, 0)} <span class="dim">vs Divines</span>`;
+  const sold = rp.realized != null && rp.return != null && Math.abs(rp.realized - rp.return) > 0.005 ? ` · ${pct(rp.realized, 0)} sold` : '';
+  return `${vs || pct(rp.return, 0)}<div class="muted small">${pct(rp.return, 0)} in Chaos${sold} · Divines ${pct(rp.divines, 0)}${sales ? ` · ${rp.sales} sale${rp.sales === 1 ? '' : 's'}` : ''}</div>`;
+}
+const replayTitle = 'This plan’s rule replayed over the last 7 days on a 1,000 Chaos stake, re-posting every 4 hours. First: its result against simply holding Divines over the same hours, the one that counts. Below: its return in Chaos (inventory still held valued at fair value), the part already sold, and what Divines made';
+// A flip whose Divine market pays far more than its Chaos market: the order fills rarely.
+const flipWarn = r => r.warning ? ` <span class="gold" title="${esc(r.warning)}">⚠ rare fills</span>` : '';
 const RANK = { profit: 6, gold: 11, own: 14 };
 
 async function viewFlips(main) {
@@ -315,20 +326,22 @@ async function viewFlips(main) {
     const picks = sp.flips, total = sp.expected_per_hour;
     // Kept so the Ledger can start a session against this plan.
     state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
-    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
+    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">last week: <b>${money(sp.replayed_vs_divine_per_hour)}</b> an hour against holding Divines, ${money(sp.replayed_per_hour)} an hour in Chaos · promised ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
-      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
+      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
       { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
-      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => money(r.stake), title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
+      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => `${money(r.stake)}${r.lot_share != null ? `<div class="gold small">one lot is ${plainPct(r.lot_share)} of your purse</div>` : ''}`, title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
       { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
-      { h: 'Est. / hour', f: r => money(r.est) },
+      { h: 'Last week vs Divines', f: r => `${money(r.replayed_vs_divine_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, minus what the stake would have made held as Divines' },
+      { h: 'Last week', f: r => `${money(r.replayed_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, in Chaos' },
+      { h: 'Promised', f: r => `${money(r.est)}<span class="dim"> / h</span>`, title: 'What the plan expects if every order fills as estimated; it runs well ahead of the replay' },
       { h: 'Per 1,000 Gold', f: r => r.chaos_per_1000_gold == null ? '<span class="dim">Gold unknown</span>' : `${money(r.chaos_per_1000_gold)}<div class="muted small">${feeSource(r)}</div>` },
       { h: 'Gold to post', f: r => r.gold_to_post == null ? '–' : fmt(r.gold_to_post), title: 'Gold to post this plan’s buy and sell orders once, at the size of its stake' },
       { h: 'Gold / hour', f: r => r.gold_per_hour == null ? '–' : fmt(r.gold_per_hour), title: 'Gold an hour at the fills this stake expects, if you keep re-posting' },
       { h: 'Minutes', f: r => mins(r.minutes) },
-      { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
-    ], picks, { onRow: r => openItem(r.id), empty: sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
+      { h: 'Last 7 days', f: r => replayCell(r.replay, false), title: replayTitle },
+    ], picks, { onRow: r => openItem(r.id), empty: sp.trailing_divines ? `Nothing beat holding Divines (${pct(sp.divines, 0)} over the last week): ${sp.trailing_divines} plan${sp.trailing_divines === 1 ? '' : 's'} made Chaos but less than the Divine rose.` : sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
     if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record a trade's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
     host.append(p);
   };
@@ -793,6 +806,7 @@ async function viewLab(main) {
     $('#rt', out).replaceChildren(table([
       { h: 'League', l: 1, f: r => esc(r.summary.league), s: r => r.summary.league },
       { h: 'Days', f: r => r.summary.days }, { h: 'Return', f: r => pct(r.summary.return, 0), s: r => r.summary.return },
+      { h: 'Against Divines', f: r => pct(r.summary.vs_divine, 0), s: r => r.summary.vs_divine, title: 'The return measured in Divines: what the strategy made beyond simply holding Divine Orbs. The one to judge it by' },
       { h: 'Hold Divine', f: r => pct(r.summary.divine_return, 0), title: 'The same Chaos converted to Divine Orbs after day one' },
       { h: 'Per day', f: r => fmt(r.summary.per_day) + ' c', s: r => r.summary.per_day },
       { h: 'Worst drawdown', f: r => plainPct(r.summary.max_drawdown, 1) },
@@ -1008,7 +1022,7 @@ async function viewLedger(main) {
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${r.market === 'divine' ? 'Divine' : 'Chaos'}` },
     { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
-    { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>` },
+    { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
       : `<button class="btn ghost" data-fill="${r.id}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
@@ -1111,11 +1125,12 @@ async function viewLadder(main) {
   const rungs = panel('What each purse size can run', 'c12', '<span class="muted small">Flips, conversions and round trips that purse can start, and what opens up that the step below could not run.</span>');
   rungs.append(table([
     { h: 'Purse', l: 1, f: r => `<b>${esc(r.label)}</b><div class="muted small">${fmt(r.chaos)} c</div>` },
-    { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${r.counts.flips} flips · ${r.counts.conversions} conversions · ${r.counts.round_trips} round trips</div>` },
+    { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${esc(r.counts_text || '')}</div>` },
     { h: 'What opens up here', l: 1, f: r => r.opens?.length ? r.opens.slice(0, 6).map(o => `${esc(o.label)} <span class="dim">· one lot ${fmt(o.lot_cost)} c</span>`).join('<br>') + (r.opens.length > 6 ? `<br><span class="dim">and ${r.opens.length - 6} more</span>` : '') : '<span class="dim">nothing new</span>' },
-    { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => esc(p.label)).join('<br>') : '<span class="dim">no flip fits</span>' },
+    { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => `${esc(p.label)}${p.replay_at_stake ? ` <span class="dim">· last week at this stake ${p.replay_at_stake.vs_divine != null ? `${pct(p.replay_at_stake.vs_divine, 0)} vs Divines` : pct(p.replay_at_stake.return, 0)}</span>` : ''}`).join('<br>') : `<span class="dim">${r.session?.divines != null ? `nothing beat holding Divines (${pct(r.session.divines, 0)})` : 'no flip fits'}</span>` },
+    { h: 'Last week vs Divines / hour', f: r => money(r.session?.replayed_vs_divine_per_hour), title: 'What the same plans made an hour over the last week, minus what the purse would have made held as Divines' },
+    { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week in Chaos, replayed on recent prices: a rough guide, small lots round worse' },
     { h: 'Promised / hour', f: r => money(r.session?.expected_per_hour), title: 'What the session plan’s flips promise at today’s prices' },
-    { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week, replayed on recent prices: a rough guide, small lots round worse' },
     { h: 'To next step', f: r => r.next == null ? '–' : r.hours_to_next == null ? '<span class="dim">does not grow</span>' : dur(r.hours_to_next) },
   ], d.ladder));
   g.append(plan, rungs);
@@ -1167,7 +1182,7 @@ async function openItem(id, hours = 168) {
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
       <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
-      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${pct(p.replay.return, 0)} on the stake, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}</div></div>`).join('')
+      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);
