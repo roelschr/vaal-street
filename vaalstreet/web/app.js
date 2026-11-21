@@ -255,7 +255,7 @@ const flipCols = () => [
   { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
-  { h: 'Units / hour', f: r => fmt(r.units_per_hour), s: r => r.units_per_hour },
+  { h: 'Units / hour', f: r => `<span title="${esc(shareTitle(r))}">${fmt(r.units_per_hour)}${r.share_source?.startsWith('your fills') ? ' <span class="dim" title="Measured from your orders">✓</span>' : ''}</span>`, s: r => r.units_per_hour },
   { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
   { h: 'Last 7 days', f: r => r.replay ? `${pct(r.replay.return, 0)} <span class="dim">· ${r.replay.sales} sale${r.replay.sales === 1 ? '' : 's'}</span>` : '<span class="dim">no fills</span>', s: r => r.replay?.return, title: 'This plan’s rule replayed over the last 7 days on a fixed stake, re-posting orders every 4 hours: profit as a share of the stake (inventory still held is valued at fair value), and the number of hours with a sale' },
   { h: 'Capital', f: r => money(r.capital), s: r => r.capital, title: 'Roughly six hours of buying held as inventory' },
@@ -266,6 +266,8 @@ const flipCols = () => [
   { h: 'Minutes', f: r => `${fmt(r.minutes)} <span class="dim">· ${r.orders} orders</span>`, s: r => r.minutes, title: 'Your time to post this plan’s orders once, at the minutes per order you set' },
   { h: 'Per hour of your time', f: r => money(r.profit_per_own_hour), s: r => r.profit_per_own_hour, title: 'Est. / hour × 60 ÷ minutes: if you post one buy and one sell order for each hour the market runs' },
 ];
+// Where a plan's share of the flow comes from: your recorded orders, or the share you set.
+const shareTitle = r => r.share == null ? '' : `Assumes you get ${plainPct(r.share, 1)} of the flow: ${/^default \d+%$/.test(r.share_source || '') ? 'the share you set on this page' : r.share_source}`;
 const RANK = { profit: 6, gold: 11, own: 14 };
 
 async function viewFlips(main) {
@@ -887,8 +889,16 @@ async function viewLedger(main) {
   tt.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/trade', { delete: +b.dataset.del }); route(); } };
   tr.append(tt);
   const al = alertsPanel(d, names);
+  const cal = panel('How much of the flow your orders got', 'c12', '<span class="muted small">From the orders you recorded and their fills, against the volume that traded through your price. Flips use these shares where they exist.</span>');
+  cal.append(table([
+    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Market', l: 1, f: r => `<span class="tag ${r.market}">${r.market === 'divine' ? 'Divine' : 'Chaos'}</span>` },
+    { h: 'Orders', f: r => `${r.orders}${r.complete ? ` <span class="dim">· ${r.complete} filled</span>` : ''}` },
+    { h: 'Measured', f: r => plainPct(r.measured, 1), title: 'Units your orders filled, over the units that traded through your price while they stood' },
+    { h: 'Share used', f: r => plainPct(r.share, 1), title: 'Blended with the default while you have few orders, so one lucky fill does not decide it' },
+    { h: 'What it means', l: 1, f: r => esc(r.reading) },
+  ], d.fill_calibration || [], { empty: 'Record orders you post and their fills; the desk then measures how much of the flow you really get.' }));
   const stash = await stashPanel(names);
-  $('#g', main).append(ses, ord, pos, stash, tr, fee, rc, al);
+  $('#g', main).append(ses, ord, cal, pos, stash, tr, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ ladder
