@@ -1257,6 +1257,14 @@ function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 const practiceTime = b => `${b.league} day ${b.league_day}, ${String(b.league_hour % 24).padStart(2, '0')}:00`;
 const practiceDate = b => new Date(b.hour * 1000).toLocaleString(undefined, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' UTC';
 const SPEEDS = [[0, 'by hand'], [1, '1 game hour a minute'], [2, '2 game hours a minute'], [6, '6 game hours a minute'], [24, '24 game hours a minute']];
+// A form field in use: focused, or holding text the player typed and has not sent.
+function typing() {
+  const a = document.activeElement;
+  if (a && a.matches('input,select,textarea') && !a.closest('#practice')) return true;
+  return [...document.querySelectorAll('#main input, #main textarea, #drawer input, #tc input')]
+    .some(i => !['checkbox', 'radio', 'range'].includes(i.type) && i.value !== i.defaultValue);
+}
+let practiceStale = false;
 let practiceSeen = null, practiceResult = null, practiceTimer = null, practiceTimerSpeed = 0;
 function practiceFrom(data) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return;
@@ -1268,7 +1276,11 @@ function practiceFrom(data) {
   if (!b && was) { state.league = null; state.summary = null; }
   drawPractice();
   // A new practice hour means new prices on every page.
-  if (b && practiceSeen != null && b.hour !== practiceSeen) { practiceSeen = b.hour; refreshPracticeResult(); setTimeout(route, 0); }
+  if (b && practiceSeen != null && b.hour !== practiceSeen) {
+    practiceSeen = b.hour; refreshPracticeResult();
+    // Never wipe what the player is typing: offer a refresh instead.
+    if (typing()) { practiceStale = true; drawPractice(); } else setTimeout(route, 0);
+  }
   practiceSeen = b ? b.hour : null;
   // With the clock running by itself, look in every 15 s so the pages follow it.
   const want = b && b.speed > 0 && !b.done ? b.speed : 0;
@@ -1291,7 +1303,7 @@ function drawPractice() {
   if (!b) { if (bar) bar.remove(); return; }
   if (!bar) { bar = document.createElement('div'); bar.id = 'practice'; bar.setAttribute('role', 'status'); document.body.prepend(bar); }
   bar.innerHTML = `<div class="pline"><b class="ptag">PRACTICE</b><span class="ptime" title="Hours since the league's first trade">${esc(practiceTime(b))}</span><span class="muted">${esc(practiceDate(b))}</span>
-      <span class="muted">Not the live market.</span>${b.done ? '<b class="gold">End of the data for this league.</b>' : ''}
+      <span class="muted">Not the live market.</span>${practiceStale ? '<button class="btn" id="pfresh" title="A new practice hour arrived while you were typing">New practice hour · refresh</button>' : ''}${b.done ? '<b class="gold">End of the data for this league.</b>' : ''}
       <span class="grow"></span>
       <span class="pbtns">${[1, 6, 24].map(h => `<button class="btn" data-step="${h}" ${b.done ? 'disabled' : ''}>+${h} h</button>`).join('')}</span>
       <select id="pspeed" title="How fast the practice clock runs">${SPEEDS.map(([v, l]) => `<option value="${v}" ${+b.speed === v ? 'selected' : ''}>${l}</option>`).join('')}${SPEEDS.some(([v]) => v === +b.speed) ? '' : `<option selected value="${b.speed}">${b.speed} game hours a minute</option>`}</select>
@@ -1301,6 +1313,7 @@ function drawPractice() {
     const step = e.target.closest('[data-step]');
     if (step) { step.disabled = true; try { practiceFrom(await api('/api/rehearsal/step', { hours: +step.dataset.step })); } catch (err) { toast(err.message, true); } }
     if (e.target.id === 'pstop') stopPractice();
+    if (e.target.id === 'pfresh') { practiceStale = false; drawPractice(); route(); }
   };
   $('#pspeed', bar).onchange = async e => { try { practiceFrom(await api('/api/rehearsal/step', { speed: +e.target.value })); } catch (err) { toast(err.message, true); } };
 }
@@ -1420,6 +1433,7 @@ async function openHideout() {
 const VIEWS = { desk: viewDesk, markets: viewMarkets, flips: viewFlips, arbitrage: viewArbitrage, ladder: viewLadder, league: viewLeague, lab: viewLab, ledger: viewLedger };
 let routing = 0;
 async function route() {
+  if (practiceStale) { practiceStale = false; drawPractice(); }
   const main = $('#main'), turn = ++routing;
   if (!state.status?.ready) {
     const s = state.status;
