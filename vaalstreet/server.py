@@ -305,6 +305,17 @@ class App:
             out.append(row)
         return out
 
+    def api_ladder(self, q: dict) -> dict:
+        from vaalstreet import ladder
+
+        desk = self.desk(q.get("league"))
+        start = float(q["bankroll"]) if q.get("bankroll") else 25.0
+        hours = float(q["hours"]) if q.get("hours") else None
+        target = float(q["target"]) if q.get("target") else None
+        out = ladder.plan(desk, max(start, 0.0), hours=hours, target=target, costs=self.costs(desk.league),
+                          share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)))
+        return {"summary": desk.summary(), **out}
+
     def api_league(self, q: dict) -> dict:
         book = self.book()
         league = q.get("league") or self.default_league()
@@ -554,7 +565,7 @@ def _flag(row: dict, checks: dict) -> None:
 
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
-    "/api/arbitrage": "api_arbitrage", "/api/league": "api_league", "/api/curve": "api_curve",
+    "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
 }
 

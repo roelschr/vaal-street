@@ -73,6 +73,8 @@ Two more kinds of swap can join a path. One goes through Divine: sell A for Divi
 
 **Small bankrolls.** The exchange trades whole lots: "64 decks for 1 Divine" cannot be sold by someone holding ten decks. Enter your bankroll and every flip is re-cut to whole-number orders that purse can post, its margin recomputed from the prices those orders really state; plans that cannot be run are dropped, and below the price of one Divine everything stays in the Chaos markets. The Arbitrage page filters to conversions and round trips the bankroll can start.
 
+**Bankroll ladder.** `ladder` runs all of that at a series of purse sizes: 25, 50, 100, 200 and 400 Chaos, then 1, 2, 5 and 10 Divines at today's Divine price, sorted by what they are worth in Chaos. For each step it shows how many flips, conversions and round trips that purse can start, what opens up that the step below could not run (for example, "Divine-market flips open at 2 Divines" when one lot there costs about 285 Chaos), and the session plan's Chaos per hour next to what the same plans made over the last week. That last-week figure is the replay's return on a 1,000 Chaos stake, scaled to the stake the plan puts in; small lots round worse than big ones, so take it as a rough guide. "Hours to next" divides the gap to the next step by the lower of the two rates for each plan. Then it plans a session from your purse: run these plans until the purse reaches the next step, then switch to the plans that fit the bigger purse. The purse grows at that same cautious rate, so the plan is a projection from last week's prices, not a promise.
+
 **League start.** Leagues are aligned on days since their first trade. The playbook takes every item on today's league day in each past league and measures its move over the chosen horizon, in Divine by default (Chaos loses value through a league, so Chaos returns flatter everything). Every row shows the per-league outcomes and how many leagues it rests on. A league whose start is not on disk is left out rather than misaligned.
 
 **Backtests.** One league is replayed hour by hour. Orders posted at hour *t* meet hour *t+1*.
@@ -111,6 +113,7 @@ python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone l
 python -m vaalstreet arb --swaps 3               # sets against their rewards, and round trips
 python -m vaalstreet recipe add --give "5 Some Card" --get "1 Some Orb"   # a recipe of your own
 python -m vaalstreet recipe add --vendor --give "3 Chaos Orb" --get "Some Shard"   # a vendor price
+python -m vaalstreet ladder --from 25 --hours 6  # what each purse size can run, and when to switch plans
 python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
 python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
@@ -187,6 +190,7 @@ vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and s
 vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipes and checks, alerts, stash
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
 vaalstreet/check.py     trade check and stash valuation
+vaalstreet/ladder.py    bankroll ladder and compounding plan
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.

@@ -165,6 +165,34 @@ def _flips(args: argparse.Namespace) -> None:
                    ("capital", "Capital", ",.0f")], args.rows)
 
 
+def _ladder(args: argparse.Namespace) -> None:
+    from vaalstreet import ladder
+    from vaalstreet.desk import Desk
+
+    con = connect()
+    desk = Desk.build(con, _league(con, args))
+    out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share)
+    print(f"{desk.league} - Divine {desk.bridge:.1f}c\n")
+    rows = []
+    for r in out["ladder"]:
+        s = r["session"]
+        rows.append({"label": r["label"], "chaos": r["chaos"], "can_run": r["can_run"],
+                     "promised": s["expected_per_hour"], "replayed": s["replayed_per_hour"],
+                     "hours": r["hours_to_next"]})
+    _table(rows, [("label", "Purse", ""), ("chaos", "Chaos", ",.0f"), ("can_run", "Can run", ""),
+                  ("promised", "c/hour now", ",.2f"), ("replayed", "c/hour last week", ",.2f"),
+                  ("hours", "Hours to next", ",.1f")], len(rows))
+    print("\nWhat opens up at each step:")
+    for r in out["ladder"]:
+        if r["opens"]:
+            kinds = f" (first {', '.join(r['opens_groups'])})" if r["opens_groups"] else ""
+            print(f"  {r['label']}{kinds}: " + "; ".join(o["label"] for o in r["opens"]))
+    print(f"\nFrom {args.start:,.0f} Chaos:")
+    for line in out["schedule_text"]:
+        print(f"  {line}")
+    print(f"\n{out['note']}")
+
+
 def _check(args: argparse.Namespace) -> None:
     from vaalstreet import check
     from vaalstreet.desk import Desk
@@ -470,6 +498,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--ledger", action="store_true", help="value the positions your recorded trades add up to instead")
     p.add_argument("--league")
     p.set_defaults(run=_stash)
+
+    p = commands.add_parser(
+        "ladder", help="what a small purse can run at each step up to 10 Divines, and when to switch plans",
+        description="Shows, for purses from 25 Chaos up to 10 Divines, how many plans can run, what opens up "
+                    "at each step, what the session plan promises now next to what it made last week, and how "
+                    "long the next step takes. Then plans a session from your purse, switching plans at each "
+                    "step. This is a projection from last week's prices, not a promise.")
+    p.add_argument("--league")
+    p.add_argument("--from", dest="start", type=float, default=25.0, help="your purse in Chaos (default 25)")
+    p.add_argument("--hours", type=float, default=None, help="how long you will trade (default 6, or until --target)")
+    p.add_argument("--target", type=float, default=None, help="stop the plan once the purse reaches this many Chaos")
+    p.add_argument("--share", type=float, default=0.1, help="share of each market's flow you expect to capture")
+    p.set_defaults(run=_ladder)
 
     p = commands.add_parser("arb", help="card sets, shards and your own recipes against what they turn into, "
                                         "and round trips through item-for-item markets")
