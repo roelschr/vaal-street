@@ -453,6 +453,10 @@ def _cross_league(args: argparse.Namespace) -> None:
     print("\nThe Divine in Chaos, against this league:")
     _table(out["divine"], [("other", "League", ""), ("gap", "Gap", "+.0%"), ("days", "Days", ""),
                            ("verdict", "Verdict", "")], len(out["divine"]))
+    seen = {r["other"] for r in out["items"] + out["divine"]}
+    thin = [o for o in out["others"] if o not in seen]
+    if thin:
+        print(f"\n{', '.join(thin)}: too little trade on the same hours to compare.")
     rows = [r for r in out["items"] if args.all or r["verdict"] == "structural"]
     print(f"\n{'Every gap' if args.all else 'Structural gaps'} (other league / this league - 1):")
     _table(rows, [("name", "Item", ""), ("market", "Market", ""), ("other", "League", ""), ("gap", "Gap", "+.0%"),

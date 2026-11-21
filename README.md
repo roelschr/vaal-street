@@ -215,7 +215,7 @@ Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification s
 
 ```
 vaalstreet/archive.py   download         vaalstreet/desk.py      market table, flips, arbitrage
-vaalstreet/ingest.py    raw -> Parquet   vaalstreet/leagues.py   league-start analytics
+vaalstreet/ingest.py    raw -> Parquet   vaalstreet/leagues.py   league families and league-start analytics
 vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and strategies
 vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipes and checks, alerts, stash
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI

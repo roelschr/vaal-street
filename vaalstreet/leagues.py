@@ -79,8 +79,10 @@ def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, s
        run for a few weeks next to a live challenge league. So the rule needs no list of past events,
        and a young live league is called an event only if it really started mid-league.
 
-    Duration alone is not used: a live league's length is only a lower bound, and so is the length of
-    a league already running when the archive starts. `end` is the archive's last hour (epoch seconds),
+    Absolute duration alone is not used: a live league's length is only a lower bound, and so is the
+    length of a league already running when the archive starts. The cost: a short event that does not
+    run inside a challenge league by these thresholds is taken for a challenge league. No real event
+    league was on disk when these rules were written, so the thresholds are unvalidated. `end` is the archive's last hour (epoch seconds),
     used to tell a live league from an ended one.
     """
     end = max((r["last_hour"] for r in rows), default=0) if end is None else end
@@ -195,7 +197,8 @@ class LeagueBook:
         """
         rows = self.leagues()
         me = next((r for r in rows if r["league"] == current), None)
-        family = me["family"] if me else "challenge"
+        # Hardcore, Ruthless and the permanent leagues are not lined up by league day: they get no precedents.
+        family = me["family"] if me else self.family_of(current)
         start = me["first_hour"] if me else None
         return [
             r["league"] for r in rows
@@ -587,10 +590,10 @@ class LeagueBook:
                     "id": item, "name": names.get(item, {}).get("name", item),
                     "category": names.get(item, {}).get("category"), "growth": _num(mine, 3), "n": len(then),
                     "past_low": _num(then[0], 3), "past_median": _num(then[m] if len(then) % 2 else (then[m - 1] + then[m]) / 2, 3),
-                    "past_high": _num(then[-1], 3), "vs_past_high": _num(mine / then[-1], 3),
+                    "past_high": _num(then[-1], 3), "vs_past_high": _num(mine / then[-1], 3) if then[-1] > 0 else None,
                     "by_league": [{"league": k, "growth": _num(v, 3)} for k, v in sorted(by.items())],
                 })
-        out["items"].sort(key=lambda r: -(r["vs_past_high"] or 0))
+        out["items"].sort(key=lambda r: -(r["vs_past_high"] or math.inf))
         out["items"] = out["items"][:limit]
         return out
 
@@ -674,5 +677,6 @@ class LeagueBook:
                    "spread": _num(spread, 3), "days": int(r["n_days"]), "hours": int(r["hours"]),
                    "verdict": "structural" if structural else "none" if quiet else "noise"}
             (out["divine"] if r["item"] == self.bridge else out["items"]).append(row)
-        out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]), -abs(x["gap"] or 0)))
+        out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]),
+                                         -abs(math.log1p(x["gap"] or 0))))
         return out

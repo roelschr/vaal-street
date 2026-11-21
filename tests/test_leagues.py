@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from conftest import BLITZ, EMBER, FLASH, HC_NEW, ITEM, LURE, NEW, OLD, STANDARD, call
+from conftest import H0, HOUR, NEW_START, OLD_HOURS, BLITZ, EMBER, FLASH, HC_NEW, ITEM, LURE, NEW, OLD, STANDARD, call
 
+import shutil
+
+from conftest import write_raw
+
+from vaalstreet.db import connect
+from vaalstreet.ingest import ingest
 from vaalstreet.leagues import DAY, LeagueBook, classify
 
 
@@ -99,6 +105,7 @@ def test_launch_playbook_names_the_shortfall(con):
 def test_launch_in_the_api_and_cli(server, archive_root, monkeypatch, capsys):
     league = call(f"{server}/api/league?league={NEW}")[1]
     assert league["family"] == "challenge" and league["launch"]["precedents"] == [OLD]
+    assert league["divine_timing"]["n"] == 1 and league["meta"]["items"][0]["id"] == LURE
 
     from vaalstreet import cli
 
@@ -143,3 +150,27 @@ def test_meta_shift(con, archive_root, monkeypatch, capsys):
     monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
     cli.main(["meta", "--league", NEW])
     assert "Test Lure" in capsys.readouterr().out
+
+
+def test_non_softcore_leagues_get_no_precedents(con):
+    book = LeagueBook(con)
+    assert book.precedents(STANDARD) == [] and book.precedents(HC_NEW) == []
+    assert book.divine_timing(STANDARD)["advice"] == "No past standard league is on disk to time the Divine with."
+
+
+def test_league_start_analytics_ignore_later_hours(con, archive_root, tmp_path):
+    """Causality: the same archive cut at New's hour 95 gives the answers known at that hour."""
+    write_raw(tmp_path, [H0 + h * HOUR for h in list(range(OLD_HOURS)) + list(range(NEW_START, NEW_START + 96))])
+    shutil.copytree(archive_root / "items", tmp_path / "items")
+    ingest(tmp_path, log=None)
+    cut = connect(tmp_path)
+    try:
+        early, full = LeagueBook(cut), LeagueBook(con)
+        # Lure units at hours 72-95 against 24-47: (1 + 83.5/24) / (1 + 35.5/24) = 1.807; Old stays 1.0.
+        [lure] = early.meta(NEW)["items"]
+        assert early.meta(NEW)["hours"] == [72, 95] and abs(lure["growth"] - 1.807) < 0.005
+        assert early.launch(NEW)["items"] == full.launch(NEW)["items"]
+        assert early.divine_timing(NEW)["by_league"] == full.divine_timing(NEW)["by_league"]
+        assert early.divine_timing(NEW)["day"] == 3
+    finally:
+        cut.close()
