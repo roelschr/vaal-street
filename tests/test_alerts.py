@@ -162,3 +162,26 @@ CREATE TABLE IF NOT EXISTS alerts(
     assert ledger.evaluate_alerts("L", {"orb": {"name": "Orb", "price": 6}}, 1) == [], "was already above"
     ledger.add_alert("L", kind="order")
     assert [a["kind"] for a in ledger.alerts("L")] == ["price", "order"]
+
+
+def test_event_feed_over_http_returns_a_real_event(app):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from vaalstreet.server import make_handler
+
+    order = app.ledger.add_order("New", ITEM, "buy", "chaos", 1, 1, 10)
+    app.ledger.fill_order(order, 10, record_trade=False)
+    app.ledger.add_alert("New", kind="order")
+    fire(app)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_port}/api/events?league=New"
+        feed = call(f"{url}&since=0")[1]
+        event, = feed["events"]
+        assert event["title"] == "Test Orb filled, post the sell" and feed["last"] == event["id"]
+        assert event["body"]
+        assert call(f"{url}&since={event['id']}")[1] == {"events": [], "last": event["id"]}
+    finally:
+        httpd.shutdown()
