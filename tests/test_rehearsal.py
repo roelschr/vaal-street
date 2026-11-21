@@ -243,3 +243,17 @@ def test_sync_thread_stays_live_while_requests_see_the_rehearsal(archive_root, t
     assert seen == {"desk": live_hour, "ledger": real, "league": NEW}
     assert app.desk().as_of == hour and app.ledger is not real
     app.stop_rehearsal()
+
+
+def test_rehearse_cli_steps_through_the_league(archive_root, monkeypatch, capsys):
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    answers = iter(["", "24", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    cli.main(["rehearse", NEW, "--start-day", "1"])
+    out = capsys.readouterr().out
+    # Day 1 hour 0, then one hour later, then a day later; Divine is 100 + 0.25 * league hour.
+    assert "day 1, hour 0" in out and "Divine 106.0c" in out
+    assert "day 1, hour 1" in out and "day 2, hour 1" in out and "Divine 112.2c" in out
+    assert "Top flips:" in out and "Movers over 24 hours:" in out

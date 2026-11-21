@@ -171,6 +171,49 @@ def _flips(args: argparse.Namespace) -> None:
                    ("capital", "Capital", ",.0f")], args.rows)
 
 
+def _rehearse(args: argparse.Namespace) -> None:
+    """Step through a past league hour by hour, seeing only what was published by then."""
+    from vaalstreet.desk import Desk
+    from vaalstreet.rehearsal import league_hours
+
+    con = connect()
+    try:
+        first, last = league_hours(con, args.league)
+    except LookupError as err:
+        sys.exit(str(err))
+    hour = first + int(args.start_day * 24) * HOUR
+    if not first <= hour <= last:
+        sys.exit(f"{args.league} has {(last - first) // HOUR // 24 + 1} days on disk; pick a start day inside them.")
+    print(f"Rehearsing {args.league}: each step is one hour later. Enter for the next hour, a number to jump "
+          "that many hours, q to quit. Nothing after the hour shown is used.")
+    import warnings
+
+    warnings.simplefilter("ignore", RuntimeWarning)  # empty early-league columns; the table shows "-" for them
+    while True:
+        desk = Desk.build(con, args.league, as_of=hour)
+        h = (hour - first) // HOUR
+        when = time.strftime("%Y-%m-%d %H:00 UTC", time.gmtime(hour))
+        print(f"\n== {args.league}  day {h // 24}, hour {h % 24}  ({when})  Divine {desk.bridge:.1f}c ==")
+        plans = desk.flips(min_margin=args.min_margin)
+        print("Top flips:")
+        _table(plans, [("name", "Item", ""), ("kind", "Plan", ""), ("buy", "Buy", ".4g"), ("sell", "Sell", ".4g"),
+                       ("margin", "Margin", ".1%"), ("profit_per_hour", "c/hour", ",.0f")], args.rows)
+        movers = sorted((r for r in desk.market() if r.get("change_24h") is not None),
+                        key=lambda r: -abs(r["change_24h"]))
+        print("Movers over 24 hours:")
+        _table(movers, [("name", "Item", ""), ("price", "Price", ".4g"), ("change_24h", "24h", "+.1%")], args.rows)
+        if hour >= last:
+            print(f"\nThat was the last hour of {args.league} on disk.")
+            return
+        try:
+            answer = input("> ").strip().lower()
+        except EOFError:
+            return
+        if answer in ("q", "quit", "exit"):
+            return
+        hour = min(last, hour + (int(answer) if answer.isdigit() and int(answer) > 0 else 1) * HOUR)
+
+
 def _fills(args: argparse.Namespace) -> None:
     from vaalstreet import calibrate
     from vaalstreet.desk import Desk
@@ -763,6 +806,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-margin", type=float, default=0.02)
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_flips)
+
+    p = commands.add_parser("rehearse", help="practise on a past league: step through it hour by hour, "
+                                             "seeing only what the desk knew at each hour")
+    p.add_argument("league")
+    p.add_argument("--start-day", type=float, default=0, help="league day to start on (default: its first hour)")
+    p.add_argument("--min-margin", type=float, default=0.02)
+    p.add_argument("--rows", type=int, default=5)
+    p.set_defaults(run=_rehearse)
 
     p = commands.add_parser("fills", help="how fast your tracked orders filled, and the share of the flow plans now use")
     p.add_argument("--league")
