@@ -258,3 +258,97 @@ def test_playbook_reports_what_past_leagues_did_next(con):
     standing = book.standing(NEW, unit="chaos", min_value=0)
     orb_s = next(r for r in standing["items"] if r["id"] == ITEM)
     assert orb_s["vs_typical"] == pytest.approx(1 / 1.65 - 1, abs=0.03)
+
+
+# ------------------------------------------------------------ fair value range and the two-market model
+
+def test_fair_value_range_is_wider_for_noisy_items_and_narrows_with_data():
+    _, calm = noisy_walk(noise=0.01)
+    _, noisy = noisy_walk(noise=0.10)
+    a, b = pricing.fair_value(calm), pricing.fair_value(noisy)
+    assert (b.sd[200:] > a.sd[200:]).mean() > 0.95
+    assert np.all(a.low <= a.fair) and np.all(a.fair <= a.high)
+    for fv in (a, b):
+        assert np.all(fv.sd[10] < 0.75 * fv.sd[0]), "the band narrows as prints accumulate"
+
+
+def test_fair_value_range_coverage_on_a_known_walk():
+    # noisy_walk: true log value moves 0.01 per hour, prints add 0.05 of noise. A one-sd band should
+    # hold the true value, and one `spread` around fair value the next print, about 68% of the time.
+    true, seen = noisy_walk(T=800)
+    fv = pricing.fair_value(seen)
+    f = np.log(fv.fair)
+    assert 0.58 < np.mean(np.abs(f[100:] - np.log(true[100:])) <= fv.sd[100:]) < 0.78
+    assert 0.58 < np.mean(np.abs(np.log(seen[101:]) - f[100:-1]) <= fv.spread[100:-1]) < 0.78
+
+
+def test_fair_value_range_is_causal():
+    _, seen = noisy_walk()
+    full, cut = pricing.fair_value(seen), pricing.fair_value(seen[:400])
+    for name in ("fair", "sd", "spread", "low", "high", "z"):
+        assert np.array_equal(getattr(full, name)[:400], getattr(cut, name), equal_nan=True), name
+
+
+def two_markets(T=1200, N=6, noise=0.05, keep=0.25, premium=0.08, seed=5):
+    """One true log value per item; the Divine market pays `premium` (log) more and prints in `keep` of hours."""
+    rng = np.random.default_rng(seed)
+    v = 2.0 + np.cumsum(rng.normal(0, 0.01, (T, N)), axis=0)
+    r = np.exp(v + rng.normal(0, noise, (T, N)))
+    b = np.exp(v + premium + rng.normal(0, noise, (T, N)))
+    b[rng.random((T, N)) > keep] = np.nan
+    return v, r, b
+
+
+def test_two_market_model_is_causal():
+    _, r, b = two_markets()
+    full, cut = pricing.two_market(r, b), pricing.two_market(r[:500], b[:500])
+    for name in ("value", "premium", "value_sd", "premium_sd", "divine"):
+        assert np.array_equal(getattr(full, name)[:500], getattr(cut, name), equal_nan=True), name
+
+
+def test_two_market_model_recovers_the_archive_premium(con):
+    # The synthetic archive's Divine market pays exactly PREMIUM over the Chaos market every hour.
+    for league in (OLD, NEW):
+        panel = Panel.load(con, league, CORE + LEGS)
+        tm = pricing.two_market(panel["r_price"], panel["b_price"], panel["r_price"] * panel["r_volume"],
+                                panel["b_price"] * panel["b_volume"])
+        i = panel.index(ITEM)
+        assert np.max(np.abs(tm.premium[24:, i] - math.log(PREMIUM))) < 0.005
+        assert np.isnan(tm.premium[:, panel.index(CARD)]).all(), "one market, so no premium"
+        rows = pricing.market_scorecard(panel["price"], panel["value"], panel["r_price"],
+                                        panel["r_price"] * panel["r_volume"], panel["b_price"],
+                                        panel["b_price"] * panel["b_volume"])
+        assert {row["market"] for row in rows} == {"Chaos", "Divine"}
+
+
+def test_two_market_model_pools_a_thin_divine_market_with_the_chaos_market():
+    v, r, b = two_markets()
+    tm = pricing.two_market(r, b)
+    assert np.median(tm.premium[300:]) == pytest.approx(0.08, abs=0.01)
+    pooled = np.abs(np.log(tm.divine[300:]) - v[300:] - 0.08).mean()
+    alone = np.nanmean(np.abs(np.log(pricing.fair_value(b).fair[300:]) - v[300:] - 0.08))
+    assert pooled < 0.8 * alone, "the Divine market borrows the Chaos market's prints"
+    one = np.ones_like(r)
+    divine = [row for row in pricing.market_scorecard(np.where(np.isfinite(r), r, b), one, r, one, b, one)
+              if row["market"] == "Divine"]
+    assert divine and divine[0]["two_market_mean"] < divine[0]["own_market_mean"]
+
+
+def test_two_market_model_accepts_a_repricing_and_keeps_the_premium():
+    _, r, b = two_markets()
+    r[600:, 0] *= 0.03
+    b[600:, 0] *= 0.03
+    tm = pricing.two_market(r, b)
+    assert tm.value[600, 0] == tm.value[599, 0], "not believed on the first print"
+    assert abs(math.log(tm.value[601, 0] / r[601, 0])) < 0.1, "believed on the second"
+    assert tm.premium[700, 0] == pytest.approx(0.08, abs=0.02)
+
+
+def test_desk_carries_the_fair_value_range(desk):
+    orb = next(row for row in desk.market() if row["id"] == ITEM)
+    assert orb["fair_low"] < orb["price"] < orb["fair_high"]
+    low, fair, high = desk.fair_range(ITEM)
+    assert fair == desk.fair(ITEM) and low < fair < high
+    s = desk.series(ITEM)
+    assert len(s["fair_low"]) == len(s["fair"]) == len(s["fair_high"])
+    json.dumps(s)
