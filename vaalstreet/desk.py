@@ -43,6 +43,7 @@ PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of a market's volume that trades bey
 # are never placed more than this far (in log terms, about 1.5x) from fair value.
 MAX_SWING = math.log(1.5)  # keep in step with backtest.MAX_SWING
 PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
+PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
 MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
@@ -296,7 +297,8 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
                       "lot_cost": r["lot_cost"], "replay": r["replay"],
                       "chaos_per_1000_gold": r.get("chaos_per_1000_gold"), "gold_sources": r.get("gold_sources"),
                       "minutes": r.get("minutes"),
-                      "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour})
+                      "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour,
+                      "share_source": r.get("share_source")})
     return {
         "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
         "expected_per_hour": sum(p["est"] for p in picks), "deployed": bankroll - left,
@@ -547,8 +549,14 @@ class Desk:
 
     @_memo
     def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5,
-              bankroll: float | None = None, costs: Costs | None = None) -> list[dict]:
+              bankroll: float | None = None, costs: Costs | None = None,
+              share_by_item: dict[str, dict[str, list]] | None = None) -> list[dict]:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
+
+        `share_by_item` overrides it where your own orders measured it: item -> market ("chaos" or
+        "divine") -> [share, orders], as `calibrate.shares` builds it. A plan uses the smaller of
+        its buy market's and sell market's shares, since the slower side sets the pace, and says
+        where its share came from in `share_source`.
 
         Each plan buys on one leg and sells on another (or the same) at levels the
         leg's *hourly average* price has actually reached: "`reach` of the units
@@ -576,6 +584,7 @@ class Desk:
             )
             if not usable.any():
                 continue
+            share_vec, sources = self._shares(share, share_by_item, PLAN_MARKETS[kind])
             for reach in PATIENCE:
                 # Volume-weighted: `reach` of the units traded at or beyond each level, so an hour in which
                 # three units changed hands at a silly ratio cannot set it.
@@ -584,7 +593,7 @@ class Desk:
                 with np.errstate(divide="ignore", invalid="ignore"):
                     margin = sell / buy - 1
                 # Only the volume that trades beyond a level can fill an order resting there.
-                units = share * reach * np.minimum(buy_leg.flow, sell_leg.flow)
+                units = share_vec * reach * np.minimum(buy_leg.flow, sell_leg.flow)
                 profit = margin * units * buy
                 ok = usable & np.isfinite(margin) & (margin >= min_margin) & (units > 0)
                 for i in np.flatnonzero(ok):
@@ -602,6 +611,7 @@ class Desk:
                         "sell_order": self._order(float(sell[i]), kind != "chaos"),
                         "units_per_hour": _num(units[i], 4),
                         "profit_per_hour": float(profit[i]),
+                        "share": _num(share_vec[i], 4), "share_source": sources.get(i, f"default {share:.0%}"),
                         "capital": _num(units[i] * buy[i] * 6, 4),  # about six hours of buying held as inventory
                         "range_low": _num(buy_leg.low[i]), "range_high": _num(sell_leg.high[i]),
                         "bid_queue_hours": _num(bid_queue, 3), "ask_queue_hours": _num(ask_queue, 3),
@@ -619,6 +629,24 @@ class Desk:
         plans = [(costs or Costs()).flip(plan) for plan in plans]  # after _fit: Gold follows the capped profit
         plans.sort(key=lambda plan: -(plan["profit_per_hour"] or 0))
         return plans
+
+    def _shares(self, share: float, share_by_item: dict | None,
+                markets: tuple[str, str]) -> tuple[np.ndarray, dict[int, str]]:
+        """Per-item share of the flow for a plan buying in one market and selling in another."""
+        out = np.full(len(self.panel.items), float(share))
+        sources: dict[int, str] = {}
+        for item, by_market in (share_by_item or {}).items():
+            i = self.panel._by_id.get(item)
+            if i is None:
+                continue
+            picks = [(by_market[m][0], by_market[m][1]) for m in dict.fromkeys(markets) if m in by_market]
+            if not picks:
+                continue
+            values = [v for v, _ in picks] + [share] * (len(set(markets)) - len(picks))
+            out[i] = min(values)
+            n = sum(k for _, k in picks)
+            sources[i] = f"your fills, {n} order{'s' if n != 1 else ''}"
+        return out, sources
 
     def replay(self, share: float = 0.1, days: int = REPLAY_DAYS) -> dict[tuple[str, str], dict]:
         """How each kind of plan would have done on each item over the last `days` days.
