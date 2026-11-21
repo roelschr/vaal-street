@@ -100,6 +100,10 @@ def test_api_backtest_and_ledger_round_trip(server):
     assert status == 200 and result["summary"]["return"] > 0 and len(result["t"]) == len(result["equity"])
     assert call(f"{server}/api/backtest", {"strategy": "/etc/passwd:X"})[0] == 400, "no arbitrary modules over HTTP"
     assert call(f"{server}/api/backtest", {"strategy": "swing", "params": {"bogus": 1}})[0] == 400
+    status, real = call(f"{server}/api/backtest", {"strategy": "swing", "capital": 2000, "whole_lots": True,
+                                                    "gold_per_unit": 1, "gold_budget": 5000, "schedule": "mon-fri 17-23"})
+    assert status == 200 and 0 < real["summary"]["gold_spent"] <= 5000
+    assert call(f"{server}/api/backtest", {"strategy": "swing", "schedule": "whenever"})[0] == 400
 
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9})[0] == 200
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 99, "price": 9})[0] == 400

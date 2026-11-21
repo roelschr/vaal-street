@@ -208,7 +208,8 @@ def _backtest(args: argparse.Namespace) -> None:
         result = backtest.run(
             con, league, args.strategy, params=params, capital=args.capital, participation=args.participation,
             slippage=args.slippage, start_day=args.start_day, days=args.days, attention=args.attention,
-            compound=args.compound,
+            compound=args.compound, whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit,
+            gold_budget=args.gold_budget, schedule=args.schedule,
         )
         summary = result.summary()
         summary["seconds"] = round(time.time() - started, 1)
@@ -219,7 +220,8 @@ def _backtest(args: argparse.Namespace) -> None:
     _table(summaries, [("league", "League", ""), ("strategy", "Strategy", ""), ("days", "Days", ""),
                        ("return", "Return", "+.1%"), ("divine_return", "Hold Divine", "+.1%"),
                        ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
-                       ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f")])
+                       ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
+                       ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f")])
     for s in summaries:
         tops = ", ".join(f"{t['name']} {t['profit']:+,.0f}" for t in s["top_items"][:5])
         print(f"  {s['league']}: {tops}")
@@ -339,6 +341,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--start-day", type=float, default=0)
     p.add_argument("--days", type=float)
     p.add_argument("--compound", action="store_true", help="size orders on current equity instead of the stake")
+    p.add_argument("--whole-lots", action="store_true",
+                   help="trade like a real purse: whole items, at whole-number ratios you can afford")
+    p.add_argument("--gold-per-unit", type=float, default=0.0,
+                   help="Gold you pay per unit each time you post an order (the game does not publish fees)")
+    p.add_argument("--gold-budget", type=float, help="stop posting new orders once this much Gold is spent")
+    p.add_argument("--schedule", help='when you play, in UTC, e.g. "mon-fri 19-22; sat,sun 10-14" '
+                   "(end hour not included); orders stand while you are away")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_backtest)
 
