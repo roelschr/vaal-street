@@ -247,3 +247,20 @@ def test_market_change_is_blank_when_the_window_starts_before_the_item_traded(co
     desk = Desk.build(con, NEW, root=archive_root)
     desk.panel["price"][:141, desk.panel.index(ITEM)] = float("nan")
     assert row(desk)["change_24h"] is not None
+
+
+def test_the_sync_thread_warms_the_slow_answers(flat_root, tmp_path):
+    """After a rebuild the flip replays and the ladder's replays at the stake are already computed:
+    the pages' first requests add nothing to the desk's replay cache."""
+    from vaalstreet.ledger import Ledger
+    from vaalstreet.server import App
+
+    app = App(flat_root, sync=False)
+    app.ledger = Ledger(tmp_path)
+    app._warm()
+    desk = app.desk()
+    warmed = set(desk._replays)
+    assert (0.1, 7) in warmed and any(k[0] == "at" for k in warmed if isinstance(k, tuple) and k)
+    app.api_flips({})
+    app.api_ladder({})
+    assert set(app.desk()._replays) == warmed and app.desk() is desk

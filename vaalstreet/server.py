@@ -256,6 +256,7 @@ class App:
                     ingest(self.root, log=None)
                     self._invalidate()
                 self._after_refresh()
+                self._warm()  # here, in the sync thread; a rehearsal step refreshes in the request thread and is not warmed
             elif not db.has_data(self.root, REALM):
                 ingest(self.root, log=None)
                 self._invalidate()
@@ -276,6 +277,21 @@ class App:
             self.ledger.evaluate_alerts(desk.league, rows, desk.as_of, self._alert_context(desk))
         except ApiError:
             pass
+
+    def _warm(self) -> None:
+        """Compute the slow answers now, after each rebuild in the sync thread, so a page load never waits.
+
+        The flip replays (12 simulator runs) and the ladder's replays at each pick's stake take
+        several seconds on a live league; the desk remembers them for its hour. Warmed with the
+        pages' default settings, which is what they ask for first.
+        """
+        for warm in (lambda: self.api_flips({}), lambda: self.api_ladder({})):
+            try:
+                warm()
+            except ApiError:
+                return
+            except Exception:  # warming is a convenience; never let it take the refresh down
+                traceback.print_exc()
 
     def _alert_context(self, desk) -> dict:
         """What the plan, round-trip, order and precedent alerts look at, computed only for kinds in use.
