@@ -7,7 +7,7 @@ import urllib.request
 
 import pytest
 
-from conftest import ITEM, NEW, call
+from conftest import CARD, ITEM, NEW, OTHER, call
 from vaalstreet.ledger import Ledger
 
 
@@ -54,7 +54,7 @@ def test_api_serves_every_desk_page(server):
     status, body = call(f"{server}/api/status")
     assert status == 200 and body["ready"] and body["league"] == NEW, "the live challenge league is the default"
     status, desk = call(f"{server}/api/desk")
-    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 4
+    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 5
     assert call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
     arb = call(f"{server}/api/arbitrage")[1]
     assert arb["conversions"][0]["reward"] == "Test Orb" and arb["loops"] and not arb["chaos_only"]
@@ -158,3 +158,38 @@ def test_api_gold_fields_settings_and_session_plan(server):
     assert arb["conversions"][0]["gold"] is not None and arb["loops"][0]["chaos_per_1000_gold"] is not None
     assert call(f"{server}/api/settings", {"assumed_gold_fee": ""})[0] == 200
     assert call(f"{server}/api/flips")[1]["settings"]["assumed_gold_fee"] is None
+
+
+def test_api_your_recipes_and_vendor_prices_with_their_checks(server):
+    from vaalstreet.ingest import CHAOS
+
+    arb = call(f"{server}/api/arbitrage")[1]
+    assert arb["fixed"] == [] and arb["swaps"] == 3
+    assert all(row["check"] == "unchecked" for row in arb["conversions"] + arb["loops"])
+    # Made up: 2 cards and 1 shard make 1 orb; a vendor sells an orb for 5 Chaos.
+    assert call(f"{server}/api/recipe", {"kind": "recipe", "inputs": [[CARD, 2], [OTHER, 1]], "output": ITEM,
+                                         "note": "try once"})[0] == 200
+    assert call(f"{server}/api/recipe", {"kind": "vendor", "inputs": [[CHAOS, 5]], "output": ITEM})[0] == 200
+    assert call(f"{server}/api/recipe", {"kind": "vendor", "inputs": [], "output": ITEM})[0] == 400
+    arb = call(f"{server}/api/arbitrage")[1]
+    assert [f["kind"] for f in arb["fixed"]] == ["recipe", "vendor"]
+    assert arb["fixed"][0]["inputs"][0]["name"] == "Test Card" and arb["fixed"][0]["check"] == "unchecked"
+    yours = next(r for r in arb["conversions"] if r["how"] == "yours")
+    assert yours["check"] == "unchecked" and yours["note"] == "try once"
+    vendor_loop = next(r for r in arb["loops"] if r["via"] == ["vendor"])
+    assert vendor_loop["vendor_checks"] == {f"vendor:5*{CHAOS}>1*{ITEM}": "unchecked"}
+
+    assert call(f"{server}/api/recipe_check", {"key": yours["recipe_key"], "status": "confirmed"})[0] == 200
+    assert call(f"{server}/api/recipe_check", {"key": vendor_loop["recipe_key"], "status": "failed",
+                                               "note": "vendor was out"})[0] == 200
+    arb = call(f"{server}/api/arbitrage")[1]
+    assert next(r for r in arb["conversions"] if r["how"] == "yours")["check"] == "confirmed"
+    assert arb["fixed"][0]["check"] == "confirmed"
+    failed = next(r for r in arb["loops"] if r["via"] == ["vendor"])
+    assert failed["check"] == "failed" and failed["check_note"] == "vendor was out"
+    labels = {r["key"]: r["label"] for r in call(f"{server}/api/ledger")[1]["recipes"]}
+    assert labels[f"vendor:5*{CHAOS}>1*{ITEM}"] == "5 Chaos Orb buys 1 Test Orb"
+
+    for f in arb["fixed"]:
+        assert call(f"{server}/api/recipe", {"delete": f["id"]})[0] == 200
+    assert call(f"{server}/api/arbitrage")[1]["fixed"] == []
