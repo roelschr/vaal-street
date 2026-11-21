@@ -27,6 +27,25 @@ OLD, NEW = "Old", "New"
 OLD_HOURS, NEW_START, NEW_HOURS = 20 * 24, 30 * 24, 8 * 24
 PREMIUM = 1.10  # the Divine market pays 10% more than the Chaos market
 
+# Side leagues for the league-start analytics. Known answers:
+# - Flash and Blitz start on hours 200 and 210, while Old (hours 0-480) runs, and end before it: both are
+#   events (family "event"), so Old stays New's only precedent. Each lasts 11 days; Flash is Blitz's precedent.
+# - Hardcore New and Standard trade over New's hours. The test orb is 20% dearer in Hardcore New every
+#   hour (a structural gap); the ember is 10% dearer on even days and 10% cheaper on odd ones (noise).
+#   In Standard the orb is at half its New price. Divine and Chaos prices match New's.
+# - The Test Lure (3 Chaos) first trades at league hour 5 in every league. In the events its price climbs
+#   3 * (1 + h/72), so it rises first and is up about 67% at hour 72 from its first-day value. In New its
+#   traded units grow with the league day, (1 + h/24) times the start, while Old trades it flat: by day 7
+#   it is a meta-shift candidate, growing about 3x against Old's 1x.
+# - In the events the Divine costs 100 + 5 * |day - 2.5| Chaos: cheapest on league day 2.
+LURE = "Metadata/Items/Currency/CurrencyTestLure"
+FLASH, BLITZ, HC_NEW, STANDARD = "Flash", "Blitz", "Hardcore New", "Standard"
+EVENTS = ((FLASH, 200), (BLITZ, 210))
+EVENT_HOURS = 11 * 24
+HC_GAP = 1.20
+STANDARD_GAP = 0.5
+LURE_WAKE = 5
+
 
 def item_price(league: str, h: int) -> float:
     """Chaos-market price of the test orb at league hour h."""
@@ -52,8 +71,44 @@ def market(league, a, b, vol_a, vol_b, stock_a=500, stock_b=500):
     }
 
 
-def digest(hour: int) -> dict:
+def lure_units(league: str, h: int) -> int:
+    if h < LURE_WAKE:
+        return 0
+    return round(200 * (1 + h / 24)) if league == NEW else 200
+
+
+def event_divine(h: int) -> float:
+    return 100 + 5 * abs(h / 24 - 2.5)
+
+
+def side_markets(hour: int) -> list[dict]:
     markets = []
+    for league, start in EVENTS:
+        h = (hour - H0) // HOUR - start
+        if not 0 <= h < EVENT_HOURS:
+            continue
+        div, units = event_divine(h), lure_units(league, h)
+        markets += [
+            market(league, CHAOS, DIVINE, round(div * 40), 40),
+            market(league, ITEM, CHAOS, 1000, 10000),
+            market(league, LURE, CHAOS, units, round(units * 3 * (1 + h / 72))),
+        ]
+    h = (hour - H0) // HOUR - NEW_START
+    if 0 <= h < NEW_HOURS:
+        div, p = divine_price(h), item_price(NEW, h)
+        ember = 1.1 if (h // 24) % 2 == 0 else 0.9
+        for league, gap, ember_gap in ((HC_NEW, HC_GAP, ember), (STANDARD, STANDARD_GAP, 1.0)):
+            markets += [
+                market(league, CHAOS, DIVINE, round(div * 40), 40),
+                market(league, ITEM, CHAOS, 1000, round(1000 * p * gap)),
+                market(league, ITEM, DIVINE, 4000, round(4000 * p * gap * PREMIUM / div)),
+                market(league, EMBER, CHAOS, 2000, round(8000 * ember_gap)),
+            ]
+    return markets
+
+
+def digest(hour: int) -> dict:
+    markets = side_markets(hour)
     for league, start, length in ((OLD, 0, OLD_HOURS), (NEW, NEW_START, NEW_HOURS)):
         h = (hour - H0) // HOUR - start
         if not 0 <= h < length:
@@ -70,12 +125,14 @@ def digest(hour: int) -> dict:
             # embers with them (5% cheap) is a round trip through Divine: 1.10 / 0.95 - 1 = 15.8%.
             market(league, EMBER, CHAOS, 2000, 8000),
             market(league, EMBER, DIVINE, 20000, round(20000 * 4 * EMBER_PREMIUM / div)),
+            market(league, LURE, CHAOS, lure_units(league, h), 3 * lure_units(league, h)),
             market("Dead (PL1)", ITEM, CHAOS, 0, 0),
         ]
     return {"next_change_id": hour + HOUR, "markets": markets}
 
 
 def all_hours() -> list[int]:
+    # Old's hours already cover both events.
     return [H0 + h * HOUR for h in list(range(OLD_HOURS)) + list(range(NEW_START, NEW_START + NEW_HOURS))]
 
 
@@ -95,6 +152,7 @@ def archive_root(tmp_path_factory):
         DIVINE: {"name": "Divine Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         ITEM: {"name": "Test Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         OTHER: {"name": "Test Shard", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
+        LURE: {"name": "Test Lure", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         EMBER: {"name": "Test Ember", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         CARD: {"name": "Test Card", "item_class": "DivinationCard", "tags": ["divination_card"],
                "properties": {"stack_size": 5, "description": "<currencyitem>{Test Orb}"}},

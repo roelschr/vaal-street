@@ -129,7 +129,7 @@ def test_ingest_is_incremental_and_idempotent(tmp_path):
     from vaalstreet.db import connect
 
     con = connect(tmp_path)
-    assert con.execute("SELECT count(DISTINCT hour), count(*) FROM markets").fetchall()[0] == (6, 6 * 9)
+    assert con.execute("SELECT count(DISTINCT hour), count(*) FROM markets").fetchall()[0] == (6, 6 * 10)  # ten markets per Old hour, the Test Lure included
     assert con.execute("SELECT count(*) FROM prices WHERE item = ?", [ITEM]).fetchall()[0][0] == 6
 
 

@@ -18,6 +18,7 @@ A handful of leagues is a small sample: every figure comes with its `n`.
 from __future__ import annotations
 
 import math
+import re
 
 import duckdb
 
@@ -25,6 +26,85 @@ from vaalstreet.archive import FIRST_HOUR
 from vaalstreet.ingest import ANCHORS
 
 MIN_DAYS = 10  # a league needs this much history to be used as a precedent
+DAY = 24 * 3600
+
+# --------------------------------------------------------------- families
+# Family rules (see `classify`). Names only, never lists of past leagues.
+PRIVATE = re.compile(r"\(PL\d+\)$")
+EVENT_NAME = re.compile(r"(?i)\bevent\b")
+# Hardcore / Ruthless prefixes, longest first so "HC Ruthless X" is not read as "HC" + "Ruthless X".
+VARIANTS = (
+    (re.compile(r"^(?:HC|Hardcore) Ruthless (.+)$"), "hc_ruthless"),
+    (re.compile(r"^(?:HC|Hardcore) (.+)$"), "hardcore"),
+    (re.compile(r"^Ruthless (.+)$"), "ruthless"),
+    (re.compile(r"^(?:SSF|Solo) (.+)$"), "ssf"),
+)
+PERMANENT = {"Standard": "standard", "Hardcore": "standard_hardcore", "Ruthless": "standard_ruthless",
+             "Hardcore Ruthless": "standard_hc_ruthless", "HC Ruthless": "standard_hc_ruthless"}
+EVENT_AFTER_DAYS = 7  # an event starts at least this long after the league it runs alongside...
+EVENT_OVERLAP_DAYS = 3  # ...and that league is still trading this long after the event began
+SOFTCORE = ("challenge", "event")  # the families the league page lines up
+
+
+def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, str]]:
+    """League name -> (family, base league), from the names and the dates each league traded.
+
+    Rules, in order:
+
+    1. A name ending in "(PLnnnn)" is a private league: family "private".
+    2. The permanent leagues: "Standard" is "standard"; "Hardcore", "Ruthless" and "Hardcore Ruthless"
+       are "standard_hardcore", "standard_ruthless" and "standard_hc_ruthless".
+    3. A name starting with "Hardcore "/"HC ", "Ruthless ", "HC Ruthless "/"Hardcore Ruthless ", or
+       "SSF "/"Solo " is a variant of the league named by the rest (its base). It takes its base's
+       family with "_hardcore", "_ruthless", "_hc_ruthless" or "_ssf" added; a base not in the archive
+       counts as a challenge league.
+    4. Every other league is a base league: a challenge league, unless it is an event. A base league is
+       an event when its name says "Event", or when it runs inside another base league's life: it
+       started at least EVENT_AFTER_DAYS after that league did, the older league kept trading at least
+       EVENT_OVERLAP_DAYS more, and it outlasted the newcomer (or both are still live). GGG starts a
+       challenge league only when the previous one ends, while events (Phrecia, the Ancestor event)
+       run for a few weeks next to a live challenge league. So the rule needs no list of past events,
+       and a young live league is called an event only if it really started mid-league.
+
+    Duration alone is not used: a live league's length is only a lower bound, and so is the length of
+    a league already running when the archive starts. `end` is the archive's last hour (epoch seconds),
+    used to tell a live league from an ended one.
+    """
+    end = max((r["last_hour"] for r in rows), default=0) if end is None else end
+    out: dict[str, tuple[str, str]] = {}
+    variants = []
+    for r in rows:
+        name = r["league"]
+        if PRIVATE.search(name):
+            out[name] = ("private", name)
+        elif name in PERMANENT:
+            out[name] = (PERMANENT[name], "Standard")
+        else:
+            for pattern, suffix in VARIANTS:
+                m = pattern.match(name)
+                if m:
+                    variants.append((name, m.group(1), suffix))
+                    break
+    bases = sorted((r for r in rows if r["league"] not in out and all(v[0] != r["league"] for v in variants)),
+                   key=lambda r: r["first_hour"])
+    challenges: list[dict] = []
+    for r in bases:
+        live = r["last_hour"] >= end - DAY
+        inside = any(
+            r["first_hour"] - a["first_hour"] >= EVENT_AFTER_DAYS * DAY
+            and a["last_hour"] - r["first_hour"] >= EVENT_OVERLAP_DAYS * DAY
+            and (a["last_hour"] >= r["last_hour"] - DAY or (live and a["last_hour"] >= end - DAY))
+            for a in challenges
+        )
+        if EVENT_NAME.search(r["league"]) or inside:
+            out[r["league"]] = ("event", r["league"])
+        else:
+            out[r["league"]] = ("challenge", r["league"])
+            challenges.append(r)
+    for name, base, suffix in variants:
+        family = out.get(base, ("challenge", base))[0]
+        out[name] = (f"{family}_{suffix}", base)
+    return out
 
 
 def _num(x, digits: int = 5):
@@ -51,7 +131,7 @@ class LeagueBook:
                 SELECT p.league, p.item, date_diff('hour', l.first_hour, p.hour) // 24 AS day,
                        p.value, p.volume
                 FROM prices p JOIN leagues l USING (league)
-                WHERE l.kind = 'challenge'
+                WHERE l.family IN ('challenge', 'event')
             ), daily AS (
                 SELECT league, item, day, sum(value) / nullif(sum(volume), 0) AS price, sum(value) AS value
                 FROM base GROUP BY league, item, day
@@ -71,34 +151,48 @@ class LeagueBook:
 
     # ------------------------------------------------------------- leagues
     def leagues(self) -> list[dict]:
-        """Challenge leagues, newest first, with their size."""
+        """Softcore challenge and event leagues, newest first, with their size and family."""
         rows = self._rows(
             """
-            SELECT l.league, epoch(l.first_hour)::BIGINT AS first_hour, epoch(l.last_hour)::BIGINT AS last_hour,
+            SELECT l.league, l.family, epoch(l.first_hour)::BIGINT AS first_hour, epoch(l.last_hour)::BIGINT AS last_hour,
                    date_diff('hour', l.first_hour, l.last_hour) // 24 AS days, l.value
-            FROM leagues l WHERE l.kind = 'challenge' AND l.value > 0
+            FROM leagues l WHERE l.family IN ('challenge', 'event') AND l.value > 0
             ORDER BY l.first_hour DESC
             """
         )
-        top = max((r["value"] for r in rows), default=0) or 1
-        archive_start = self._rows("SELECT epoch(min(hour))::BIGINT AS t FROM prices")[0]["t"]
+        archive = self._rows("SELECT epoch(min(hour))::BIGINT AS t0, epoch(max(hour))::BIGINT AS t1 FROM prices")[0]
+        archive_start = archive["t0"]
         for r in rows:
+            # Events and side leagues are tiny next to a real challenge league: size is judged within the family.
+            top = max(x["value"] for x in rows if x["family"] == r["family"]) or 1
+            r["ended"] = bool(r["last_hour"] < archive["t1"] - DAY)
             # A league already running at the first archived hour has an unknown start: its "day 0" is not
             # day 0, so it cannot be lined up with the others until the archive reaches back further.
             r["truncated"] = bool(r["first_hour"] <= archive_start and archive_start > FIRST_HOUR[self.realm])
-            # Events and side leagues are tiny next to a real challenge league.
             r["main"] = bool(r["value"] >= 0.02 * top and r["days"] >= MIN_DAYS and not r["truncated"])
             r["value"] = _num(r["value"])
         return rows
 
     def precedents(self, current: str) -> list[str]:
-        """Earlier leagues with enough history to learn from."""
+        """Earlier leagues of the same family, ended and with enough history to learn from.
+
+        A challenge league learns only from past challenge leagues and an event only from past events.
+        Only leagues that started before `current` and have since ended count: never `current` itself,
+        and never one still running, whose later days are not known yet.
+        """
         rows = self.leagues()
-        start = next((r["first_hour"] for r in rows if r["league"] == current), None)
+        me = next((r for r in rows if r["league"] == current), None)
+        family = me["family"] if me else "challenge"
+        start = me["first_hour"] if me else None
         return [
             r["league"] for r in rows
-            if r["league"] != current and r["main"] and (start is None or r["first_hour"] < start)
+            if r["league"] != current and r["main"] and r["ended"] and r["family"] == family
+            and (start is None or r["first_hour"] < start)
         ]
+
+    def family_of(self, league: str) -> str:
+        row = self._rows("SELECT family FROM leagues WHERE league = $l", {"l": league})
+        return row[0]["family"] if row else "challenge"
 
     def day_of(self, league: str) -> int:
         row = self._rows(

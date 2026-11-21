@@ -128,7 +128,7 @@ def _status(args: argparse.Namespace) -> None:
     con = connect(realm=args.realm)
     con.sql(
         """
-        SELECT league, kind, first_hour, last_hour, hours, round(value) AS traded_value
+        SELECT league, family, first_hour, last_hour, hours, round(value) AS traded_value
         FROM leagues WHERE kind <> 'private' ORDER BY last_hour DESC, value DESC LIMIT 40
         """
     ).show(max_rows=40, max_width=160)

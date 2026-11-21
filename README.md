@@ -80,6 +80,8 @@ Two more kinds of swap can join a path. One goes through Divine: sell A for Divi
 
 **League start.** Leagues are aligned on days since their first trade. The playbook takes every item on today's league day in each past league and measures its move over the chosen horizon, in Divine by default (Chaos loses value through a league, so Chaos returns flatter everything). Every row shows the per-league outcomes and how many leagues it rests on. A league whose start is not on disk is left out rather than misaligned.
 
+Precedents come from the same family of league, and only from leagues that have ended. The desk sorts every league into a family from its name and dates: challenge leagues; their Hardcore, Ruthless and Hardcore Ruthless versions (from the name's prefix); Standard and the other permanent leagues; private leagues; and **event leagues**. An event is a short league that starts at least a week after a challenge league and runs inside its life, as Phrecia ran next to Settlers, or one whose name says "Event". A new challenge league only starts when the last one ends, so that is enough to tell them apart without a list of past events. Challenge leagues learn only from past challenge leagues and events only from past events, so a short event does not skew what a new challenge league is expected to do.
+
 **Backtests.** One league is replayed hour by hour. Orders posted at hour *t* meet hour *t+1*.
 
 - A resting order fills at its limit only in an hour whose average price traded through it, and never at a better price.
@@ -132,7 +134,7 @@ python -m vaalstreet backtest swing 'reversion:{"entry_z": -2.5}' --portfolio
 python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --league Mirage --league Allflame --export mine.json
 python -m vaalstreet strategy import mine.json   # shows the code; add --yes to save it to your strategies folder
 python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
-python -m vaalstreet sql "SELECT league, kind, hours FROM leagues ORDER BY first_hour"
+python -m vaalstreet sql "SELECT league, family, hours FROM leagues ORDER BY first_hour"
 ```
 
 `--league` defaults to the live challenge league. Run any command with `-h` for its options.

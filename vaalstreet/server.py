@@ -79,11 +79,11 @@ class App:
         cur = self.cursor()
         rows = cur.execute(
             """
-            SELECT league, kind, epoch(first_hour)::BIGINT, epoch(last_hour)::BIGINT, hours, value
+            SELECT league, kind, family, epoch(first_hour)::BIGINT, epoch(last_hour)::BIGINT, hours, value
             FROM leagues WHERE kind <> 'private' AND value > 0 ORDER BY last_hour DESC, value DESC
             """
         ).fetchall()
-        return [dict(zip(("league", "kind", "first_hour", "last_hour", "hours", "value"), r)) for r in rows]
+        return [dict(zip(("league", "kind", "family", "first_hour", "last_hour", "hours", "value"), r)) for r in rows]
 
     def default_league(self) -> str:
         """The live challenge league with the most trade; the user's choice wins if it still exists."""

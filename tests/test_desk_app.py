@@ -54,7 +54,7 @@ def test_api_serves_every_desk_page(server):
     status, body = call(f"{server}/api/status")
     assert status == 200 and body["ready"] and body["league"] == NEW, "the live challenge league is the default"
     status, desk = call(f"{server}/api/desk")
-    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 5
+    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 6  # the Test Lure is the sixth
     assert call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
     arb = call(f"{server}/api/arbitrage")[1]
     assert arb["conversions"][0]["reward"] == "Test Orb" and arb["loops"] and not arb["chaos_only"]

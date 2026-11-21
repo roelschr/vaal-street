@@ -4,8 +4,10 @@
     legs           every market seen from both sides: the price of `item` in `quote`
     prices         one reference-currency price per item, league and hour (see ingest.py)
     items          item id -> name, category, stack size
-    leagues        first/last hour, traded value and kind per league (a table, computed when
-                   the connection opens: reconnect after an ingest to see new leagues)
+    leagues        first/last hour, traded value, kind, family and base league per league (a table,
+                   computed when the connection opens: reconnect after an ingest to see new leagues).
+                   `family` groups leagues that make fair precedents for each other; see
+                   `leagues.classify` for the rules.
     league_prices  prices plus name, category and hours/days since the league's first trade
 
 Reference currency: Chaos Orb in PoE1, Exalted Orb in PoE2. Every process opens
@@ -101,4 +103,22 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
             legs=LEGS_SQL.format(markets="markets"),
         )
     )
+    _add_families(con)
     return con
+
+
+def _add_families(con: duckdb.DuckDBPyConnection) -> None:
+    from vaalstreet.leagues import classify
+
+    rows = con.execute(
+        "SELECT league, epoch(first_hour)::BIGINT, epoch(last_hour)::BIGINT FROM leagues"
+    ).fetchall()
+    end = max((r[2] for r in rows), default=0)
+    found = classify([{"league": r[0], "first_hour": r[1], "last_hour": r[2]} for r in rows], end)
+    found_families = pa.Table.from_pylist(  # noqa: F841 (read by DuckDB)
+        [{"league": k, "family": f, "base": b} for k, (f, b) in found.items()],
+        schema=pa.schema([("league", pa.string()), ("family", pa.string()), ("base", pa.string())]),
+    )
+    con.execute("ALTER TABLE leagues ADD COLUMN family VARCHAR")
+    con.execute("ALTER TABLE leagues ADD COLUMN base VARCHAR")
+    con.execute("UPDATE leagues SET family = t.family, base = t.base FROM found_families t WHERE leagues.league = t.league")
