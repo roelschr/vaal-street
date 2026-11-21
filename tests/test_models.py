@@ -360,15 +360,15 @@ def test_round_trips_through_divine_only_when_they_beat_the_cross_flip(desk):
     rows = [row for row in desk.loops(min_value=10) if "divine" in row["via"]]
     # Sell orbs for Divines where they are 10% dear and buy embers where they are 5% cheap. The reverse
     # path, and every path that only sells in the dearer market, is the cross flip and is left out.
-    # With three swaps it also extends the shard loop: shards -> orb, then orb -> Divine -> embers.
+    # Shards -> orb -> Divine -> embers pays too, but only the best Divine path per item bought with the
+    # Divines is kept, and selling orbs straight for Divines is far deeper than the shard market.
     by_path = {tuple(x["id"] for x in row["path"]): row for row in rows}
-    assert set(by_path) == {(ITEM, DIVINE, EMBER), (OTHER, ITEM, DIVINE, EMBER)}
+    assert set(by_path) == {(ITEM, DIVINE, EMBER)}
     pair = by_path[(ITEM, DIVINE, EMBER)]
     assert pair["edge"] == pytest.approx(PREMIUM / EMBER_PREMIUM - 1, rel=0.05)
     assert pair["swaps"] == 2 and pair["via"] == ["divine", "divine"]
-    longer = by_path[(OTHER, ITEM, DIVINE, EMBER)]
-    shard_loop = next(r for r in desk.loops(min_value=10) if [x["id"] for x in r["path"]] == [OTHER, ITEM])
-    assert (1 + longer["edge"]) == pytest.approx((1 + shard_loop["edge"]) / EMBER_PREMIUM, rel=0.05)
+    # The shard loop itself still shows.
+    assert any([x["id"] for x in r["path"]] == [OTHER, ITEM] for r in desk.loops(min_value=10))
     assert not [r for r in desk.loops(min_value=10, swaps=2) if len(r["path"]) > 3]
     rows = [pair]
     # Both ends are priced in their Chaos markets, since the Divine markets are the swaps.

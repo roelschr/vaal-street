@@ -726,8 +726,11 @@ class Desk:
         cost = sum(units * q["fair"] for _, units, q in inputs)
         cost_now = sum(units * q["buy"] for _, units, q in inputs)
         out_fair = gives * reward["fair"]
-        # The thinnest input sets the pace; a recipe of Chaos alone is paced by its reward.
-        sets = share * min([q["flow"] / units for _, units, q in inputs] + [reward["flow"] / gives])
+        # The thinnest input sets the pace, as for the built-in recipes; a recipe of Chaos alone is
+        # paced by its reward instead.
+        sets = share * min(q["flow"] / units for _, units, q in inputs)
+        if not math.isfinite(sets):
+            sets = share * reward["flow"] / gives
         if not math.isfinite(sets):
             sets = 0.0
         first = inputs[0][0]
@@ -768,6 +771,8 @@ class Desk:
 
         A path never visits an item twice and always ends somewhere other than where it started, so
         every row is a different trade (A to B and B to A are both listed: they are different trades).
+        Paths through Divine are cut down to the best one per item you start with and per item you buy
+        with the Divines, after sorting.
         """
         swaps = max(1, min(int(swaps), MAX_SWAPS))
         r, b = self.legs["r"], self.legs["b"]
@@ -848,7 +853,10 @@ class Desk:
                 # Stop at the item before Divine and sell it in its dearer market instead: the Divine
                 # stop has to earn more than that, or it is only the cross flip in disguise.
                 k = path.index(divine)
-                cut = math.prod(rates[: k - 1]) * quote(path[k - 1])[1] / quote(path[0])[0] - 1
+                before, first = quote(path[k - 1]), quote(path[0])
+                if not before or not first:
+                    return
+                cut = math.prod(rates[: k - 1]) * before[1] / first[0] - 1
                 if edge <= cut + 1e-9:
                     return
             give, get = pricing.nice_ratio(1 / rates[0], max_units=200)  # first swap: `give` of A for `get` of B
@@ -882,7 +890,20 @@ class Desk:
             walk([start], [], [], [], math.inf, DAY, math.inf)
         out = [(costs or Costs()).loop(row, ref) for row in out]
         out.sort(key=lambda row: -(row["profit_per_day"] or 0))
-        return out
+        # Divine markets are deep, and one item that is cheap through Divines pairs with every item
+        # that is dear through them, so Divine paths would crowd out everything else. Keep the best
+        # one per item you start with and per item you buy with the Divines.
+        seen: set[tuple[str, str]] = set()
+        kept = []
+        for row in out:
+            if "divine" in row["via"]:
+                ids = [x["id"] for x in row["path"]]
+                start, bought = ("start", ids[0]), ("bought", ids[ids.index(divine) + 1])
+                if start in seen or bought in seen:
+                    continue
+                seen.update((start, bought))
+            kept.append(row)
+        return kept
 
     def triangles(self, min_value: float = 500.0) -> list[dict]:
         """Item-vs-item markets whose traded rate disagrees with the two items' own prices."""
