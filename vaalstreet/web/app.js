@@ -702,6 +702,73 @@ async function stashPanel(names) {
   return p;
 }
 
+// Every kind of alert the desk can watch, with its form fields in plain words.
+const ALERT_FORMS = {
+  price: { hint: 'Rings when a value of one item crosses your line.', fields: [
+    ['what', 'Item', 'item', true], ['field', 'Watch', { price: 'Fair value', chaos: 'Chaos-market price', divine: 'Divine-market price', premium: 'Divine premium', change_24h: '24h change' }],
+    ['op', 'When it', { above: 'rises above', below: 'falls below' }], ['threshold', 'Line (Chaos; premium and change as 0.1 = 10%)', 'number']] },
+  plan: { hint: 'Rings when a flip plan reaches your margin and profit per hour.', fields: [
+    ['what', 'Item (empty: any item)', 'item'], ['min_margin', 'Margin at least (%)', 'number', 2], ['min_profit', 'Profit per hour at least (c)', 'number', 0]] },
+  trip: { hint: 'Rings when a round trip reaches your edge and orders worth taking are waiting at its thinnest swap.', fields: [
+    ['what', 'Starting item (empty: any)', 'item'], ['min_edge', 'Edge at least (%)', 'number', 3], ['min_resting', 'Orders waiting worth at least (c)', 'number', 0]] },
+  order: { hint: 'Rings when one of the orders you recorded should be re-priced, cancelled or collected. Nothing to set.', fields: [] },
+  precedent: { hint: 'Rings when an item stands out against the same day of past leagues.', fields: [
+    ['what', 'Item', 'item', true], ['mode', 'Look at', { standing: 'its price against past leagues today', playbook: 'what past leagues did next' }]],
+    standing: [['direction', 'When it is', { cheap: 'cheaper', dear: 'dearer' }], ['min_gap', 'than usual by at least (%)', 'number', 20]],
+    playbook: [['direction', 'When past leagues moved it', { up: 'up', down: 'down' }], ['min_move', 'by a median of at least (%)', 'number', 20], ['horizon', 'over the next days', 'number', 7]] },
+};
+function alertsPanel(d, names) {
+  const al = panel('Alerts', 'c12', '<span class="muted small">Checked once an hour when new prices arrive. Each rings once when its condition starts, then waits for it to clear.</span>');
+  const form = document.createElement('form'); form.className = 'body'; form.autocomplete = 'off';
+  let kind = localStorage.alertKind && ALERT_FORMS[localStorage.alertKind] ? localStorage.alertKind : 'price', mode = 'standing';
+  const field = ([key, label, type, def]) => type === 'item'
+    ? `<label class="f">${label}<input type="text" name="${key}" list="items" placeholder="Start typing…" style="width:220px"></label>`
+    : type === 'number' ? `<label class="f">${label}<input type="number" name="${key}" step="any" min="0" value="${def ?? ''}"></label>`
+    : `<label class="f">${label}<select name="${key}">${Object.entries(type).map(([v, l]) => `<option value="${v}" ${key === 'mode' && v === mode ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+  const draw = () => {
+    const spec = ALERT_FORMS[kind], fields = [...spec.fields, ...(kind === 'precedent' ? spec[mode] : [])];
+    form.innerHTML = `<div class="bar" style="margin-bottom:8px"><div class="seg" id="ak">${Object.entries(d.alert_kinds || {}).filter(([k]) => ALERT_FORMS[k]).map(([k, l]) => `<button type="button" data-k="${k}" class="${k === kind ? 'on' : ''}">${esc(l)}</button>`).join('')}</div><span class="muted small">${spec.hint}</span></div>
+      <div class="bar" style="margin:0">${fields.map(field).join('')}<button class="btn primary">Add alert</button></div>`;
+    $('#ak', form).onclick = e => { const k = e.target.dataset.k; if (k) { kind = localStorage.alertKind = k; draw(); } };
+    const m = form.elements.mode; if (m) m.onchange = () => { mode = m.value; const item = form.elements.what.value; draw(); form.elements.what.value = item; };
+  };
+  draw();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const val = k => form.elements[k]?.value.trim() ?? '';
+    let item = '';
+    if (form.elements.what && val('what')) {
+      const row = state.market.find(r => r.name.toLowerCase() === val('what').toLowerCase());
+      if (!row) return toast('Pick an item from the list.', true);
+      item = row.id;
+    }
+    let body;
+    if (kind === 'price') {
+      if (!item || val('threshold') === '') return toast('A price alert needs an item and a line.', true);
+      body = { kind, item, field: val('field'), op: val('op'), threshold: +val('threshold') };
+    } else {
+      const params = item ? { item } : {};
+      for (const k of ['min_margin', 'min_profit', 'min_edge', 'min_resting', 'mode', 'direction', 'min_gap', 'min_move', 'horizon']) if (form.elements[k] && val(k) !== '') params[k] = val(k);
+      body = { kind, params };
+    }
+    try {
+      await api('/api/alert', { league: state.league, ...body });
+      toast('Alert added. It is checked when the next hour’s prices arrive.');
+      if (window.Notification?.permission === 'default') Notification.requestPermission();
+      route();
+    } catch (err) { toast(err.message, true); }
+  };
+  const at = table([
+    { h: 'Kind', l: 1, f: r => `<span class="tag">${esc((d.alert_kinds || {})[r.kind || 'price'] || r.kind)}</span>` },
+    { h: 'Rule', l: 1, f: r => esc(r.description || `${(d.alert_fields || {})[r.field] || r.field} ${r.op} ${r.threshold}`) },
+    { h: 'Now', l: 1, f: r => !r.active ? '<span class="dim">Off</span>' : r.hot ? '<span class="gold">Holding now</span>' : 'Waiting', title: '“Holding now” means it has rung and its condition still holds; it rings again only after it clears' },
+    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this alert">✕</button>` },
+  ], d.alerts, { empty: 'No alerts yet. Add one above, or from an item’s window.' });
+  at.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/alert', { delete: +b.dataset.del }); route(); } };
+  al.append(form, at);
+  return al;
+}
+
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger'));
@@ -819,16 +886,7 @@ async function viewLedger(main) {
   ], d.trades, { empty: 'Nothing recorded.' });
   tt.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/trade', { delete: +b.dataset.del }); route(); } };
   tr.append(tt);
-  const al = panel('Alerts', 'c12');
-  const at = table([
-    { h: 'Item', l: 1, f: r => esc((state.market.find(m => m.id === r.item) || {}).name || r.item) },
-    // Plan, round-trip, order and league alerts have no field or threshold; the server describes every kind.
-    { h: 'Rule', l: 1, f: r => esc(r.description || `${d.alert_fields[r.field]} ${r.op} ${r.threshold}`) },
-    { h: 'State', l: 1, f: r => r.hot ? '<span class="gold">Triggered</span>' : 'Armed' },
-    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this alert">✕</button>` },
-  ], d.alerts, { empty: 'Open an item to add a price alert.' });
-  at.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/alert', { delete: +b.dataset.del }); route(); } };
-  al.append(at);
+  const al = alertsPanel(d, names);
   const stash = await stashPanel(names);
   $('#g', main).append(ses, ord, pos, stash, tr, fee, rc, al);
 }
