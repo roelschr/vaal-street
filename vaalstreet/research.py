@@ -403,13 +403,18 @@ def book_pressure(panel: Panel, lookback: int) -> np.ndarray:
     return np.hstack(out)
 
 
-def _residual_fit(x: np.ndarray, y: np.ndarray) -> float:
-    """Slope of y on x through the origin, with x capped at +-3 so a few wild hours cannot set it."""
-    ok = np.isfinite(x) & np.isfinite(y)
-    ok[:WARMUP] = False
-    xs = np.clip(x[ok], -3, 3)
-    den = float(np.sum(xs * xs))
-    return float(np.sum(xs * y[ok]) / den) if den > 0 else 0.0
+def _residual_fit(pairs: list[tuple[np.ndarray, np.ndarray]]) -> float:
+    """Slope of y on x through the origin, pooled over leagues, with x capped at +-3 so a few wild
+    hours cannot set it. Each (x, y) pair is one league's [T, N]; leagues differ in hours and items,
+    so they are summed rather than stacked, and each skips its own warm-up hours."""
+    num = den = 0.0
+    for x, y in pairs:
+        ok = np.isfinite(x) & np.isfinite(y)
+        ok[:WARMUP] = False
+        xs = np.clip(x[ok], -3, 3)
+        num += float(np.sum(xs * y[ok]))
+        den += float(np.sum(xs * xs))
+    return num / den if den > 0 else 0.0
 
 
 def orderbook(seasons: list[Season], lookbacks: tuple = ORDERBOOK_LOOKBACKS) -> Result:
@@ -435,9 +440,7 @@ def orderbook(seasons: list[Season], lookbacks: tuple = ORDERBOOK_LOOKBACKS) -> 
     for test, train in splits(seasons):
         fits, errs = {}, {}
         for k in lookbacks:
-            xs = np.vstack([parts(s)[k] for s in train])
-            ys = np.vstack([parts(s)["target"] - parts(s)["fair"] for s in train])
-            fits[k] = _residual_fit(xs, ys)
+            fits[k] = _residual_fit([(parts(s)[k], parts(s)["target"] - parts(s)["fair"]) for s in train])
             total = n = 0
             for s in train:
                 p = parts(s)
