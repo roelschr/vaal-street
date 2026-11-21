@@ -270,11 +270,14 @@ def test_new_options_stay_causal_when_the_league_is_cut_short(con):
     whole = backtest.Simulation(full, **options).run(backtest.Swing(per_item=0.5, warmup=24))
     assert whole.fills > 0 and whole.gold[-1] > 0 and np.all(np.diff(whole.gold) >= 0)
     assert whole.gold[59] > 0 and whole.cash[59] != whole.cash[0], "the shortest cut already traded and paid Gold"
+    queued = backtest.Simulation(full, fill_model="queue", **options).run(backtest.Swing(per_item=0.5, warmup=24))
+    assert queued.fills > 0 and queued.risk.max() > 0
     for cut in (60, 101, 150):
-        part = backtest.Simulation(full.window(0, cut), **options).run(backtest.Swing(per_item=0.5, warmup=24))
-        np.testing.assert_allclose(part.equity, whole.equity[:cut])
-        np.testing.assert_allclose(part.cash, whole.cash[:cut])
-        np.testing.assert_allclose(part.gold, whole.gold[:cut])
+        for model, ref in (("share", whole), ("queue", queued)):
+            part = backtest.Simulation(full.window(0, cut), fill_model=model, **options).run(
+                backtest.Swing(per_item=0.5, warmup=24))
+            for series in ("equity", "cash", "gold", "holdings", "risk"):
+                np.testing.assert_allclose(getattr(part, series), getattr(ref, series)[:cut], err_msg=f"{model} {series}")
 
 
 def test_whole_lots_and_gold_on_the_synthetic_league(con):
@@ -284,3 +287,102 @@ def test_whole_lots_and_gold_on_the_synthetic_league(con):
     assert whole.fills > 0 and 0 < whole.total_return <= loose.total_return + 0.05
     assert whole.gold_spent > 0 and whole.summary()["chaos_per_1000_gold"] > 0
     assert np.all(np.diff(whole.gold) >= 0), "Gold is never given back"
+
+
+def queue_panel(prices, volume=100.0, bid=2375.0, ask=250.0):
+    """tiny_panel with resting stock: `ask` items on offer and `bid` Chaos bid for the item, every hour."""
+    panel = tiny_panel(prices, volume)
+    panel.data["r_stock_lo"] = np.full((len(prices), 1), ask)
+    panel.data["r_bid_lo"] = np.full((len(prices), 1), bid)
+    return panel
+
+
+def test_a_queued_buy_waits_for_the_stock_ahead_of_it():
+    # 2375 Chaos bid at a 9.5 limit is 250 items ahead. Only hours that trade through 9.5 eat into
+    # the queue: hour 1 (100 left 150), hour 3 (50 left), hour 4 fills 50 of 80, hour 5 the last 30.
+    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue")
+    result = sim.run(Script({0: [("buy", 80, 9.5)]}))
+    assert list(result.cash) == [1000, 1000, 1000, 1000, 1000 - 50 * 9.5, 1000 - 80 * 9.5]
+    share = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000).run(Script({0: [("buy", 80, 9.5)]}))
+    assert share.cash[1] == 1000 - 10 * 9.5, "the default model fills 10% of the hour at once"
+
+
+def test_a_new_price_goes_to_the_back_of_the_queue_and_market_orders_do_not_queue():
+    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue")
+    sim.run(Script({0: [("buy", 80, 9.5)], 2: [("buy", 80, 9.6)]}))
+    # Re-posted at 9.6 after hour 2: 2375 / 9.6 = 247.4 ahead again, 47.4 left after hours 3 and 4.
+    assert sim.position[0] == pytest.approx(100 - (2375 / 9.6 - 200))
+    taker = backtest.Simulation(queue_panel([10, 10, 10]), capital=1000, fill_model="queue", slippage=0.0)
+    taker.run(Script({0: [("buy", 1000, float("inf"))]}))
+    assert taker.position[0] == pytest.approx(20), "market orders keep the 10% share of each hour"
+
+
+def test_inventory_risk_is_the_loss_on_a_one_range_move():
+    from vaalstreet import pricing
+
+    prices = [10, 10.5, 9.8, 10.2, 10, 10.1, 9.9, 10]
+    sim = backtest.Simulation(tiny_panel(prices), capital=1000, participation=1.0, slippage=0.0)
+    result = sim.run(Script({2: [("buy", 20, float("inf"))]}))
+    fv = pricing.fair_value(np.array(prices)[:, None], np.array(prices)[:, None] * 100)
+    held = np.array([0, 0, 0] + [20] * 5)
+    np.testing.assert_allclose(result.holdings, held * fv.fair[:, 0])
+    np.testing.assert_allclose(result.risk, held * (fv.fair - fv.low)[:, 0])
+    summary = result.summary()
+    assert summary["peak_risk"] == pytest.approx(result.risk.max(), abs=0.01) and summary["peak_risk"] > 0
+    assert summary["average_risk"] == pytest.approx(result.risk.mean(), abs=0.01)
+    assert summary["peak_holdings"] == pytest.approx(result.holdings.max(), abs=0.01)
+
+
+def test_the_queue_reads_the_published_stock_on_your_side(con):
+    sim = backtest.Simulation(Panel.load(con, NEW, CORE + LEGS), fill_model="queue")
+    orb = sim.panel.index("Test Orb")
+    # The synthetic digests rest 500 test orbs (lowest stock) and 500 Chaos bid for them, every hour.
+    assert sim._queue_at(50, "r", "sell", orb, 11.0) == 500
+    assert sim._queue_at(50, "r", "buy", orb, 10.0) == pytest.approx(50)
+    assert sim._queue_at(50, "r", "buy", orb, float("inf")) == 0
+    swing = backtest.run(con, NEW, "swing", params={"per_item": 0.5}, capital=2000, fill_model="queue")
+    assert swing.fills > 0
+
+
+def test_a_portfolio_settles_in_the_order_given_on_shared_cash_and_volume():
+    first, second = Script({0: [("buy", 1000, float("inf"))]}), Script({0: [("buy", 1000, float("inf"))]})
+    folio = backtest.Portfolio(tiny_panel([10] * 4, volume=100), capital=250, participation=0.1, slippage=0.0)
+    result = folio.run([(first, "first", {}), (second, "second", {})])
+    a, b = folio.sims
+    # Each hour 10% of 100 units may be taken, and the first strategy takes all ten; then cash runs out.
+    assert a.position[0] == 25 and b.position[0] == 0
+    assert result.cash[-1] == pytest.approx(0) and [m["strategy"] for m in result.members] == ["first", "second"]
+    assert result.members[0]["peak_capital"] == 250 and result.members[1]["peak_capital"] == 0
+
+
+def test_portfolio_shares_add_up_and_one_strategy_alone_matches_a_plain_run(con):
+    specs = ['swing:{"per_item": 0.5}', 'reversion:{"per_item": 0.5}']
+    folio = backtest.run_portfolio(con, NEW, specs, capital=2000, gold_per_unit=0.2)
+    profits = [m["profit"] for m in folio.summary()["strategies"]]
+    assert folio.members[0]["fills"] > 0
+    assert sum(profits) == pytest.approx(folio.equity[-1] - 2000, abs=0.05)
+    assert folio.gold_spent == pytest.approx(sum(m["gold_spent"] for m in folio.members), abs=1)
+    alone = backtest.run_portfolio(con, NEW, specs[:1], capital=2000, gold_per_unit=0.2)
+    plain = backtest.run(con, NEW, "swing", params={"per_item": 0.5}, capital=2000, gold_per_unit=0.2)
+    np.testing.assert_array_equal(alone.equity, plain.equity)
+    assert backtest.parse_spec('x.py:Mine:{"a": 1}') == ("x.py:Mine", {"a": 1})
+    with pytest.raises(ValueError):
+        backtest.parse_spec("swing:{oops}")
+
+
+def test_portfolio_runs_stay_causal_when_the_league_is_cut_short(con):
+    full = Panel.load(con, NEW, CORE + LEGS)
+    options = dict(capital=900, whole_lots=True, gold_per_unit=0.5, gold_budget=3000, fill_model="queue")
+
+    def folio(panel):
+        return backtest.Portfolio(panel, **options).run([
+            (backtest.Swing(per_item=0.5, warmup=24), "swing", {}),
+            (backtest.Reversion(per_item=0.5, warmup=24, entry_z=-1.0), "reversion", {}),
+        ])
+
+    whole = folio(full)
+    assert whole.fills > 0
+    for cut in (60, 101, 150):
+        part = folio(full.window(0, cut))
+        for series in ("equity", "cash", "gold", "holdings", "risk"):
+            np.testing.assert_allclose(getattr(part, series), getattr(whole, series)[:cut], err_msg=series)
