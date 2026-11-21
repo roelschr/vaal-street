@@ -639,13 +639,22 @@ class Desk:
             i = self.panel._by_id.get(item)
             if i is None:
                 continue
-            picks = [(by_market[m][0], by_market[m][1]) for m in dict.fromkeys(markets) if m in by_market]
-            if not picks:
+            sides = {m: (float(by_market[m][0]), int(by_market[m][1])) if m in by_market else (float(share), 0)
+                     for m in dict.fromkeys(markets)}
+            if not any(n for _, n in sides.values()):
                 continue
-            values = [v for v, _ in picks] + [share] * (len(set(markets)) - len(picks))
-            out[i] = min(values)
-            n = sum(k for _, k in picks)
-            sources[i] = f"your fills, {n} order{'s' if n != 1 else ''}"
+            # The slower side sets the pace, so the label names the side whose share is used.
+            value = min(v for v, _ in sides.values())
+            used = [m for m, (v, n) in sides.items() if v == value and n]
+            out[i] = value
+            if used:
+                n = sum(sides[m][1] for m in used)
+                sources[i] = f"your fills, {n} order{'s' if n != 1 else ''}"
+            else:
+                slow = next(m for m, (v, _) in sides.items() if v == value)
+                fast = next(m for m, (_, n) in sides.items() if n)
+                sources[i] = (f"default {share:.0%} on the {slow.title()} side; "
+                              f"your fills on the {fast.title()} side are faster")
         return out, sources
 
     def replay(self, share: float = 0.1, days: int = REPLAY_DAYS) -> dict[tuple[str, str], dict]:

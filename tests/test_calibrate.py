@@ -89,3 +89,13 @@ def test_api_ledger_reports_fill_calibration(server):
     assert call(f"{server}/api/ledger?league={NEW}")[1]["fill_calibration"] == []
     flips = call(f"{server}/api/flips?league={NEW}")[1]["flips"]
     assert flips and all(p["share_source"] == "default 10%" for p in flips)
+
+
+def test_cross_plan_names_the_share_it_uses(desk):
+    # Chaos side measured faster than the default: the Divine side's default 10% sets the pace.
+    fast = {p["kind"]: p for p in desk.flips(share_by_item={ITEM: {"chaos": [0.3, 2]}}) if p["id"] == ITEM}
+    assert fast["cross"]["share"] == 0.1
+    assert fast["cross"]["share_source"] == "default 10% on the Divine side; your fills on the Chaos side are faster"
+    # Chaos side measured slower: your fills set the pace.
+    slow = {p["kind"]: p for p in desk.flips(share_by_item={ITEM: {"chaos": [0.05, 2]}}) if p["id"] == ITEM}
+    assert slow["cross"]["share"] == 0.05 and slow["cross"]["share_source"] == "your fills, 2 orders"
