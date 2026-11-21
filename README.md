@@ -2,7 +2,7 @@
 
 A local trading desk for the Path of Exile Currency Exchange. It mirrors the exchange's public hourly history, turns it into prices you can trust, and answers the questions a trader actually has: what is this worth, what can I flip right now, what converts into something dearer, what did this item do at this point of past leagues, and would my strategy have made money.
 
-Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export and item icons. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game.
+Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export, item icons and, unless you turn it off, poe.ninja's public price lists for the few card rewards the exchange does not trade (at most once an hour per list). Every request names this project and its address, and nothing about you is sent. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game.
 
 PoE 1 is the focus. The data layer also mirrors PoE 2, but the desk and models are built and tested against PoE 1.
 
@@ -63,6 +63,8 @@ Each plan also counts the orders you post: two for a flip, one or two for a conv
 Enter **Gold to spend this session** and the session plan takes plans by Chaos per 1,000 Gold instead. Gold is paid when an order is posted, so each plan counts against the budget the Gold to post its buy and sell orders once at the size of its stake: the units the stake buys, times the fee, for each side. Plans are added until the budget is spent; a stake the Gold left cannot fully pay for is shrunk, and dropped if not even one lot fits. Gold per hour stays on each plan as extra information. Plans whose Gold is unknown are not ranked: they are listed under "Gold unknown".
 
 **Conversions.** Read from the game data: a divination card's stack size and reward; shards and splinters that combine into their item at a full stack; and essences and oils, where three of one tier sell to a vendor for one of the next (tiers come from the item IDs). Chains are followed up to three steps — nine of one tier for one of the tier two above. Each is compared with its result at fair value, and again "in a hurry" (buy the inputs in the dearer market, sell the result in the cheaper one). Try a recipe once in game before buying in bulk.
+
+**Card sets whose reward is not on the exchange.** Many cards turn into a unique, a skill gem or a base type, which the exchange does not trade. For those, the cards are still priced from the exchange, but the reward's price comes from poe.ninja's stash listings: the listing with the same name, and for gems the level, quality and corruption the card text gives. Six-link copies and other variants are skipped; when the exact variant has no listing, the most-listed one is used and the row says so. These rows are marked "reward priced by poe.ninja (stash listings, not the exchange)" and show how many listings back the price and how old it is. A listing price is weaker evidence than trades, so there is no "in a hurry" figure, and these prices never enter fair value, round trips or alerts. Wherever the exchange trades the reward, the exchange price is used. The desk asks poe.ninja only for the lists the card rewards need (the six unique lists, skill gems, base types), each at most once an hour, from the background sync; if poe.ninja cannot be reached, the last answer is shown and marked stale. Turn this off with the `ninja_prices` setting (0 is off).
 
 **Your own recipes and vendor prices.** No source the desk may read lists recipes or what NPC vendors sell, so the desk ships none beyond those above and lets you type in the ones you know: a recipe (say, 3 of one item and 1 of another make 2 of a third) or a vendor price (a vendor sells an item for 5 of a currency). They are kept with your ledger for every league. Your recipes are priced exactly like the built-in ones; vendor prices become swaps in round trips. Every conversion and round trip shows whether you marked it confirmed or failed in game, or still unchecked, and anything you typed in starts unchecked. Changing a count makes a new entry that starts unchecked again.
 
@@ -135,6 +137,7 @@ python -m vaalstreet check "Orb of Alteration" --market divine --side buy --rati
 python -m vaalstreet screen                      # on Windows: press a key to read an offer off the exchange window (optional)
 python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone lists it, stash --ledger values your positions
 python -m vaalstreet arb --swaps 3               # sets against their rewards, and round trips
+python -m vaalstreet ninja refresh               # prices from poe.ninja for card rewards the exchange lacks (status: what is cached)
 python -m vaalstreet recipe add --give "5 Some Card" --get "1 Some Orb"   # a recipe of your own
 python -m vaalstreet recipe add --vendor --give "3 Chaos Orb" --get "Some Shard"   # a vendor price
 python -m vaalstreet ladder --from 25 --hours 6  # what each purse size can run, and when to switch plans
@@ -242,6 +245,7 @@ data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as serv
 data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
+data/ninja.sqlite                          poe.ninja answers, cached; safe to delete
 data/strategies/                           strategy code you imported with `strategy import`
 data/screen.json                           the screen check's rectangle, if you use it
 data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash — the only file worth backing up
@@ -249,7 +253,7 @@ data/desk.sqlite                           your ledger, orders, sessions, recipe
 
 To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
 
-Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification string sent with exchange requests). The server binds to `127.0.0.1` and refuses requests from other sites.
+Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification string sent with every request; by default `vaal-street/2.0 (+https://github.com/roelschr/vaal-street)`). The server binds to `127.0.0.1` and refuses requests from other sites.
 
 ```
 vaalstreet/archive.py   download         vaalstreet/desk.py      market table, flips, arbitrage
@@ -265,6 +269,7 @@ vaalstreet/sharing.py   strategy files: export and import
 vaalstreet/search.py    strategy search, judged walk-forward on later leagues
 vaalstreet/research.py  experiments with pass rules fixed in advance
 vaalstreet/report.py    league report pages, one per league day
+vaalstreet/ninja.py     poe.ninja client and card-reward prices
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.
@@ -278,4 +283,5 @@ The code is released under the [MIT License](LICENSE). That license does not cov
 - Path of Exile, its item names and item icons are the property of Grinding Gear Games. Icons are fetched from GGG's CDN at run time to label items in this free, non-commercial tool; none are distributed with it.
 - Exchange history comes from GGG's documented [Currency Exchange API](https://www.pathofexile.com/developer/docs/reference).
 - Item metadata comes from the community [RePoE](https://repoe-fork.github.io/) export of the game's data files.
+- Prices for card rewards the exchange does not trade come from [poe.ninja](https://poe.ninja)'s public economy API ([reference](https://poe.ninja/docs/api)), shown with the credit "prices from poe.ninja". The desk sends poe.ninja only the league and the price list it wants, with this project's User-Agent; poe.ninja is not affiliated with this project.
 - Geist and Geist Mono are distributed under the font licenses in `vaalstreet/web/fonts/`.

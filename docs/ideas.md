@@ -98,7 +98,7 @@ Waves run in order. Within a wave, the tasks touch different files, so they can 
 | --- | --- | --- |
 | Shared snapshots | Not building (owner's decision) | Local `snapshot` and `restore` already exist. The desk collects public data but does not upload or publish anything. |
 | Finer data | Not possible | GGG's docs say the hourly digest is the only source, with no data from the current hour (see `data-sources.md`). |
-| Trade-site prices | Not through the trade site; poe.ninja pending its terms | GGG's terms forbid using the trade site's undocumented API, and the public stash API is closed to local tools. poe.ninja publishes prices, but its terms could not be read automatically. If the owner confirms they allow it, we fetch at most hourly, cache, and credit poe.ninja. |
+| Trade-site prices | Not through the trade site; built through poe.ninja for card rewards | GGG's terms forbid using the trade site's undocumented API, and the public stash API is closed to local tools. poe.ninja's API reference allows its economy endpoints. The desk now prices card sets whose reward is a unique, gem or base type from poe.ninja's stash listings (`ninja.py`), fetched at most hourly with conditional requests, cached, marked as listing prices and credited to poe.ninja. They never enter fair value. |
 | Kingsmarch and Gold income | Not now as a model, partly in wave 1 | No public data source exists. The session journal records the Gold you earned, so your own sessions give Gold a value. |
 | PoE 2 | Not now (owner's decision) | The desk and models are built and tested for PoE 1 only. We revisit this after the PoE 1 waves. |
 
