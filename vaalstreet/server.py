@@ -255,6 +255,19 @@ class App:
         events = self.ledger.events_since(league, since)
         return {"events": events, "last": events[-1]["id"] if events else since}
 
+    def api_names(self, q: dict) -> dict:
+        """The league's item names, for the screen check, which matches recognised text against them."""
+        desk = self.desk(q.get("league"))
+        return {"league": desk.league, "names": [str(n) for n in desk.panel.names]}
+
+    def api_event(self, body: dict) -> dict:
+        """Post an event (the screen check's verdict), so the hideout window shows it and can read it aloud."""
+        league = body.get("league") or self.default_league()
+        try:
+            return self.ledger.add_event(str(league), body["title"], body.get("body", ""))
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+
     # ------------------------------------------------------------------ api
     def api_status(self, q: dict) -> dict:
         have = archive.have(self.root, REALM)
@@ -693,7 +706,7 @@ GET_ROUTES = {
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
-    "/api/alerts": "api_alerts", "/api/events": "api_events",
+    "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
 }
 
 
@@ -787,6 +800,8 @@ def make_handler(app: App):
                 self._json(app.api_search(body))
             elif url.path == "/api/check":
                 self._json(app.api_check(body))
+            elif url.path == "/api/event":
+                self._json(app.api_event(body))
             elif url.path == "/api/stash":
                 self._json(app.api_stash_post(body))
             else:

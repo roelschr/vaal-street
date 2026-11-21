@@ -550,6 +550,15 @@ class Ledger:
     def events(self, league: str, limit: int = 30) -> list[dict]:
         return self._all("SELECT * FROM events WHERE league = ? ORDER BY id DESC LIMIT ?", (league, limit))
 
+    def add_event(self, league: str, title: str, body: str = "") -> dict:
+        """An event from outside the alert rules, such as a screen check's verdict."""
+        title, body = _speakable(str(title)), " ".join(str(body).split())[:EVENT_BODY]
+        if not title:
+            raise ValueError("An event needs a title.")
+        now = int(time.time())
+        self._run("INSERT INTO events(t, league, title, body) VALUES (?,?,?,?)", (now, league, title, body))
+        return self._all("SELECT * FROM events WHERE league = ? ORDER BY id DESC LIMIT 1", (league,))[0]
+
     def events_since(self, league: str, since: int = 0, limit: int = 50) -> list[dict]:
         """Events newer than event id `since`, oldest first: a cheap poll for notifications."""
         return self._all("SELECT * FROM events WHERE league = ? AND id > ? ORDER BY id LIMIT ?",
@@ -561,6 +570,7 @@ class Ledger:
 ALERT_COOLDOWN = 6 * 3600
 # Event titles are read aloud and shown in a notification, so they stay short.
 TITLE_LENGTH = 60
+EVENT_BODY = 600
 ALERT_KINDS = {"price": "Price", "plan": "Flip plan", "trip": "Round trip", "order": "Your orders",
                "precedent": "League precedent"}
 
