@@ -324,22 +324,45 @@ async function viewFlips(main) {
   draw();
 }
 
-const HOW = { set: 'Card set', vendor: 'Vendor 3-for-1', stack: 'Full stack' };
+const HOW = { set: 'Card set', vendor: 'Vendor 3-for-1', stack: 'Full stack', yours: 'Your recipe' };
+// How a round trip moves from one item to the next.
+const VIA = {
+  swap: ['', 'Swap in the item-for-item market'],
+  divine: ['Divine', 'Sell for Divines, or buy with them, in the Divine market'],
+  vendor: ['vendor', 'Buy from a vendor at the price you entered'],
+};
+const viaArrow = how => { const [word, title] = VIA[how] || VIA.swap; return ` <span class="dim" title="${title}">→${word ? `<span class="tag" style="margin-left:3px">${word}</span>` : ''}</span> `; };
+// Whether a recipe or round trip worked when you tried it in game, with buttons to say so.
+const CHECKED = { confirmed: '<span class="up">Worked</span>', failed: '<span class="down">Did not work</span>', unchecked: '<span class="dim">Not tried</span>' };
+const checkCell = r => `<span title="${esc(r.check_note || (r.check === 'unchecked' ? 'Nobody has marked this as tried in game yet' : ''))}">${CHECKED[r.check] || CHECKED.unchecked}${r.check_note ? ' <span class="dim">✎</span>' : ''}</span>
+  <button class="btn ghost" data-ck="${esc(r.recipe_key)}" data-st="confirmed" title="It worked in game">✓</button><button class="btn ghost" data-ck="${esc(r.recipe_key)}" data-st="failed" title="It did not work in game">✗</button>`;
+// One click handler per panel, because the tables re-render on sort.
+const onCheck = host => host.addEventListener('click', async e => {
+  const b = e.target.closest('[data-ck]'); if (!b) return;
+  const note = prompt(b.dataset.st === 'confirmed' ? 'It worked. A note? (optional)' : 'It did not work. What went wrong? (optional)', '');
+  if (note === null) return;
+  try { await api('/api/recipe_check', { key: b.dataset.ck, status: b.dataset.st, note }); route(); } catch (err) { toast(err.message, true); }
+});
+const fixedText = r => `${r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ')} ${r.kind === 'vendor' ? '<span class="dim">buys</span>' : '<span class="dim">→</span>'} ${+r.gives} ${esc(r.output_name)}`;
+
 async function viewArbitrage(main) {
   if (!state.summary) await loadDesk();
   const f = state.filters, purse = +f.capital > 0 ? +f.capital : 0;
-  const d = await api(withLeague('/api/arbitrage', { share: state.share, ...bankQuery() }));
+  f.swaps ??= +(localStorage.swaps || 3);
+  const d = await api(withLeague('/api/arbitrage', { share: state.share, swaps: f.swaps, ...bankQuery() }));
   state.bridge = d.summary.bridge; renderTop();
+  const names = [...new Set(['Chaos Orb', ...state.market.map(r => r.name)])];
   main.innerHTML = `<div class="head"><div><h1>Arbitrage</h1><p>Prices that disagree with each other: things that turn into something dearer, and round trips through item-for-item markets.</p></div></div>
     <div class="bar">
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 40" min="0" step="10"></label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px"><input type="checkbox" id="fit" ${f.fit !== false ? 'checked' : ''} ${purse ? '' : 'disabled'}> Only what my bankroll can start</label>
       <label class="f">Min. traded / 24h (c)<input type="number" id="liq" value="${f.arbLiquidity ?? 2000}" min="0" step="500"></label>
-    </div><div class="grid" id="g"></div>`;
+      <div class="f">Swaps per round trip<div class="seg" id="swaps">${[1, 2, 3].map(n => `<button type="button" data-n="${n}" class="${f.swaps === n ? 'on' : ''}" title="Round trips with up to ${n} swap${n === 1 ? '' : 's'}">up to ${n}</button>`).join('')}</div></div>
+    </div><div class="grid" id="g"></div><datalist id="arbItems">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
   const fits = cost => !purse || f.fit === false || cost <= purse;
   const liquid = f.arbLiquidity ?? 2000;
   const sets = panel('Conversions', 'c12');
-  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once). “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk.</p></div>`;
+  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once), plus the recipes you entered below. “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk, then mark it with ✓ or ✗.</p></div>`;
   sets.append(table([
     { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
     { h: 'How', l: 1, f: r => `<span class="tag">${HOW[r.how] || r.how}${r.steps > 1 ? ` × ${r.steps}` : ''}</span>`, s: r => r.how, title: 'A number after × means the recipe is applied that many tiers in a row' },
@@ -352,12 +375,14 @@ async function viewArbitrage(main) {
     { h: 'Result traded 24h', f: r => money(r.reward_value_24h), s: r => r.reward_value_24h, title: 'How much of the result changes hands: can you sell it?' },
     { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold to buy the inputs for one conversion and sell the result' },
     { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the orders cost' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check, title: 'Whether you marked this as working when you tried it in game' },
   ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
   { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
+  onCheck(sets);
   const loops = panel('Round trips through item-for-item markets', 'c12');
-  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, swap it along the path in the small markets where items trade directly for each other, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
+  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, move it along the path, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. A plain arrow is a swap in the small markets where items trade directly for each other; <span class="tag">Divine</span> means selling for Divines and buying with them; <span class="tag">vendor</span> means buying from a vendor at a price you entered below. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
   loops.append(table([
-    { h: 'Path', l: 1, f: r => r.path.map(x => `<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join(' <span class="dim">→</span> ') },
+    { h: 'Path', l: 1, f: r => r.path.map((x, k) => `${k ? viaArrow((r.via || [])[k - 1]) : ''}<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join('') },
     { h: 'First swap', f: r => `${r.first_swap.give} <span class="dim">for</span> ${r.first_swap.get}`, title: 'Units of the first item you give, for units of the second' },
     { h: 'Buy at', f: r => money(r.buy), s: r => r.buy }, { h: 'Sell at', f: r => money(r.sell), s: r => r.sell },
     { h: 'Edge', f: r => r.edge > 3 ? `<span class="up">×${(1 + r.edge).toFixed(1)}</span>` : pct(r.edge, 0), s: r => r.edge },
@@ -367,11 +392,52 @@ async function viewArbitrage(main) {
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
     { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold for one trip per unit of the first item: buying it, each swap, and selling the last item. The game does not say what a swap costs; the desk assumes the fee of the item you give, as if you sold it' },
     { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the trip costs' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check, title: 'Whether you marked this round trip as working when you tried it in game' },
   ], d.loops.filter(r => fits(r.lot_cost)), { sort: 5, limit: 15, empty: 'No round trip traded steadily in the last day.' }));
-  $('#g', main).append(sets, loops);
+  onCheck(loops);
+
+  const mine = panel('Your recipes and vendor prices', 'c12', '<span class="muted small">Kept for every league. The desk prices recipes like the built-in ones and uses vendor prices as steps in round trips.</span>');
+  const form = document.createElement('form'); form.className = 'body'; form.autocomplete = 'off';
+  let kind = 'recipe';
+  const itemInput = (cls, ph) => `<input type="text" class="${cls}" list="arbItems" placeholder="${ph}" style="width:200px">`;
+  const inputRow = () => `<div class="bar" style="margin:0 0 6px" data-in><label class="f">Count<input type="number" class="n" min="0" step="any" value="1" style="width:70px"></label><label class="f">Item${itemInput('it', 'Start typing…')}</label></div>`;
+  const drawForm = () => {
+    form.innerHTML = `<div class="bar" style="margin-bottom:8px"><div class="seg" id="fk"><button type="button" data-k="recipe" class="${kind === 'recipe' ? 'on' : ''}">Recipe</button><button type="button" data-k="vendor" class="${kind === 'vendor' ? 'on' : ''}">Vendor price</button></div>
+      <span class="muted small">${kind === 'recipe' ? 'What goes in, and what comes out. Any item the exchange knows.' : 'A vendor sells an item for a count of one currency, for example 1 Some Shard for 3 Chaos Orb.'}</span></div>
+      <div class="muted small" style="margin-bottom:4px">${kind === 'recipe' ? 'Goes in' : 'The vendor asks'}</div><div id="ins">${inputRow()}</div>
+      ${kind === 'recipe' ? '<button type="button" class="btn ghost" id="more" style="margin-bottom:8px">+ another input</button>' : ''}
+      <div class="bar" style="margin:0"><label class="f">${kind === 'recipe' ? 'Comes out' : 'and gives'}<span style="display:flex;gap:6px"><input type="number" id="gv" min="0" step="any" value="1" style="width:70px">${itemInput('', 'Start typing…').replace('class=""', 'id="out"')}</span></label>
+      <label class="f">Note<input type="text" id="fn" placeholder="optional" style="width:200px"></label>
+      <button class="btn primary">Add</button></div>`;
+    $('#fk', form).onclick = e => { const k = e.target.dataset.k; if (k) { kind = k; drawForm(); } };
+    const more = $('#more', form); if (more) more.onclick = () => $('#ins', form).insertAdjacentHTML('beforeend', inputRow());
+  };
+  drawForm();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const inputs = [...form.querySelectorAll('[data-in]')].map(r => [$('.it', r).value.trim(), +$('.n', r).value]).filter(([item]) => item);
+    if (!inputs.length || !$('#out', form).value.trim()) return toast('Name what goes in and what comes out.', true);
+    try { await api('/api/recipe', { kind, inputs, output: $('#out', form).value.trim(), gives: +$('#gv', form).value || 1, note: $('#fn', form).value }); toast('Added. It starts as not tried in game.'); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  const ft = table([
+    { h: 'Kind', l: 1, f: r => `<span class="tag">${r.kind === 'vendor' ? 'Vendor price' : 'Recipe'}</span>` },
+    { h: 'What', l: 1, f: fixedText },
+    { h: 'Note', l: 1, f: r => esc(r.note) },
+    { h: 'In game', l: 1, f: checkCell },
+    { h: '', f: r => `<button class="btn ghost" data-delfix="${r.id}" title="Delete this entry">✕</button>` },
+  ], d.fixed, { empty: 'None yet. The desk cannot read recipes or vendor prices from the game, so add the ones you know.' });
+  ft.addEventListener('click', async e => {
+    const b = e.target.closest('[data-delfix]'); if (!b) return;
+    try { await api('/api/recipe', { delete: +b.dataset.delfix }); route(); } catch (err) { toast(err.message, true); }
+  });
+  onCheck(ft);
+  mine.append(form, ft);
+  $('#g', main).append(sets, loops, mine);
   $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
   $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
+  $('#swaps', main).onclick = e => { const n = +e.target.dataset.n; if (n) { f.swaps = n; localStorage.swaps = n; route(); } };
 }
 
 const unitOf = f => f(1).trim().slice(-1);
