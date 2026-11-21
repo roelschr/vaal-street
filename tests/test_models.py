@@ -427,6 +427,19 @@ def test_longer_round_trips_and_vendor_prices_you_enter(desk):
     json.dumps(only, allow_nan=False)
 
 
+def test_round_trips_skip_swap_markets_far_out_of_line(desk):
+    # Live data had 1 Vaal Orb fetching 5 Scours every hour, items worth about the same. A side
+    # market whose rate is more than 3x off the two items' own prices is joke trades: here 1 card
+    # (1.5 Chaos) "fetches" 5 shards (10 Chaos), while 3 shards per orb (implied ~5.3) stays.
+    desk.cross = [
+        {"item": CARD, "quote": OTHER, "volume": 1000, "rate": 5.0, "hours": 24, "item_resting": 50, "quote_resting": 70},
+        {"item": ITEM, "quote": OTHER, "volume": 100, "rate": 3.0, "hours": 20, "item_resting": 500, "quote_resting": 900},
+    ]
+    paths = {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_edge=-1, min_value=10, chaos_only=True)}
+    assert (OTHER, ITEM) in paths
+    assert not [p for p in paths if CARD in p]
+
+
 def test_your_recipes_are_priced_like_the_built_in_ones(desk):
     from vaalstreet.ingest import CHAOS
 

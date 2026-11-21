@@ -85,6 +85,16 @@ class Leg:
     sd: np.ndarray | None = None  # [N] latest sd of log(this leg's fair value): how sure its own price is
 
 
+# A swap rate this many times off what the two items' own prices imply is joke trades in a thin
+# market, not an opportunity: on live data, 1 Vaal Orb "fetched" 5 Scours every hour. Ingest uses
+# the same bound to drop a joke leg from an item's price.
+OUT_OF_LINE = 3.0
+
+
+def _out_of_line(ratio: float) -> bool:
+    return not (1 / OUT_OF_LINE <= ratio <= OUT_OF_LINE)
+
+
 def kind_currency(plan: dict, side: str) -> bool:
     """Whether a plan's buy or sell order is denominated in the bridge currency (Divine)."""
     return plan[f"{side}_order"]["currency"] != "Chaos"
@@ -881,7 +891,7 @@ class Desk:
             if not pa or not pb:
                 continue
             value = m["volume"] * pa
-            if value < min_value:
+            if value < min_value or _out_of_line(m["rate"] * pb / pa):
                 continue
             edges.setdefault(m["item"], []).append(
                 (m["quote"], m["rate"], value, m["hours"], float(m.get("quote_resting") or 0) * pb, "swap", None))
@@ -893,7 +903,7 @@ class Desk:
                     continue
                 price = float(b.fair[-1, i])  # Chaos per unit through the Divine market
                 value = float(b.flow[i]) * DAY * price
-                if value < min_value:
+                if value < min_value or _out_of_line(price / float(r.fair[-1, i])):
                     continue
                 hours = int(round(float(b.active[i]) * DAY))
                 # Rates are in Divines, so a pair of Divine swaps comes to the ratio of the two Divine
