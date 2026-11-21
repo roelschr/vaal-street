@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, calibrate, check, db, items
+from vaalstreet import archive, backtest, calibrate, check, db, items, search
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
@@ -443,6 +443,24 @@ class App:
             raise ApiError("params and options must be sets of named values, results a list.")
         return sharing.document(spec, params, options, results)
 
+    def api_search(self, body: dict) -> dict:
+        """A small walk-forward strategy search. Requests are synchronous, so the grid is capped hard."""
+        strategy = body.get("strategy", "swing")
+        if strategy not in backtest.STRATEGIES:
+            raise ApiError("The desk searches built-in strategies only; use the CLI for your own modules.")
+        leagues = body.get("leagues") or None
+        if leagues is not None and not (isinstance(leagues, list) and all(isinstance(x, str) for x in leagues)):
+            raise ApiError("leagues must be a list of league names.")
+        try:
+            options = dict(
+                capital=float(body.get("capital", 10000)), days=float(body["days"]) if body.get("days") else None,
+                gold_per_unit=float(body.get("gold_per_unit") or 0),
+            )
+            return search.walk_forward(self.cursor(), strategy, body.get("grid"), leagues=leagues,
+                                       how=str(body.get("score") or "divine"), cap=12, max_runs=48, **options)
+        except (TypeError, ValueError, LookupError) as err:
+            raise ApiError(str(err)) from err
+
     def fill_calibration(self, desk, default: float = 0.1) -> list[dict]:
         """Share of the flow your orders caught, from orders and volume up to the desk's last hour."""
         rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default)
@@ -765,6 +783,8 @@ def make_handler(app: App):
                 self._json(app.api_backtest({}, body))
             elif url.path == "/api/strategy_export":
                 self._json(app.api_strategy_export(body))
+            elif url.path == "/api/search":
+                self._json(app.api_search(body))
             elif url.path == "/api/check":
                 self._json(app.api_check(body))
             elif url.path == "/api/stash":

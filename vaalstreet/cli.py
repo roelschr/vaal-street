@@ -519,6 +519,26 @@ def _backtest(args: argparse.Namespace) -> None:
                                      ("peak_risk", "Worst drop", ",.0f"), ("fills", "Fills", ",")])
 
 
+def _search(args: argparse.Namespace) -> None:
+    from vaalstreet import search
+
+    con = connect()
+    leagues = [x.strip() for x in args.leagues.split(",") if x.strip()] if args.leagues else None
+    options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage, days=args.days,
+                   attention=args.attention, whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit,
+                   schedule=args.schedule, fill_model=args.fill_model)
+    report = search.walk_forward(con, args.strategy, args.grid, leagues=leagues, how=args.score, **options)
+    if args.export:
+        from vaalstreet import sharing
+
+        params, _ = search._split(report["next"]["setting"], args.strategy)
+        sharing.export(args.export, args.strategy, params, {**options, **report["next"]["setting"]},
+                       search.export_rows(report), extra={"walk_forward": report})
+        print(f"Wrote {args.export}: the setting it would pick next, and the results on leagues it was not tuned on."
+              " Nothing was uploaded.", file=sys.stderr)
+    print(json.dumps(report, indent=1) if args.json else search.format_report(report))
+
+
 def _strategy_import(args: argparse.Namespace) -> None:
     from vaalstreet import sharing
     from vaalstreet.paths import strategies_dir
@@ -767,6 +787,31 @@ def main(argv: list[str] | None = None) -> None:
                    "(end hour not included); orders stand while you are away")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_backtest)
+
+    p = commands.add_parser("search", help="try a grid of settings, judged only on leagues each choice was not tuned on")
+    p.add_argument("strategy", choices=list(backtest.STRATEGIES))
+    p.add_argument("--grid", required=True,
+                   help="settings to try, e.g. 'reach=0.2,0.3;top=20,40;attention=1,4', or a JSON object such as "
+                   "'{\"schedule\": [\"sat,sun 10-14\"]}' (needed when a value holds a comma). Besides the strategy's "
+                   "own settings: attention, schedule, whole_lots, fill_model, participation, slippage, gold_per_unit")
+    p.add_argument("--leagues", help="comma-separated leagues (default: every challenge league); they are put "
+                   "in order of their start, and each is tuned only on leagues that ended before it began")
+    p.add_argument("--score", choices=["divine", "return", "drawdown"], default="divine",
+                   help="what tuning maximises: divine = return over holding Divines (default), return = Chaos "
+                   "return, drawdown = return over the worst drop")
+    p.add_argument("--export", metavar="FILE.json",
+                   help="save the setting it would pick next, with the walk-forward table, to share")
+    p.add_argument("--capital", type=float, default=10000)
+    p.add_argument("--participation", type=float, default=0.1)
+    p.add_argument("--slippage", type=float, default=0.03)
+    p.add_argument("--attention", type=int, default=1)
+    p.add_argument("--days", type=float, help="only the first days of each league, for a quicker search")
+    p.add_argument("--whole-lots", action="store_true")
+    p.add_argument("--gold-per-unit", type=float, default=0.0)
+    p.add_argument("--schedule")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(run=_search)
 
     p = commands.add_parser("strategy", help="strategy files shared by other players")
     sub = p.add_subparsers(dest="action", required=True)

@@ -26,7 +26,7 @@ import json
 
 import pytest
 
-from conftest import H0, HOUR, ITEM, market
+from conftest import H0, HOUR, ITEM, call, market
 from vaalstreet import backtest, items, search
 from vaalstreet.archive import hour_path
 from vaalstreet.ingest import CHAOS, DIVINE, ingest
@@ -156,3 +156,12 @@ def test_options_in_grid_reach_the_simulation(full):
     rare = runner("Beta", {"warmup": 24, "attention": 1000})  # hour 24 is never a visit
     assert every["fills"] > 0 and rare["fills"] == 0
 
+
+def test_search_api_runs_a_capped_search(server):
+    status, rep = call(server + "/api/search", {"strategy": "hold", "grid": "warmup=24,48", "leagues": ["Old", "New"],
+                                               "score": "return"})
+    assert status == 200 and rep["settings_tried"] == 2 and [f["league"] for f in rep["folds"]] == ["New"]
+    status, err = call(server + "/api/search", {"strategy": "hold", "grid": "warmup=" + ",".join(map(str, range(30)))})
+    assert status == 400 and "limit" in err["error"]
+    status, err = call(server + "/api/search", {"strategy": "x.py:Mine", "grid": "a=1"})
+    assert status == 400
