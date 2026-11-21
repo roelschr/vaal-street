@@ -494,3 +494,18 @@ def test_a_portfolio_from_the_command_line(archive_root, monkeypatch, capsys):
     assert "Worst drop" in out and "Share" in out and "swing + reversion" in out
     with pytest.raises(SystemExit):
         cli.main(["backtest", "swing", "reversion", "--league", NEW])
+
+
+def test_gold_is_not_refunded_when_an_order_is_cancelled_and_posted_again():
+    """Confirmed in game. Known answer: 10 units at 1 Gold each, posted, cancelled, posted again: 20 Gold."""
+
+    class PostCancelPost:
+        def step(self, ctx):
+            if ctx.t in (0, 2):
+                ctx.quote_buys("r", np.array([1.0]), np.array([10.0]))  # far under the market: never fills
+            elif ctx.t == 1:
+                ctx.cancel_all()
+
+    sim = backtest.Simulation(tiny_panel([10.0] * 4), capital=1000, gold_per_unit=1.0)
+    result = sim.run(PostCancelPost())
+    assert result.fills == 0 and sim.gold_spent == pytest.approx(20.0)

@@ -131,6 +131,25 @@ def test_order_advice(tmp_path):
     assert all(o["reason"] for o in advice.values())
     ledger.set_order_status(done, "closed")
     assert done not in {o["id"] for o in ledger.advise_orders("L", prices, plans, bridge)}
+    assert "Gold unknown" in advice[stale]["reason"], "no fee on record: re-price, and say the Gold is unknown"
+
+
+def test_order_advice_weighs_the_gold_a_repost_costs(tmp_path):
+    """Gold is not refunded on cancel (confirmed in game). Known answer at 3 Gold a unit: a 10-unit buy
+    at 9 c against the plan's 9.5 c is 5% off; re-posting costs 30 Gold again, so keep it. At 8 c it is
+    16% off: re-price. On the wrong side of the market, cancel whatever the Gold."""
+    ledger = Ledger(tmp_path)
+    ledger.set("assumed_gold_fee", 3)
+    prices = {"orb": {"fair": 10.0, "chaos": 9.8, "divine": 10.6}}
+    plans = {"orb": {"buy": {"chaos": {"currency_units": 19, "item_units": 2, "price": 9.5}}}}
+    near = ledger.add_order("L", "orb", "buy", "chaos", 9, 1, 10)
+    far = ledger.add_order("L", "orb", "buy", "chaos", 8, 1, 10)
+    wrong = ledger.add_order("L", "orb", "buy", "chaos", 11, 1, 10)
+    advice = {o["id"]: o for o in ledger.advise_orders("L", prices, plans, 100.0)}
+    assert advice[near]["advice"] == "keep" and advice[near]["repost_gold"] == 30
+    assert "costs about 30 Gold again" in advice[near]["reason"] and "5% off" in advice[near]["reason"]
+    assert advice[far]["advice"] == "re-price" and "30 Gold" in advice[far]["reason"]
+    assert advice[wrong]["advice"] == "cancel" and "not refunded" in advice[wrong]["reason"]
 
 
 def test_session_figures(tmp_path):

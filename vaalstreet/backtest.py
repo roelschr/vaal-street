@@ -693,8 +693,9 @@ class Simulation:
         """Turn what the strategy just quoted into orders the exchange would take, and charge Gold.
 
         An order counts as posted when its limit changed or its size grew; an order left as it
-        stood, or one that only shrank, costs nothing. With whole lots, a posted order is re-cut
-        to a whole-number ratio the purse can pay for (the same fit the Flips page makes for a
+        stood, or one that only shrank, costs nothing. Gold is not refunded on cancel (confirmed in
+        game): a cancelled order's Gold stays spent, and posting it again pays in full. With whole
+        lots, a posted order is re-cut to a whole-number ratio the purse can pay for (the same fit the Flips page makes for a
         bankroll), and dropped if not even one lot fits. Gold is charged per unit posted; an order
         the remaining budget cannot pay for is not posted, and whatever stood before stays.
         """

@@ -86,6 +86,9 @@ ORDER_STATUSES = ("open", "part-filled", "filled", "cancelled", "closed")
 REPRICE_TOLERANCE = 0.04
 # An order is on the wrong side of the market only when it is past that market's price by more than this.
 WRONG_SIDE_TOLERANCE = 0.01
+# Gold is not refunded on cancel (confirmed in game), so a re-price pays the full fee again. When that
+# fee is known, an order is re-priced only when it is this far from the plan; nearer, it is kept.
+REPRICE_WITH_GOLD = 0.08
 
 
 def recipe_key(kind: str, item_ids: list[str]) -> str:
@@ -322,7 +325,15 @@ class Ledger:
         The two markets of an item are different prices, so an order is judged against its own
         market's price, never the combined fair value when the market's own price is known.
         Filled orders say "collect" until you close them.
+
+        Gold is not refunded on cancel (confirmed in game): re-pricing means cancelling and posting
+        again, which pays the Gold fee on every unit still open once more. So an order more than
+        `REPRICE_TOLERANCE` from the plan is re-priced only when the fee is unknown or free, or when
+        it is more than `REPRICE_WITH_GOLD` off; in between it is kept, and the reason says what a
+        re-post would cost. An order on the wrong side of its market is cancelled whatever the Gold:
+        every fill would lose money, and the Gold it cost is gone either way.
         """
+        costs = self.costs(league)
         out = []
         for order in self.orders(league):
             price = order["currency_units"] / order["item_units"] * (bridge if order["market"] == "divine" else 1.0)
@@ -342,16 +353,29 @@ class Ledger:
                 continue
             buying = order["side"] == "buy"
             past = price / market - 1 if buying else 1 - price / market
+            fee, _ = costs.fee(order["item"])
+            open_units = max(float(order["units"]) - float(order["filled"] or 0), 0.0)
+            repost = None if fee is None else fee * open_units
             if past > WRONG_SIDE_TOLERANCE and not near_plan:
                 row["advice"] = "cancel"
                 row["reason"] = (f"You are {'paying' if buying else 'asking'} {abs(past):.0%} "
-                                 f"{'more' if buying else 'less'} than the {market_name} market's price now.")
+                                 f"{'more' if buying else 'less'} than the {market_name} market's price now. "
+                                 "The Gold it cost to post is not refunded, but every fill would lose money.")
                 continue
             if level and not near_plan:
+                off = abs(price / level["price"] - 1)
+                row["repost_gold"] = repost
+                if repost and off <= REPRICE_WITH_GOLD:
+                    row["reason"] = (f"Re-pricing costs about {repost:,.0f} Gold again (Gold is not refunded on "
+                                     f"cancel); the order is only {off:.0%} off the plan, so keep it.")
+                    continue
                 row["advice"], row["suggest"] = "re-price", level
+                cost = ("Gold unknown for a re-post" if repost is None
+                        else "a re-post costs no Gold" if repost == 0
+                        else f"worth the {repost:,.0f} Gold a re-post costs again")
                 row["reason"] = (f"The plan would now post {level['item_units']} for {level['currency_units']} "
-                                 f"{market_name}, {abs(price / level['price'] - 1):.0%} "
-                                 f"{'below' if price > level['price'] else 'above'} your price.")
+                                 f"{market_name}, {off:.0%} "
+                                 f"{'below' if price > level['price'] else 'above'} your price ({cost}).")
             elif level:
                 row["reason"] = "Your price is where the plan would post it."
             else:
