@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, check, db, items
+from vaalstreet import archive, backtest, calibrate, check, db, items
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
@@ -261,8 +261,10 @@ class App:
         desk = self.desk(q.get("league"))
         bankroll = float(q["bankroll"]) if q.get("bankroll") else None
         bankroll = bankroll if bankroll and bankroll > 0 else None
-        plans = desk.flips(share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)),
-                           bankroll=bankroll, costs=self.costs(desk.league))
+        share = float(q.get("share", 0.1))
+        plans = desk.flips(share=share, min_margin=float(q.get("min_margin", 0.02)), bankroll=bankroll,
+                           costs=self.costs(desk.league),
+                           share_by_item=calibrate.shares(self.fill_calibration(desk, share)))
         out = {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))], "settings": self.settings()}
         if bankroll:
             kind = q.get("kind", "all")
@@ -359,6 +361,13 @@ class App:
             "divine": [_num(v * result.start_capital) for v in result.divine[::step]],
         }
 
+    def fill_calibration(self, desk, default: float = 0.1) -> list[dict]:
+        """Share of the flow your orders caught, from orders and volume up to the desk's last hour."""
+        rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default)
+        for row in rows:
+            row["name"] = desk._name(row["item"])
+        return rows
+
     def api_ledger(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
         positions = []
@@ -385,6 +394,7 @@ class App:
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self.ledger.alerts(desk.league),
+            "fill_calibration": self.fill_calibration(desk),
             "alert_fields": ALERT_FIELDS,
             "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
             "orders": self._advise(desk), "sessions": self.ledger.sessions(desk.league),

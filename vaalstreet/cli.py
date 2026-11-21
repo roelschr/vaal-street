@@ -149,20 +149,49 @@ def _price(args: argparse.Namespace) -> None:
 
 
 def _flips(args: argparse.Namespace) -> None:
+    from vaalstreet import calibrate
     from vaalstreet.desk import Desk
+    from vaalstreet.ledger import Ledger
 
     con = connect()
     desk = Desk.build(con, _league(con, args))
-    plans = [p for p in desk.flips(share=args.share, min_margin=args.min_margin) if args.kind in ("all", p["kind"])]
+    learned = calibrate.shares(calibrate.from_ledger(Ledger(data_dir()), desk.league, desk.panel,
+                                                     desk.as_of + HOUR, args.share))
+    plans = [p for p in desk.flips(share=args.share, min_margin=args.min_margin, share_by_item=learned)
+             if args.kind in ("all", p["kind"])]
     for p in plans:
         b, s = p["buy_order"], p["sell_order"]
         p["buy_text"] = f"{b['currency_units']} {b['currency']} : {b['item_units']}"
         p["sell_text"] = f"{s['item_units']} : {s['currency_units']} {s['currency']}"
-    print(f"{desk.league} - Divine {desk.bridge:.1f}c - plans assume you capture {args.share:.0%} of each market's flow")
+    print(f"{desk.league} - Divine {desk.bridge:.1f}c - plans assume you capture {args.share:.0%} of each market's flow"
+          + (", or what your own orders measured (see `fills`)" if learned else ""))
     _table(plans, [("name", "Item", ""), ("kind", "Plan", ""), ("buy", "Buy", ".4g"), ("sell", "Sell", ".4g"),
                    ("margin", "Margin", ".1%"), ("reach", "Reach", ".0%"), ("buy_text", "Buy order", ""),
                    ("sell_text", "Sell order", ""), ("profit_per_hour", "c/hour", ",.0f"),
                    ("capital", "Capital", ",.0f")], args.rows)
+
+
+def _fills(args: argparse.Namespace) -> None:
+    from vaalstreet import calibrate
+    from vaalstreet.desk import Desk
+    from vaalstreet.ledger import Ledger
+
+    con = connect()
+    desk = Desk.build(con, _league(con, args))
+    rows = calibrate.from_ledger(Ledger(data_dir()), desk.league, desk.panel, desk.as_of + HOUR, args.share)
+    print(f"{desk.league} - how fast your orders filled, against the {args.share:.0%} share of the flow plans assume")
+    if not rows:
+        print("No orders to learn from yet. Track the orders you post in the desk and record their fills.")
+        return
+    for r in rows:
+        r["name"] = desk._name(r["item"])
+    _table(rows, [("name", "Item", ""), ("market", "Market", ""), ("orders", "Orders", "d"),
+                  ("filled", "Filled", ",.0f"), ("eligible", "Traded at your price", ",.0f"),
+                  ("measured", "Your share", ".1%"), ("share", "Share used", ".1%")], len(rows))
+    print("\nShare used leans toward the default until you have several orders (the default counts as "
+          f"{calibrate.PRIOR_ORDERS:g} orders).")
+    for r in rows:
+        print(f"  {r['name']} ({r['market'].title()}): {r['reading']}")
 
 
 def _ladder(args: argparse.Namespace) -> None:
@@ -474,6 +503,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-margin", type=float, default=0.02)
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_flips)
+
+    p = commands.add_parser("fills", help="how fast your tracked orders filled, and the share of the flow plans now use")
+    p.add_argument("--league")
+    p.add_argument("--share", type=float, default=0.1, help="the share plans assume where you have no orders")
+    p.set_defaults(run=_fills)
 
     p = commands.add_parser(
         "check", help="go / no-go for an offer you see in the in-game order window",
