@@ -252,11 +252,17 @@ def _ladder(args: argparse.Namespace) -> None:
     for r in out["ladder"]:
         s = r["session"]
         rows.append({"label": r["label"], "chaos": r["chaos"], "can_run": r["can_run"],
-                     "promised": s["expected_per_hour"], "replayed": s["replayed_per_hour"],
-                     "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
+                     "against": s["replayed_vs_divine_per_hour"], "replayed": s["replayed_per_hour"],
+                     "promised": s["expected_per_hour"], "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
     _table(rows, [("label", "Purse", ""), ("chaos", "Chaos", ",.0f"), ("can_run", "Can run", ""),
-                  ("promised", "c/hour now", ",.2f"), ("replayed", "c/hour last week", ",.2f"),
+                  ("against", "Last week vs Divines", ",.2f"), ("replayed", "Last week", ",.2f"),
+                  ("promised", "Promised", ",.2f"),
                   ("hours", "Hours to next", ",.1f"), ("gold", "Gold/hour", ",.0f")], len(rows))
+    divines = next((r["session"]["divines"] for r in out["ladder"] if r["session"].get("divines") is not None), None)
+    print("Chaos an hour. Last week: what each step's plans made over the last week at their own stakes. "
+          "Vs Divines: the same, less what holding Divines would have made"
+          + (f" ({divines:+.0%} over those hours)." if divines is not None else ".")
+          + " Promised: what today's levels earn if the last two days repeat; it has run well ahead of last week.")
     print("Gold/hour is blank until you record the Gold your trades cost, or set an assumed fee in the desk.")
     print("\nWhat opens up at each step:")
     for r in out["ladder"]:
@@ -621,12 +627,13 @@ def _backtest(args: argparse.Namespace) -> None:
         print(json.dumps(summaries, indent=1))
         return
     _table(summaries, [("league", "League", ""), ("strategy", "Strategy", ""), ("days", "Days", ""),
-                       ("return", "Return", "+.1%"), ("divine_return", "Hold Divine", "+.1%"),
-                       ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
+                       ("vs_divine", "Vs Divines", "+.1%"), ("return", "Return", "+.1%"),
+                       ("divine_return", "Hold Divine", "+.1%"), ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
                        ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
                        ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f"),
                        ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),
                        ("average_risk", "Avg drop", ",.0f")])
+    print("  Vs Divines: the return measured in Divines, so beating simply holding Divines is above zero.")
     print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
           f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
     for s in summaries:

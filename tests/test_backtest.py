@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from conftest import NEW, OLD
+from conftest import ITEM, NEW, OLD
 from vaalstreet import backtest
 from vaalstreet.panel import CORE, LEGS, Panel
 
@@ -90,6 +90,9 @@ def test_swing_earns_the_premium_and_takers_pay_for_it(con):
     assert dip.total_return <= 0.02, "paying the spread on a mean-reverting wiggle does not"
     summary = swing.summary()
     assert summary["league"] == NEW and summary["divine_return"] > 0 and summary["days"] == 8.0
+    # Measured in Divines, the same run: (1 + return) / (1 + what holding Divines made) - 1.
+    assert summary["vs_divine"] == pytest.approx((1 + swing.total_return) / (1 + swing.divine_return) - 1, abs=1e-4)
+    assert summary["vs_divine"] < summary["return"], "the synthetic Divine rises, so Divines are a higher bar"
 
 
 def test_hold_tracks_the_market_and_windows_select_league_days(con):
@@ -278,6 +281,22 @@ def test_new_options_stay_causal_when_the_league_is_cut_short(con):
                 backtest.Swing(per_item=0.5, warmup=24))
             for series in ("equity", "cash", "gold", "holdings", "risk"):
                 np.testing.assert_allclose(getattr(part, series), getattr(ref, series)[:cut], err_msg=f"{model} {series}")
+
+
+def test_a_stake_per_item_stays_causal_and_holds_each_item_to_its_stake(con):
+    """`Desk.replay_at` gives each item its own stake through an array of shares; cutting the league short
+    must not change the hours before the cut."""
+    full = Panel.load(con, NEW, CORE + LEGS)
+    shares = np.zeros(len(full.items))
+    shares[full.index(ITEM)] = 0.25  # a quarter of the bankroll for the orb, nothing for the rest
+    options = dict(capital=400, participation=0.1, whole_lots=True, attention=4)
+    whole_sim = backtest.Simulation(full, **options)
+    whole = whole_sim.run(backtest.Swing(per_item=shares, warmup=24))
+    assert whole.fills > 0 and whole_sim.peak_cost[full.index(ITEM)] <= 0.25 * 400 * 1.1
+    assert np.count_nonzero(whole_sim.peak_cost) == 1, "items without a stake never trade"
+    for cut in (60, 150):
+        part = backtest.Simulation(full.window(0, cut), **options).run(backtest.Swing(per_item=shares, warmup=24))
+        np.testing.assert_allclose(part.equity, whole.equity[:cut])
 
 
 def test_whole_lots_and_gold_on_the_synthetic_league(con):

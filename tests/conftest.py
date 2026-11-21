@@ -63,8 +63,8 @@ def item_price(league: str, h: int) -> float:
     return 10 * trend * swing
 
 
-def divine_price(h: int) -> float:
-    return 100 + 0.25 * h
+def divine_price(h: int, slope: float = 0.25) -> float:
+    return 100 + slope * h
 
 
 def market(league, a, b, vol_a, vol_b, stock_a=500, stock_b=500):
@@ -116,13 +116,13 @@ def side_markets(hour: int) -> list[dict]:
     return markets
 
 
-def digest(hour: int, scrap: bool = False) -> dict:
+def digest(hour: int, scrap: bool = False, divine_slope: float = 0.25) -> dict:
     markets = side_markets(hour)
     for league, start, length in ((OLD, 0, OLD_HOURS), (NEW, NEW_START, NEW_HOURS)):
         h = (hour - H0) // HOUR - start
         if not 0 <= h < length:
             continue
-        div, p = divine_price(h), item_price(league, h)
+        div, p = divine_price(h, divine_slope), item_price(league, h)
         markets += [
             market(league, CHAOS, DIVINE, round(div * 40), 40),
             market(league, ITEM, CHAOS, 1000, round(1000 * p)),
@@ -149,15 +149,15 @@ def all_hours() -> list[int]:
     return [H0 + h * HOUR for h in list(range(OLD_HOURS)) + list(range(NEW_START, NEW_START + NEW_HOURS))]
 
 
-def write_raw(root, hours, scrap: bool = False) -> None:
+def write_raw(root, hours, scrap: bool = False, divine_slope: float = 0.25) -> None:
     for hour in hours:
         path = hour_path(root, "poe1", hour)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(gzip.compress(json.dumps(digest(hour, scrap)).encode()))
+        path.write_bytes(gzip.compress(json.dumps(digest(hour, scrap, divine_slope)).encode()))
 
 
-def build_archive(root, hours, scrap: bool = False):
-    write_raw(root, hours, scrap)
+def build_archive(root, hours, scrap: bool = False, divine_slope: float = 0.25):
+    write_raw(root, hours, scrap, divine_slope)
     meta = items.build({
         CHAOS: {"name": "Chaos Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         DIVINE: {"name": "Divine Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
@@ -187,8 +187,21 @@ def archive_root(tmp_path_factory):
 @pytest.fixture(scope="session")
 def scrap_root(tmp_path_factory):
     """The New league alone, plus Test Scrap, whose Divine market is 2.8 times its Chaos market."""
-    return build_archive(tmp_path_factory.mktemp("scrap"), [H0 + h * HOUR for h in range(NEW_START, NEW_START + NEW_HOURS)],
-                         scrap=True)
+    return build_archive(tmp_path_factory.mktemp("scrap"), NEW_ONLY, scrap=True)
+
+
+NEW_ONLY = [H0 + h * HOUR for h in range(NEW_START, NEW_START + NEW_HOURS)]
+
+
+@pytest.fixture(scope="session")
+def flat_root(tmp_path_factory):
+    """The New league alone with the Divine steady at 100 Chaos.
+
+    In `archive_root` the Divine rises from 112 to 148 Chaos over the hours a flip replay trades
+    (+32%), more than any test-orb flip makes (+15% to +25%), so no flip beats holding Divines and
+    session plans are empty. Here holding Divines makes nothing, so the test orb's flips qualify.
+    """
+    return build_archive(tmp_path_factory.mktemp("flat"), NEW_ONLY, divine_slope=0.0)
 
 
 @pytest.fixture()
@@ -200,18 +213,27 @@ def con(archive_root):
     connection.close()
 
 
-@pytest.fixture()
-def server(archive_root, tmp_path, monkeypatch):
+def serve(root, tmp_path, monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     from vaalstreet.ledger import Ledger
     from vaalstreet.server import App, make_handler
 
-    app = App(archive_root, sync=False)
+    app = App(root, sync=False)
     app.ledger = Ledger(tmp_path)  # keep the shared fixture clean
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_port}"
     httpd.shutdown()
+
+
+@pytest.fixture()
+def server(archive_root, tmp_path, monkeypatch):
+    yield from serve(archive_root, tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def flat_server(flat_root, tmp_path, monkeypatch):
+    yield from serve(flat_root, tmp_path, monkeypatch)
 
 
 def call(url, body=None, headers=None):

@@ -397,6 +397,9 @@ class Result:
             "end": round(float(self.equity[-1]), 2),
             "return": round(self.total_return, 4),
             "divine_return": None if math.isnan(self.divine_return) else round(self.divine_return, 4),
+            # The figure to judge a strategy by: a league start's rising Divine flatters every Chaos return.
+            "vs_divine": None if math.isnan(self.divine_return)
+            else round((1 + self.total_return) / (1 + self.divine_return) - 1, 4),
             "per_day": round(float((self.equity[-1] - self.start_capital) / days), 2),
             "max_drawdown": round(self.max_drawdown, 4),
             "daily_sharpe": None if math.isnan(self.daily_sharpe) else round(self.daily_sharpe, 3),
@@ -478,6 +481,7 @@ class Simulation:
             self._resting: dict[tuple[str, str], np.ndarray] = {}
         self.fills = 0
         self.sales = np.zeros(n, dtype=np.int64)  # hours in which each item sold
+        self.peak_cost = np.zeros(n)  # the most Chaos each item ever had tied up at cost
         self.bought = 0.0
         self.sold = 0.0
         self._session = 0  # first hour of the current play session
@@ -625,6 +629,7 @@ class Simulation:
     def _bought(self, units: np.ndarray, cost: np.ndarray, hit: np.ndarray) -> None:
         self.position += units
         self.cost += cost
+        self.peak_cost = np.maximum(self.peak_cost, self.cost)
         self.cash -= float(cost.sum())
         self.bought += float(cost.sum())
         self.fills += int(hit.sum())
@@ -908,7 +913,7 @@ class Swing:
     sell_leg: str = "b"
     buy_leg: str = "r"
     min_margin: float = 0.03
-    per_item: float = 0.05  # max share of the bankroll held in one item
+    per_item: float | np.ndarray = 0.05  # max share of the bankroll held in one item (or one share per item)
     stop_days: float = 2.0
     warmup: int = 48
 

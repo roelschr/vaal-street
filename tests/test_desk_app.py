@@ -134,7 +134,8 @@ def test_api_orders_sessions_and_recipe_checks(server):
     assert after["recipe_checks"][0]["label"] != key
 
 
-def test_api_gold_fields_settings_and_session_plan(server):
+def test_api_gold_fields_settings_and_session_plan(flat_server):
+    server = flat_server  # a flat Divine, so some flip beats holding Divines and makes the session plan
     flips = call(f"{server}/api/flips?min_margin=0.01")[1]
     assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
     assert all(p["gold"] is None and p["minutes"] == 2 for p in flips["flips"]), "no fee until you give one"

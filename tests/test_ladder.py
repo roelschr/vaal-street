@@ -71,11 +71,52 @@ def test_compounding_switches_at_the_right_rung():
     assert segs[0]["to_hour"] is None and "nothing to compound" in ladder.describe(segs)[0]
 
 
-def test_plan_end_to_end_uses_replayed_rates(desk):
-    out = ladder.plan(desk, 25, target=50)
+@pytest.fixture()
+def flat_desk(flat_root):
+    from vaalstreet.db import connect
+    from vaalstreet.desk import Desk
+
+    con = connect(flat_root)
+    yield Desk.build(con, NEW, root=flat_root)
+    con.close()
+
+
+def test_plan_end_to_end_uses_replayed_rates(flat_desk):
+    out = ladder.plan(flat_desk, 25, target=50)
     assert out["schedule"][0]["rate"] == out["ladder"][0]["session"]["rate"] > 0
     assert out["schedule"][-1]["reason"] == "target reached"
     assert "last week" in out["note"]
+
+
+def test_a_rising_divine_empties_the_session_plan_and_says_why(desk):
+    """Known answer: over the hours the replay trades, the synthetic Divine goes from 112 to 147.75 Chaos
+    (+32%), and the test orb's flips make +15% to +25% in Chaos. None beats holding Divines."""
+    from vaalstreet.desk import session_plan
+
+    flips = desk.flips(bankroll=5000)
+    assert flips and all(0.1 < p["replay"]["return"] < 0.3 for p in flips)
+    plan = session_plan(flips, 5000)
+    assert plan["flips"] == [] and plan["trailing_divines"] == len(flips)
+    assert plan["divines"] == pytest.approx(147.75 / 112 - 1, abs=0.01)
+    rows = ladder.ladder(desk)
+    assert all(r["session"]["rate"] == 0 and r["hours_to_next"] is None for r in rows)
+    assert "Divines" in ladder.describe(ladder.compound(25, [25, 50], lambda p: (0.0, []), hours=6))[0]
+
+
+def test_ladder_replays_each_pick_at_its_own_stake(flat_desk):
+    """With the Divine flat, holding Divines makes nothing: the figure against Divines equals the one in Chaos."""
+    rows = ladder.ladder(flat_desk)
+    picks = [p for r in rows for p in r["session"]["picks"]]
+    assert picks, "the test orb's flips qualify when Divines make nothing"
+    for r in rows:
+        s = r["session"]
+        assert s["rate"] <= s["expected_per_hour"] + 1e-9
+        assert s["rate"] <= max(s["replayed_vs_divine_per_hour"], 0) + 1e-9
+    for p in picks:
+        at = p["replay_at_stake"]
+        assert at["whole_lots"] and at["stake"] == pytest.approx(p["stake"], rel=1e-3)
+        assert at["divines"] == 0 and p["replayed_vs_divine_per_hour"] == pytest.approx(p["replayed_per_hour"])
+        assert p["replayed_per_hour"] == pytest.approx(at["return"] * at["stake"] / at["hours"], rel=0.01, abs=1e-4)
 
 
 def test_api_ladder(server):
@@ -95,13 +136,14 @@ def test_cli_ladder(archive_root, tmp_path, monkeypatch, capsys):
     assert "Hours to next" in out and "2 Divines (first Divine-market flips): " in out and "From 25 Chaos" in out and "not a promise" in out
 
 
-def test_cli_ladder_uses_the_gold_fees_you_recorded(archive_root, tmp_path, monkeypatch, capsys):
+def test_cli_ladder_uses_the_gold_fees_you_recorded(flat_root, tmp_path, monkeypatch, capsys):
     from conftest import ITEM
     from vaalstreet import cli
     from vaalstreet.ledger import Ledger
 
     root = tmp_path / "data"
-    shutil.copytree(archive_root, root, ignore=shutil.ignore_patterns("desk.sqlite*"))
+    # Flat Divine, so some plan beats holding Divines and the session has Gold to count.
+    shutil.copytree(flat_root, root, ignore=shutil.ignore_patterns("desk.sqlite*"))
     monkeypatch.setenv("VAAL_DATA_DIR", str(root))
     cli.main(["ladder", "--league", NEW, "--from", "25"])
     assert "Gold/hour" in (blind := capsys.readouterr().out)
