@@ -239,6 +239,25 @@ def _scorecard(args: argparse.Namespace) -> None:
                       ("last_mean", "Last print, mean", ".4f"), ("improvement", "Error cut", "+.0%"),
                       ("fair_median", "Fair, median", ".4f"), ("last_median", "Last, median", ".4f")])
         print()
+        if args.two_market:
+            _two_market_scorecard(con, league, args)
+
+
+def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
+    """Experiment: one value plus a Divine-market premium, against each market's own fair value."""
+    from vaalstreet import pricing
+    from vaalstreet.panel import CORE, LEGS, Panel
+
+    p = Panel.load(con, league, CORE + LEGS, min_value=args.min_value)
+    rows = pricing.market_scorecard(p["price"], p["value"], p["r_price"], p["r_price"] * p["r_volume"],
+                                    p["b_price"], p["b_price"] * p["b_volume"], horizon=args.horizon)
+    print(f"{league}: experiment - one value plus a Divine-market premium, predicting each market's next "
+          f"{args.horizon} hours (mean absolute log difference)")
+    _table(rows, [("market", "Market", ""), ("items", "Items that", ""), ("count", "Count", ""),
+                  ("two_market_mean", "One value", ".4f"), ("own_market_mean", "Own market", ".4f"),
+                  ("blended_mean", "Blended", ".4f"), ("last_mean", "Last print", ".4f"),
+                  ("improvement", "Error cut", "+.0%")])
+    print()
 
 
 def _sql(args: argparse.Namespace) -> None:
@@ -327,6 +346,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--league", action="append")
     p.add_argument("--horizon", type=int, default=6, help="hours ahead (default 6)")
     p.add_argument("--min-value", type=float, default=200000, help="skip items that traded less than this in total")
+    p.add_argument("--two-market", action="store_true",
+                   help="also try the experimental model: one value per item plus a Divine-market premium")
     p.set_defaults(run=_scorecard)
 
     p = commands.add_parser("sql", help="run a query against the views")
