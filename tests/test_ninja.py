@@ -162,6 +162,31 @@ def test_backs_off_on_429_and_honours_retry_after(tmp_path, fake):
     assert not c.item_overview("New", "UniqueWeapon").stale
 
 
+def test_a_rate_limit_on_one_list_holds_back_the_others(tmp_path, fake):
+    clock = Clock()
+    c = client(tmp_path, fake, clock)
+    meta = {"card": {"set": {"need": 4, "gives": 1, "reward": "Test Blade", "kind": "unique"}}}
+    c.leagues()
+    fake.fail = [(429, "600")]
+    summary = ninja.refresh(c, "New", meta)
+    assert summary["errors"] == ["UniqueWeapon: HTTP 429"]
+    assert sum("type=" in p for p, _ in fake.requests) == 1, "no other list is asked for during the wait"
+    clock.now += 300
+    ninja.refresh(c, "New", meta)
+    assert sum("type=" in p for p, _ in fake.requests) == 1, "the pause covers every list"
+    clock.now += ninja.HOST_PAUSE
+    ninja.refresh(c, "New", meta)
+    # The other five lists now; the one that was refused keeps its own hourly interval.
+    assert sum("type=" in p for p, _ in fake.requests) == len(ninja.UNIQUE_TYPES)
+
+
+def test_cache_reads_do_not_wait_for_a_request_in_flight(tmp_path, fake):
+    c = client(tmp_path, fake, Clock())
+    c.item_overview("New", "UniqueWeapon")
+    with ninja._ONE_AT_A_TIME:  # as if the sync thread were mid-request
+        assert c.item_overview("New", "UniqueWeapon", refresh=False).body == UNIQUE_WEAPONS
+
+
 def test_unreachable_poe_ninja_leaves_the_last_answer_marked_stale(tmp_path, fake):
     clock = Clock()
     c = client(tmp_path, fake, clock)
@@ -221,8 +246,10 @@ def test_card_set_with_a_unique_reward_is_priced_from_poe_ninja(archive_root, tm
     assert asked == sorted(ninja.UNIQUE_TYPES), "only the categories the card rewards need"
     assert app.ninja_state["league_id"] == "New" and not app.ninja_state["errors"]
 
-    rows = app.api_arbitrage({"league": NEW})["conversions"]
-    row = next(r for r in rows if r["id"] == BLADE_CARD)
+    answer = app.api_arbitrage({"league": NEW})
+    assert all(r["id"] != BLADE_CARD for r in answer["conversions"]), "kept apart from exchange-priced sets"
+    row = next(r for r in answer["ninja_conversions"] if r["id"] == BLADE_CARD)
+    assert answer["ninja_credit"] == "prices from poe.ninja"
     assert row["reward"] == "Test Blade" and row["reward_id"] is None
     assert row["need"] == 4 and row["cost"] == pytest.approx(20, rel=0.01)
     assert row["proceeds"] == 30 and row["margin"] == pytest.approx(0.5, rel=0.02), "the six-link copy is not used"
@@ -236,7 +263,7 @@ def test_card_set_with_a_unique_reward_is_priced_from_poe_ninja(archive_root, tm
     assert BLADE_CARD not in {step["id"] for r in desk.loops() for step in r["path"]}
 
     app.ledger.set("ninja_prices", 0.0)
-    assert all(r["id"] != BLADE_CARD for r in app.api_arbitrage({"league": NEW})["conversions"])
+    assert app.api_arbitrage({"league": NEW})["ninja_conversions"] == []
     asked = len(fake.requests)
     app.refresh_ninja()
     assert len(fake.requests) == asked, "turned off means no requests"

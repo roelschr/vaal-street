@@ -388,14 +388,16 @@ class App:
         checks = self.ledger.recipe_checks()
         # Three swaps answer in well under a second on a full league; four can take several.
         swaps = max(1, min(int(q.get("swaps", 3)), 3))
-        conversions = desk.conversions(share=share, fixed=fixed, costs=costs) + self._outside(desk, share, costs)
-        conversions.sort(key=lambda row: -(row["profit_per_hour"] or 0))
+        conversions = desk.conversions(share=share, fixed=fixed, costs=costs)
+        # Kept apart: the page lists `conversions` as exchange prices, and these rewards are not.
+        outside = self._outside(desk, share, costs)
         loops = desk.loops(chaos_only=poor, share=share, swaps=swaps, fixed=fixed, costs=costs)[:80]
-        for row in conversions + loops:
+        for row in conversions + outside + loops:
             _flag(row, checks)
             if row.get("vendor_keys"):
                 row["vendor_checks"] = {k: _status(checks.get(k)) for k in row["vendor_keys"]}
-        return {"summary": desk.summary(), "conversions": conversions, "loops": loops, "chaos_only": poor,
+        return {"summary": desk.summary(), "conversions": conversions, "ninja_conversions": outside,
+                "ninja_credit": ninja.CREDIT, "loops": loops, "chaos_only": poor,
                 "settings": self.settings(), "swaps": swaps, "fixed": self._fixed(desk, fixed, checks)}
 
     @staticmethod

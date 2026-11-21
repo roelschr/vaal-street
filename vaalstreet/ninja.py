@@ -11,7 +11,8 @@ Rules we follow (https://poe.ninja/docs/api, read 2026-11-21):
   15 minutes), sent as a conditional request with the ETag we last saw, so an unchanged answer
   costs them a 304 and no body.
 - One request at a time with a pause between them, and back off on 429 and 5xx, honouring
-  `Retry-After`. A long wait is not slept out: the next try is simply not allowed before then.
+  `Retry-After`. A long wait is not slept out: no list is asked for again before then, so a
+  rate limit or an outage on one list stops the others too.
 - Every request carries the desk's User-Agent with the project's address (`archive.user_agent`).
 
 Their docs ask desktop apps to go through their own backend. The desk's local server is that
@@ -51,6 +52,8 @@ STALE_AFTER = 3 * 3600  # an answer older than this is marked stale even if the 
 DELAY = 2.0  # pause between two requests
 MAX_WAIT = 60.0  # longest back-off slept out; a longer Retry-After postpones the next try instead
 ATTEMPTS = 3
+HOST_PAUSE = 900  # after a failure without Retry-After, ask poe.ninja nothing for this long
+HOST = ("*", "")  # cache key holding the host-wide pause: a 429 on one list holds back every list
 
 CREDIT = "prices from poe.ninja"
 NOTE = "reward priced by poe.ninja (stash listings, not the exchange)"
@@ -94,6 +97,7 @@ class Ninja:
         self.clock, self.sleep = clock, sleep
         path = ninja_file(root)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._db_lock = threading.Lock()  # short; cache reads never wait on a request in flight
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._db:
@@ -122,10 +126,16 @@ class Ninja:
 
     # ---------------------------------------------------------------- cache
     def _row(self, endpoint: str, key: str) -> sqlite3.Row | None:
-        return self._db.execute("SELECT * FROM responses WHERE endpoint = ? AND params = ?", (endpoint, key)).fetchone()
+        with self._db_lock:
+            return self._db.execute("SELECT * FROM responses WHERE endpoint = ? AND params = ?", (endpoint, key)).fetchone()
+
+    def paused_until(self) -> int:
+        """When poe.ninja may be asked again after a failure (0: now)."""
+        row = self._row(*HOST)
+        return row["not_before"] if row else 0
 
     def _store(self, endpoint: str, key: str, **fields: Any) -> None:
-        with self._db:
+        with self._db_lock, self._db:
             self._db.execute("INSERT OR IGNORE INTO responses(endpoint, params, checked) VALUES (?, ?, 0)", (endpoint, key))
             sets = ", ".join(f"{name} = ?" for name in fields)
             self._db.execute(f"UPDATE responses SET {sets} WHERE endpoint = ? AND params = ?",
@@ -134,12 +144,15 @@ class Ninja:
     def get(self, endpoint: str, params: dict, *, refresh: bool = True) -> Cached:
         """The cached answer, refreshed first when `refresh` and the minimum interval has passed."""
         key = json.dumps(params, sort_keys=True)
-        with _ONE_AT_A_TIME:
-            row = self._row(endpoint, key)
-            now = self.clock()
-            if refresh and (row is None or (now - row["checked"] >= self.min_interval and now >= row["not_before"])):
-                self._fetch(endpoint, params, key, row)
+        row = self._row(endpoint, key)
+        if refresh:
+            with _ONE_AT_A_TIME:
                 row = self._row(endpoint, key)
+                now = self.clock()
+                due = row is None or (now - row["checked"] >= self.min_interval and now >= row["not_before"])
+                if due and now >= self.paused_until():
+                    self._fetch(endpoint, params, key, row)
+                    row = self._row(endpoint, key)
         if row is None:
             return Cached(None, None, True, None)
         body = json.loads(row["body"]) if row["body"] else None
@@ -177,17 +190,22 @@ class Ninja:
                 wait = retry_after(err.headers.get("Retry-After")) or min(self.max_wait, 5 * 2**attempt)
                 if wait > self.max_wait or attempt == self.attempts - 1:
                     self._store(endpoint, key, checked=now, not_before=int(now + wait), error=error)
+                    self._store(*HOST, checked=now, not_before=int(now + max(wait, HOST_PAUSE)), error=error)
                     return
                 self.sleep(wait)
             except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, OSError) as err:
                 error = f"no answer: {getattr(err, 'reason', err)}"
-                break  # an unreachable host is tried again next hour, not now
+                now = int(self.clock())
+                # An unreachable host is tried again later, and the other lists wait too.
+                self._store(*HOST, checked=now, not_before=now + HOST_PAUSE, error=error)
+                break
         self._store(endpoint, key, checked=int(self.clock()), error=error)
 
     def status(self) -> list[dict]:
         """Every cached answer: what, when it was fetched and asked for, and the last error."""
-        rows = self._db.execute("SELECT endpoint, params, fetched, checked, not_before, error, length(body) AS bytes "
-                                "FROM responses ORDER BY endpoint, params").fetchall()
+        with self._db_lock:
+            rows = self._db.execute("SELECT endpoint, params, fetched, checked, not_before, error, length(body) AS bytes "
+                                    "FROM responses WHERE endpoint <> ? ORDER BY endpoint, params", (HOST[0],)).fetchall()
         return [dict(r) | {"params": json.loads(r["params"])} for r in rows]
 
 
@@ -205,15 +223,22 @@ def needed_types(meta: dict[str, dict]) -> list[str]:
 
 def refresh(client: Ninja, league: str, meta: dict[str, dict]) -> dict:
     """Bring the categories the desk needs up to date (each at most hourly). Returns a summary."""
+    types = needed_types(meta)
+    if not types:
+        return {"league": league, "league_id": None, "types": [], "errors": []}
     league_id = client.league_id(league)
     if league_id is None:
-        return {"league": league, "league_id": None, "types": [], "errors": [f"poe.ninja lists no league called {league}"]}
+        listed = client.leagues(refresh=False)
+        why = (f"could not read poe.ninja's league list: {listed.error}" if listed.body is None or listed.error
+               else f"poe.ninja lists no league called {league}")
+        return {"league": league, "league_id": None, "types": [], "errors": [why]}
     errors = []
-    types = needed_types(meta)
     for kind in types:
         got = client.item_overview(league_id, kind)
         if got.error:
             errors.append(f"{kind}: {got.error}")
+            if client.paused_until() > client.clock():
+                break  # poe.ninja asked us to wait, or is down: leave the other lists for later
     return {"league": league, "league_id": league_id, "types": types, "errors": errors}
 
 
@@ -260,6 +285,7 @@ def _pick(reward: dict, found: list[tuple[dict, Cached]]) -> dict | None:
 
     corrupted = bool(reward.get("corrupted"))
     if reward["kind"] == "unique":
+        narrow(lambda line: line.get("itemClass") != 9, "only foil listings")  # foil (relic) copies cost far more
         narrow(lambda line: not line.get("links"), "no unlinked listing")
         narrow(lambda line: bool(line.get("corrupted")) == corrupted,
                "no corrupted listing" if corrupted else "no uncorrupted listing")

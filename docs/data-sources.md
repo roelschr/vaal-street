@@ -68,13 +68,13 @@ What their docs allow:
 How the desk uses it (`vaalstreet/ninja.py`):
 - Only the economy endpoints above, and in practice only the stash item overview lists that the card rewards need (the six unique lists, `SkillGem`, `BaseType`) plus the leagues list. The client can read the exchange and stash currency overviews too, but the desk does not ask for them today.
 - At most one request per list per hour (`MIN_INTERVAL`), counted from every attempt, success or failure, and kept on disk, so restarts and an unreachable poe.ninja do not cause extra requests. Every repeat request is conditional (`If-None-Match` with the last ETag); a 304 keeps the cached body.
-- One request at a time, with a two-second pause between requests. On 429 or 5xx it backs off, honouring `Retry-After`; a wait longer than a minute is not slept out, and the list is simply not asked for again before then. Other 4xx answers and network errors are not retried until the next hour.
+- One request at a time, with a two-second pause between requests. On 429 or 5xx it backs off, honouring `Retry-After`; a wait longer than a minute is not slept out. After a refusal or an outage the desk pauses every list, for the `Retry-After` time or at least 15 minutes, so a rate limit on one list does not lead to requests for the others. Other 4xx answers are not retried until the next hour.
 - User-Agent: `vaal-street/2.0 (+https://github.com/roelschr/vaal-street)`, the same string as every other request the desk makes, overridable with `POE_USER_AGENT`.
 - The league id comes from poe.ninja's leagues list, matched to our league name. If there is no match, the desk asks for no prices and shows none; it never falls back to their first entry.
 - If poe.ninja cannot be reached, the last answer is used and marked stale. Answers live in `ninja.sqlite` in the data directory, which can be deleted at any time.
 - Credit: every row priced this way carries "prices from poe.ninja" and "reward priced by poe.ninja (stash listings, not the exchange)", with the listing count and the age of the price. The README's license and credits section names poe.ninja.
-- Not replicating the site: the desk shows a price only next to the card set it values, never a poe.ninja price list.
-- It can be turned off with the `ninja_prices` setting (0 is off). It is on by default, as the owner decided.
+- Not replicating the site: the desk shows a price only next to the card set it values, never a poe.ninja price list. The arbitrage API returns these rows as `ninja_conversions`, apart from the exchange-priced `conversions`.
+- It can be turned off with `python -m vaalstreet ninja off` (the `ninja_prices` setting). It is on by default, as the owner decided.
 
 The proxy note, honestly: the desk's own local server acts as the backend their docs ask for. It caches responses, sets the User-Agent and controls the volume, and its API handlers read only the cache. But the desk runs on each player's machine, so **each install still calls poe.ninja itself**, at most once an hour per list (about nine conditional requests an hour while the desk runs), not through one shared server. The owner accepted this. If poe.ninja objects, the setting turns it off, and a shared backend would be the next step.
 

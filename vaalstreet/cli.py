@@ -363,6 +363,11 @@ def _ninja(args: argparse.Namespace) -> None:
     from vaalstreet.ledger import Ledger
 
     root = data_dir()
+    if args.action in ("on", "off"):
+        Ledger(root).set("ninja_prices", 1.0 if args.action == "on" else 0.0)
+        print("poe.ninja prices are " + ("on: the desk asks for them at most hourly." if args.action == "on"
+                                         else "off: the desk sends poe.ninja no requests."))
+        return
     client = ninja.Ninja(root, os.environ.get("NINJA_BASE_URL", ninja.DEFAULT_BASE_URL))
     if args.action == "refresh":
         if not Ledger(root).settings().get("ninja_prices"):
@@ -371,7 +376,7 @@ def _ninja(args: argparse.Namespace) -> None:
         league = _league(con, args)
         summary = ninja.refresh(client, league, items.load(root, "poe1"))
         if summary["league_id"] is None:
-            sys.exit(summary["errors"][0])
+            sys.exit(summary["errors"][0] if summary["errors"] else "No card reward needs poe.ninja.")
         print(f"{league}: checked {', '.join(summary['types']) or 'nothing (no card rewards need it)'} "
               f"- prices from poe.ninja. Each list is asked for at most once an hour.")
         for error in summary["errors"]:
@@ -738,9 +743,9 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(run=_status)
 
     p = commands.add_parser("ninja", help="prices from poe.ninja for card rewards the exchange does not trade")
-    p.add_argument("action", choices=("refresh", "status"),
+    p.add_argument("action", choices=("refresh", "status", "on", "off"),
                    help="refresh: ask poe.ninja for what the card rewards need (at most hourly); "
-                        "status: what is cached and how old it is")
+                        "status: what is cached and how old it is; on/off: allow or stop poe.ninja requests")
     p.add_argument("--league")
     p.set_defaults(run=_ninja)
 
