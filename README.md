@@ -1,133 +1,168 @@
 # Vaal Street
 
-A single-player, local-first trading terminal for Path of Exile 1 and 2. The browser is the desk; a loopback Node server owns the market database, calculations, feeds, and alert rules. No account or cloud service is required to start.
+A local trading desk for the Path of Exile Currency Exchange. It mirrors the exchange's public hourly history, turns it into prices you can trust, and answers the questions a trader actually has: what is this worth, what can I flip right now, what converts into something dearer, what did this item do at this point of past leagues, and would my strategy have made money.
 
-## Research layer (Python)
+Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export and item icons. No account, no tokens, no in-game automation.
 
-`vaalstreet/` mirrors GGG's full public Currency Exchange history and exposes it as DuckDB views for backtesting and league-start studies. It is independent of the Node terminal below.
+PoE 1 is the focus. The data layer also mirrors PoE 2, but the desk and models are built and tested against PoE 1.
 
-```sh
-pip install -e .[dev]
-python -m vaalstreet archive   # every published hour since July 2024, both games; resumable
-python -m vaalstreet items     # readable item names
-python -m vaalstreet ingest    # raw hours -> Parquet
-python -m vaalstreet price "Divine Orb" --league Covens
-```
+## Quick start
 
-Views: `markets` (as published), `legs`, `prices` (Chaos in PoE 1, Exalted in PoE 2, with hourly low/high band and volume), `leagues`, and `league_prices` (adds day-of-league). Use `python -m vaalstreet sql "..."` or `from vaalstreet import connect`. Run `pytest` for the tests.
-
-## Terminal (Node)
-
-### Run
-
-Requires **Node.js 22.13+** with built-in `node:sqlite`. There are no npm dependencies, package installation, or build step.
+Requires Python 3.10+.
 
 ```sh
-npm start
+pip install -e .
+python -m vaalstreet serve
 ```
 
-Open **http://localhost:3000**. On Windows, `npm.cmd start` or `node server.js` works even when PowerShell blocks npm's script shim. `npm run dev` restarts the server after backend changes.
+Open **http://localhost:3000**. On first launch the desk downloads the last two weeks of exchange hours (a couple of minutes) and then keeps itself current, one new hour every hour.
 
-The first launch creates `data/terminal.sqlite` and opens a personal **PoE 1 Standard** ledger with no transactions, balances, or holdings recorded. Select your game and league before recording entries. The terminal remembers your last personal workspace. Public exchange sync brings in market prices; it does not populate your ledger.
+To compare leagues you need more history. Either press **Download full history** on the League start page, or run:
 
-To try a funded example, choose **Data sources → Open demo**. This loads separate synthetic replay workspaces with example trades and balances. **Return to personal desk** switches back; visiting a demo does not change your startup workspace.
+```sh
+python -m vaalstreet sync --all      # every hour since July 2024, newest first, resumable (~1.5 GB)
+```
 
-### Start using your own data
+## The desk
 
-1. In **Data sources**, choose **Sync both games**. Open a league marked **Exchange feed**. Enable **Auto-sync** to continue following both realms while the server runs. Without a feed, **New workspace** starts an empty personal ledger instead.
-2. In **Portfolio → Record entry**, deposit your available Chaos and Gold. Add existing items as **Opening inventory** with their known unit cost basis. Record purchases and sales as you execute them.
-3. In **Arbitrage scanner → Record listing**, enter the whole-unit exchange ratio, confirmed lot count, and actual Gold per lot. Or import a complete snapshot. Hourly settlements do **not** create executable inventory.
-4. Click a profitable loop for its leg-by-leg worksheet. In **Signal center**, set a price or net-return target. Press **H** for Hideout mode; its pop-out control opens document picture-in-picture where supported or a separate compact window. **Ctrl/Cmd K** searches pages and assets.
-
-## What the desk computes
-
-| Desk | Behavior |
+| Page | What it answers |
 | --- | --- |
-| Market explorer | Candles or lines, traded volume, four time ranges, crosshairs, searchable and pinnable instruments, cumulative bid/ask depth after Gold costs. |
-| Market integrity | Rejects offline, unconfirmed, expired, future-dated, unreferenced, and out-of-band listings. A recent direct settled pair takes precedence over cross-valued marks. Exclusions remain inspectable. |
-| League lifecycle | Matches the current league day against earlier leagues in the same game. A 7-day scenario applies the median matched forward change to the current price. Requires known league starts and sufficient history; demo and real observations never mix. |
-| Arbitrage | Searches simple 2–6-leg cycles from Chaos, sizes them against actual ledger cash, Gold, and per-leg depth, floors each leg to whole lots, and ranks positive net returns. Reports residual units, gross/net proceeds, return on capital, and net Chaos per million Gold. |
-| Crafting | Compares settling against a reroll with success/fallback prices, material cost, sale probability, and time. Can populate inputs from market marks and imported build-specific sell-through cohorts. Whole-batch evaluation supports card sets, vendor transformations, and bulk spreads. |
-| Replay | Mean reversion, momentum, buy-and-hold, and multi-asset relative strength. Configurable signal lag, participation, size impact, slippage, decay, and Gold burn. Includes equity, realized P&L, turnover, drawdown, Sharpe/Sortino equivalents, capital lockup, partial fills, and execution details. |
-| Portfolio | Separate cash and Gold balances; FIFO or weighted-average cost with exact residual allocation; realized, unrealized, and session P&L; marked allocation by asset class. Idle positions receive a progressive markdown and a whole-unit hedge suggestion when an appreciating, affordable candidate exists. |
-| Signals | Durable threshold rules rearm on exit. Server-sent events deliver changes to open terminals. Visual alerts work locally; desktop notifications require browser permission. An optional webhook works with the server running and the browser closed. |
+| **Desk** | The hour at a glance: Divine price, best flips, sets worth completing, movers, your watchlist, fired alerts. |
+| **Markets** | Every traded item: fair value, 24h/7d change, what the Chaos market and the Divine market each pay, the gap between them, traded value, resting bids against resting offers. Click an item for its chart, flip plans, set recipes and the same league day in past leagues. |
+| **Flips** | Ranked maker plans with the exact whole-number orders to post, margin, how often the levels are reached, expected units and profit per hour, capital needed and how crowded each side's queue is. |
+| **Arbitrage** | Conversions — divination card sets, shards and splinters that combine, three-for-one vendor upgrades of essences and oils (chained across tiers) — against what they produce, and round trips of one or two swaps through item-for-item markets. |
+| **League start** | The Divine price by league day across leagues, a playbook of what rose and fell over the next 3/7/14/30 days from today's league day, and what is cheap or dear compared with the same day of past leagues. |
+| **Backtest lab** | Replay a strategy over any league and compare it with simply holding Divines. |
+| **Ledger** | Record your trades; positions are marked at fair value with realised and unrealised profit. |
 
-Personal workspaces have separate balances for every **game + league + source**. A stash observation is a valuation, not a fabricated purchase or sale. In **Portfolio → Stash**, unpriced assets remain visible and are omitted from the priced subtotal.
+**Hideout mode** (press `H`) opens a small always-on-top window with the top flips, your watchlist and alerts, so it can sit over the game. Prices can be shown in Chaos or Divine anywhere. `/` jumps to search.
 
-## Data sources and persistence
+## How the numbers are made
 
-- **Public hourly exchange:** Uses GGG's documented `web.poecdn.com/api/currency-exchange` endpoints for PC and `poe2`. A new installation starts from the most recently completed hour. A persisted cursor catches up after downtime. Hitting the tip waits for the next hourly boundary; failures retry with backoff and respect `Retry-After`.
-- **Prices:** Each available direct Chaos mark is an hourly volume ratio. For assets without a direct market, valuation uses up to three same-hour settled links, preferring shorter paths and deeper bridges. Stock-only rows are archived but never create prices or depth. For exchange data, a displayed candle aggregates hourly **marks**, not individual trade ticks; chart volume refers to the chosen valuation leg.
-- **Reading the chart:** Expand the source label below **Price terminal** to see the workspace's source, stored UTC window, and number of hourly observations in the selected range. A fresh sync can contain just one hour. Short histories use smaller candle intervals; missing intervals remain gaps. Market history is independent of your ledger and can be loaded using the backfill command below.
-- **Listings:** Manual observations and normalized file imports work for both games. An optional PoE 1 public-stash connector reads changed and withdrawn tabs, parses supported currency price notes, and replaces their prior offers transactionally. Public observations are delayed and initially **unconfirmed**. Review availability, ratio, depth, and Gold in the scanner before using them. The public adapter recognizes catalogued currencies/cards; normalized imports also support new assets and league mechanics.
-- **Inventory:** Import a full normalized stash snapshot, or configure the official PoE 1 account-stash reader for selected tabs. The public API does not provide equivalent PoE 2 account stash access.
-- **Durability:** SQLite WAL, `synchronous=FULL`, foreign keys, unique observation IDs, and atomic batch commits. Exchange data, compressed raw digest, and cursor commit together. Invalid imports roll back the entire batch. File imports are content-deduplicated, and ledger submissions accept idempotency IDs.
+**The data.** For every market (pair of items), league and hour, the exchange publishes the volume traded on each side, the lowest and highest executed ratio, and the lowest and highest stock on offer. There is no order book and no individual trades. An item usually has two markets that matter: against Chaos and against Divine.
 
-**Backups:** Use **Data sources → Download database backup** for a consistent SQLite snapshot, including committed WAL data. To restore, stop the app, place the backup in a **new directory** named as `terminal.sqlite`, and launch with `VAAL_DATA_DIR` pointing to that directory. Pins, display preferences, and selected workspace are browser-local.
+**Prices.** The hourly price of a market is its volume-weighted average (Chaos paid ÷ items received). Divine-market prices are converted at that same hour's Divine price. The two markets of an item are kept apart, because they are not the same price: the Divine market is typically several percent dearer. The published lowest/highest ratios are not used to set levels — single-unit rounding and joke trades (a Divine for one Chaos) pollute them in most hours.
 
-### Optional configuration
+**Fair value.** A local-level Kalman filter on log price per item. The item's own returns are split into real movement and bounce (negative lag-one autocovariance), hours that traded more value count for more, and prints far outside the forecast are down-weighted. Parameters are re-fitted on trailing data only, so the series is causal: the value shown for an hour used nothing from after it.
 
-Set environment variables before starting the server. Tokens stay server-side.
+You can check the model on any league: `python -m vaalstreet scorecard --league Mirage` compares fair value with the latest print as a predictor of where the item trades over the following six hours.
 
-| Variable | Purpose |
-| --- | --- |
-| `PORT`, `VAAL_DATA_DIR` | Port (default `3000`) and SQLite directory (default `./data`). Server binds to `127.0.0.1` only. |
-| `VAAL_IMPORT_DIR` | Existing folder watched for normalized `.json` files. Write a temporary file, then rename to `.json` when complete. Processing errors appear in Data sources. |
-| `POE_USER_AGENT` | Your application's identification/contact string for outbound GGG requests. |
-| `POE_LEAGUES_TOKEN` | Optional `service:leagues` bearer token. Discovers main/event leagues, including quiet ones, and their start dates during feed sync. Without it, leagues are discovered from the hourly exchange. |
-| `POE_PUBLIC_STASH_TOKEN` | Optional `service:psapi` bearer token. Enables **Public listing stream** controls for PoE 1. |
-| `POE_STASH_TOKEN`, `POE_STASH_TABS` | `account:stashes` bearer token and comma-separated selected tab IDs, optionally `tab/subtab`. Enables manual stash reads in a personal PoE 1 workspace. |
-| `POE_STASH_AUTO_WORLD` | Optional workspace ID for automatic selected-tab valuation every 15 minutes. |
-| `VAAL_WEBHOOK_URL` | Optional webhook receiving `{content,event}` on non-demo rule crossings and newly opened routes. A failed webhook is logged; the local signal remains available. |
+**Flip plans.** For each item and pair of markets, the desk looks at where each market's *hourly average* has traded relative to fair value over the last two days. A plan buys at the level below which a given share of the buy market's volume traded, and sells at the level above which the same share of the sell market's volume traded — levels real volume went through, weighted so that an hour in which three units changed hands at a silly ratio cannot set them, and never more than about 1.5× from fair value. Three kinds: within the Chaos market, within the Divine market, and **Chaos → Divine**, which buys from players dumping loot for Chaos and sells to players paying Divines. The patience level with the highest expected profit is kept. Orders are given as whole-number ratios the exchange accepts. Each plan also shows its own last week: the same rule replayed through the backtest simulator on a fixed stake. Enter your bankroll and the page assembles a session plan from the plans that sold and made money that week, at most a quarter of the bankroll per item.
 
-GGG access is **GET-only**. The desk does not send whispers, orders, input events, or in-game actions. OAuth credentials, if used, must have the applicable access; the app does not acquire or refresh tokens for you. See the [official API reference](https://www.pathofexile.com/developer/docs/reference).
+**Conversions.** Read from the game data: a divination card's stack size and reward; shards and splinters that combine into their item at a full stack; and essences and oils, where three of one tier sell to a vendor for one of the next (tiers come from the item IDs). Chains are followed up to three steps — nine of one tier for one of the tier two above. Each is compared with its result at fair value, and again "in a hurry" (buy the inputs in the dearer market, sell the result in the cheaper one). Try a recipe once in game before buying in bulk.
 
-## Import and historical replay
+**Round trips.** Some items trade directly for each other in small side markets. The desk walks every path of one or two swaps — buy A, swap for B (then C), sell — at the rates those markets typically traded at over the last day. They are thin, so each path also shows what went through its thinnest swap in a day and the value of orders resting there in the latest hour — whether the swap can be taken now or needs an order of your own.
 
-**Data sources → Download example** creates an importable practice file with recent timestamps, bars, quotes, a demand cohort, and a stash. See [FORMAT.md](FORMAT.md) for the wire format. Workspace IDs are available at `/api/worlds`.
+**Small bankrolls.** The exchange trades whole lots: "64 decks for 1 Divine" cannot be sold by someone holding ten decks. Enter your bankroll and every flip is re-cut to whole-number orders that purse can post, its margin recomputed from the prices those orders really state; plans that cannot be run are dropped, and below the price of one Divine everything stays in the Chaos markets. The Arbitrage page filters to conversions and round trips the bankroll can start.
 
-Replay any imported date range from the CLI. `--from` and `--to` accept ISO-8601 or Unix seconds. Output is JSON, one result per league.
+**League start.** Leagues are aligned on days since their first trade. The playbook takes every item on today's league day in each past league and measures its move over the chosen horizon, in Divine by default (Chaos loses value through a league, so Chaos returns flatter everything). Every row shows the per-league outcomes and how many leagues it rests on. A league whose start is not on disk is left out rather than misaligned.
 
-```sh
-npm run replay -- --world demo-1 --asset divine --days 90 --strategy momentum
-npm run replay -- --world demo-1 --asset divine --module examples/rotation.js
-npm run replay -- --worlds demo-1,demo-2 --assets divine,exalted --module examples/equal-weight.js
-```
+**Backtests.** One league is replayed hour by hour. Orders posted at hour *t* meet hour *t+1*.
 
-`--asset` supplies a single-instrument callback with completed prices, the bankroll, and `previousClose(n)`; return an invested/cash target. `--assets` supplies all observed instruments and accepts **arbitrary whole-unit target allocations** under a shared bankroll. Each league gets its own cash, Gold, and strategy-module instance. Decisions execute only on later available opens. Local modules are trusted JavaScript explicitly selected on the CLI, never evaluated from browser input or imported data.
+- A resting order fills at its limit only in an hour whose average price traded through it, and never at a better price.
+- A market order pays the hour's average plus slippage (default 3%).
+- A fill takes at most a set share of that hour's volume (default 10%).
+- No leverage and no shorting. Sizing is on a fixed bankroll unless you ask to compound.
+- `attention` is how many hours pass between your visits; orders stand in between.
 
-To backfill published historical exchange hours:
+### What the model cannot see
+
+Read flip and backtest figures as a ceiling, not a forecast.
+
+- **Gold.** Every order costs Gold, and the fee schedule is not published. It is not modelled. Gold is often the real limit on how much you can flip.
+- **Queue position.** Orders at the same ratio fill in time order. The desk shows how many hours of volume already rest on each side, but cannot know where you would stand.
+- **Hourly granularity.** A level is counted as reached only when the whole hour's average traded through it, which is conservative; the path inside the hour is unknown.
+- **Small samples.** There have only been a handful of leagues since the exchange launched. League-start patterns are precedents, not odds.
+
+Check the in-game order book before committing size.
+
+## Command line
+
+Everything the desk shows is also available from the shell.
 
 ```sh
-npm run backfill -- --game 1 --from 2026-10-01T00:00:00Z --to 2026-10-07T23:00:00Z --limit 24
+python -m vaalstreet status                      # leagues and coverage
+python -m vaalstreet price "Divine Orb"          # latest hourly prices, both markets
+python -m vaalstreet flips --kind cross          # maker plans for the live league
+python -m vaalstreet arb                         # sets against their rewards
+python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
+python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
+python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
+python -m vaalstreet sql "SELECT league, kind, hours FROM leagues ORDER BY first_hour"
 ```
 
-This is paced at 12 seconds between requests. The same range resumes from its saved checkpoint without rewinding the live cursor. Historical coverage depends on what GGG retains; there is no bundled multi-year archive.
+`--league` defaults to the live challenge league. Run any command with `-h` for its options.
 
-## Units, execution assumptions, and measured limits
+### Your own strategy
 
-- Money uses integer **micro-Chaos** (`1 c = 1,000,000`), units and Gold use `BigInt`, and ratios are compared by integer cross multiplication. Basis allocation retains rounding residuals until the final unit is sold. Floating-point numbers are used for display coordinates and timing, not monetary settlement.
-- Gold is a separate constrained resource. The scanner uses the **observed fee per lot**. Its Chaos opportunity cost is configurable under workspace settings (default `12 c / 1M Gold`). Ledger entries preserve the valuation in effect when recorded.
-- A route's net return is returned Chaos less starting Chaos and the valued Gold burn. Intermediate dust is reported but not counted as realized profit. The solver tests sizes around the maximum feasible whole-lot fill; it does not assert a globally optimal allocation across competing routes. Each worksheet is independently funded, and multiple displayed routes may compete for the same liquidity.
-- The graph has a 30,000-edge expansion budget and explicitly reports truncated searches. Screening is explainable evidence filtering, not proof of seller intent or a measured near-zero false-positive rate.
-- Bar replay models execution instead of reconstructing an unavailable historical order book. Participation limits use the preceding observed volume. Drawdown is marked to market; open positions are not force-sold at the end. Sharpe and Sortino are unannualized per-observation ratios with zero risk-free rate. Missing variance or zero Gold burn yields an undefined ratio rather than infinity.
+A strategy is a class with `step(ctx)`. It sees only what was published up to the current hour.
 
-Run `npm test` and `npm run bench`. The tests cover allocation conservation, stack floors, cash/Gold/depth limits, no-lookahead fills, multi-asset funding, cursor and import rollback, stash withdrawal, alert rearming, backup restoration, and recovery from an interrupted SQLite writer.
+```python
+# examples/cheap_vs_divine.py (shortened)
+import numpy as np
 
-Representative local run on Windows x64, Node 26.13.1:
+class CheapVsDivine:
+    """Buy liquid items under fair value in the Chaos market, offer them 8% up in the Divine market."""
 
-| Workload | p95 |
-| --- | ---: |
-| Sample scanner including SQLite reads and quote screening | 0.65 ms |
-| 128 assets + Chaos, 629 quotes, four legs, 49 profitable cycles, complete search | 2.40 ms |
-| 90-day hourly replay, including 2,160 SQLite bars | 4.97 ms |
-| Parse, normalize, compress, and durably commit a 4,000-pair digest | 96.55 ms |
+    def step(self, ctx):
+        if ctx.t < 48:
+            return
+        traded = np.nansum(ctx.history("value", 48), axis=0)
+        liquid = traded >= np.sort(traded)[-30]
+        fair = ctx.fair
+        units = np.where(liquid, 0.03 * ctx.bankroll / fair, 0.0)
+        ctx.quote_buys("r", np.where(liquid, fair * 0.96, np.nan), units)       # "r" = Chaos market
+        ctx.quote_sells("b", ctx.average_cost * 1.08, ctx.position)             # "b" = Divine market
+```
 
-These are measured local workloads, not publication-to-client latency guarantees. Network delays, upstream publication cadence, rate limits, storage failures, and denser graphs have different bounds.
+```sh
+python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --league Allflame
+python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --params '{"markup": 0.12}'
+```
 
-## Project map
+`ctx` offers `fair`, `z` (how surprising this hour's print was), `history(column, hours)`, `swing(leg, reach)`, `position`, `average_cost`, `cash`, `bankroll`, and `quote_buys` / `quote_sells` / `buy` / `sell`. Built-in strategies (`hold`, `swing`, `reversion`, `momentum`) are in `vaalstreet/backtest.py` and are short enough to read as examples.
 
-`server.js` serves the local API, assets, and SSE. `src/store.js` owns storage and portfolio queries; `src/engine.js` and `src/basket.js` implement financial math and simulation. `src/feed.js` and `src/listings.js` contain read-only adapters. `public/` contains the offline-capable UI, bundled fonts, and icons. `examples/`, `scripts/`, and `test/` contain strategies, import/replay utilities, and verification.
+### In a notebook
+
+```python
+from vaalstreet import connect
+from vaalstreet.panel import Panel
+from vaalstreet import pricing
+
+con = connect()                                   # DuckDB views over the Parquet archive
+con.sql("SELECT * FROM league_prices WHERE name = 'Divine Orb' AND league = 'Mirage' LIMIT 5")
+
+panel = Panel.load(con, "Mirage", ("price", "value"))   # dense hour x item arrays
+fair = pricing.fair_value(panel["price"], panel["value"])
+```
+
+Views: `markets` (as published), `legs` (each market from both sides), `prices` (per item, league and hour, with both markets), `leagues`, `items`, `league_prices` (prices plus names and league day).
+
+## Files
+
+All data lives under `data/` in the checkout (`~/.vaalstreet` if installed as a package; override with `VAAL_DATA_DIR`).
+
+```
+data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as served
+data/parquet/markets|prices/...            derived, rebuilt from raw at any time
+data/items/poe1.json                       item names, categories, set recipes
+data/icons/                                item icons, cached on first view
+data/desk.sqlite                           your ledger, watchlist, alerts — the only file worth backing up
+```
+
+To move the archive to another machine without downloading it again, `python -m vaalstreet snapshot <folder>` packs the indexed history into 9 MB parts, and `python -m vaalstreet restore <folder>` rebuilds it from them.
+
+Other settings: `PORT` (default 3000) and `POE_USER_AGENT` (the identification string sent with exchange requests). The server binds to `127.0.0.1` and refuses requests from other sites.
+
+```
+vaalstreet/archive.py   download         vaalstreet/desk.py      market table, flips, arbitrage
+vaalstreet/ingest.py    raw -> Parquet   vaalstreet/leagues.py   league-start analytics
+vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and strategies
+vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, watchlist, alerts
+vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
+```
+
+Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.
 
 ## License and credits
 
@@ -135,5 +170,7 @@ This product isn't affiliated with or endorsed by Grinding Gear Games in any way
 
 The code is released under the [MIT License](LICENSE). That license does not cover the following, which stay with their owners:
 
-- Path of Exile, its item names, and the item icons in `public/items/` are the property of Grinding Gear Games. They are included only to label items in this free, non-commercial tool and are not licensed for reuse.
-- Geist and Geist Mono are distributed under the font licenses in `public/fonts/`.
+- Path of Exile, its item names and item icons are the property of Grinding Gear Games. Icons are fetched from GGG's CDN at run time to label items in this free, non-commercial tool; none are distributed with it.
+- Exchange history comes from GGG's documented [Currency Exchange API](https://www.pathofexile.com/developer/docs/reference).
+- Item metadata comes from the community [RePoE](https://repoe-fork.github.io/) export of the game's data files.
+- Geist and Geist Mono are distributed under the font licenses in `vaalstreet/web/fonts/`.
