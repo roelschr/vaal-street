@@ -21,6 +21,8 @@ H0 = FIRST_HOUR["poe1"]
 ITEM = "Metadata/Items/Currency/CurrencyTestOrb"
 CARD = "Metadata/Items/DivinationCards/DivinationCardTestCard"
 OTHER = "Metadata/Items/Currency/CurrencyTestShard"
+EMBER = "Metadata/Items/Currency/CurrencyTestEmber"
+EMBER_PREMIUM = 0.95  # unlike the orb, the ember's Divine market is 5% cheaper than its Chaos market
 OLD, NEW = "Old", "New"
 OLD_HOURS, NEW_START, NEW_HOURS = 20 * 24, 30 * 24, 8 * 24
 PREMIUM = 1.10  # the Divine market pays 10% more than the Chaos market
@@ -64,6 +66,10 @@ def digest(hour: int) -> dict:
             market(league, CARD, CHAOS, 600, 900),  # 1.5 Chaos each; five make one test orb
             market(league, ITEM, OTHER, 100, 300),  # side market: 3 shards per orb
             market(league, OTHER, CHAOS, 3000, 6000),  # ...but a shard is worth 2 Chaos
+            # 4 Chaos each, 5% cheaper through Divines. Selling an orb for Divines (10% dear) and buying
+            # embers with them (5% cheap) is a round trip through Divine: 1.10 / 0.95 - 1 = 15.8%.
+            market(league, EMBER, CHAOS, 2000, 8000),
+            market(league, EMBER, DIVINE, 20000, round(20000 * 4 * EMBER_PREMIUM / div)),
             market("Dead (PL1)", ITEM, CHAOS, 0, 0),
         ]
     return {"next_change_id": hour + HOUR, "markets": markets}
@@ -89,6 +95,7 @@ def archive_root(tmp_path_factory):
         DIVINE: {"name": "Divine Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         ITEM: {"name": "Test Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         OTHER: {"name": "Test Shard", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
+        EMBER: {"name": "Test Ember", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         CARD: {"name": "Test Card", "item_class": "DivinationCard", "tags": ["divination_card"],
                "properties": {"stack_size": 5, "description": "<currencyitem>{Test Orb}"}},
     })
