@@ -2,7 +2,7 @@
 
 A local trading desk for the Path of Exile Currency Exchange. It mirrors the exchange's public hourly history, turns it into prices you can trust, and answers the questions a trader actually has: what is this worth, what can I flip right now, what converts into something dearer, what did this item do at this point of past leagues, and would my strategy have made money.
 
-Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export and item icons. No account, no tokens, no in-game automation.
+Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export and item icons. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game.
 
 PoE 1 is the focus. The data layer also mirrors PoE 2, but the desk and models are built and tested against PoE 1.
 
@@ -130,6 +130,7 @@ python -m vaalstreet flips --kind cross          # maker plans for the live leag
 python -m vaalstreet fills                       # how fast your tracked orders filled, against what plans assume
 python -m vaalstreet check "Orb of Alteration" --market divine --side buy --ratio "64 items = 1 divine" --stock 300
                                                  # go / no-go for an offer in the order window (items first)
+python -m vaalstreet screen                      # on Windows: press a key to read an offer off the exchange window (optional)
 python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone lists it, stash --ledger values your positions
 python -m vaalstreet arb --swaps 3               # sets against their rewards, and round trips
 python -m vaalstreet recipe add --give "5 Some Card" --get "1 Some Orb"   # a recipe of your own
@@ -202,6 +203,33 @@ fair = pricing.fair_value(panel["price"], panel["value"])
 
 Views: `markets` (as published), `legs` (each market from both sides), `prices` (per item, league and hour, with both markets), `leagues`, `items`, `league_prices` (prices plus names and league day).
 
+## Screen check (optional)
+
+Instead of typing an offer into `check`, you can press a key while the Currency Exchange window is open. A small companion program takes one screenshot, reads the item, the ratio and the stock off it, and asks the desk for its go / caution / no-go verdict. The verdict appears in the companion's console and as a desk event, so the hideout window shows it and, if you turned that on, reads it aloud ("Go: Orb of Alteration at 0.6, 5% under the market").
+
+**GGG's rule, in plain words.** A tool may read the screen only once each time you press a key, and you must know what it reads. So the companion takes exactly one screenshot per press, never on a timer, and ignores presses while it is still busy. It sends nothing to the game: no keys, clicks, chat or mouse moves. It never reads game memory or game files. The screenshot stays in memory and is thrown away after the check; nothing is saved to disk. Every verdict starts with what was read ("Read: buy 64 Orb of Alteration for 1 Divine"), so check that line: a misread digit gives a confident wrong answer.
+
+**What it reads.** The rectangle you set (or your whole main screen), looking for the exchange window's "I Want" and "I Have" items, the "Market Ratio" row (want : have) and the "Stock" number. If it is not sure of a part, it says so and asks you to press again or type the offer with `check`, rather than guessing. The window layout was modelled from a description and has not been tested against the live game yet; if your window reads differently, the companion will say it cannot find those labels.
+
+**Install on Windows.** The companion must run under Windows Python, next to the game: a Python inside WSL can neither see the Windows screen nor hear Windows key presses. Use Python 3.10 to 3.12 (the text-recognition library has no build for 3.13 yet). The package is not on PyPI, so install it from a copy of this repository on the Windows side (clone it there, or copy the WSL checkout). In PowerShell or cmd, inside that folder:
+
+```
+py -3.12 -m venv .venv-screen
+.venv-screen\Scripts\activate
+pip install -e ".[screen]"
+```
+
+This installs the desk's three libraries plus `mss` (screen capture), `pynput` (the hotkey; it works without administrator rights, unlike the `keyboard` library on some systems, and is maintained) and `rapidocr-onnxruntime` (text recognition with its models inside the package, so nothing is downloaded when it runs and no separate program such as Tesseract is needed). Use double quotes: cmd does not understand single ones.
+
+**Run it next to the desk in WSL.** Start the desk in WSL as usual (`python -m vaalstreet serve`). WSL2 passes `localhost` through to Windows, so on Windows run:
+
+```
+python -m vaalstreet screen --calibrate                    # one capture to learn your screen size, then type the rectangle
+python -m vaalstreet screen --desk http://localhost:3000   # press Ctrl+Alt+F9 in game; Ctrl+C here to stop
+```
+
+The default key is Ctrl+Alt+F9, chosen to stay clear of the game's own keys (Ctrl+Alt+C copies an item); change it with `--hotkey "<ctrl>+<shift>+<f8>"`. The game still sees the key press, so pick a combination the game ignores. Run the game in windowed or borderless windowed mode so the screenshot shows it. If you run the game as administrator, run the companion as administrator too, or Windows hides your key presses from it. The rectangle is saved in `screen.json` in the data directory of the Windows copy (`data\` in a checkout); the companion never opens your ledger or the archive.
+
 ## Files
 
 All data lives under `data/` in the checkout (`~/.vaalstreet` if installed as a package; override with `VAAL_DATA_DIR`).
@@ -212,6 +240,7 @@ data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
 data/strategies/                           strategy code you imported with `strategy import`
+data/screen.json                           the screen check's rectangle, if you use it
 data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash — the only file worth backing up
 ```
 
@@ -226,6 +255,7 @@ vaalstreet/db.py        DuckDB views     vaalstreet/backtest.py  simulator and s
 vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders, sessions, recipes and checks, alerts, stash
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
 vaalstreet/check.py     trade check and stash valuation
+vaalstreet/screen.py    screen check companion: one screenshot per key press (optional extra)
 vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders
 vaalstreet/sharing.py   strategy files: export and import

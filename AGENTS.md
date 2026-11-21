@@ -8,7 +8,7 @@ If you ever change anything relevant, make sure to keep this file up to date.
 
 ## The project
 
-Vaal Street is a **hobbyist project** for a local trading desk for the Path of Exile Currency Exchange. It is one Python package, `vaalstreet/`. The package mirrors GGG's public hourly exchange digests into a Parquet archive, queries the archive with DuckDB, and serves a browser desk on localhost. The runtime dependencies are `duckdb`, `pyarrow` and `numpy`.
+Vaal Street is a **hobbyist project** for a local trading desk for the Path of Exile Currency Exchange. It is one Python package, `vaalstreet/`. The package mirrors GGG's public hourly exchange digests into a Parquet archive, queries the archive with DuckDB, and serves a browser desk on localhost. The runtime dependencies are `duckdb`, `pyarrow` and `numpy`. The optional `screen` extra (`mss`, `pynput`, `rapidocr-onnxruntime`) serves only the screen check companion in `vaalstreet/screen.py`, which runs under Windows Python. Import those libraries lazily inside that module, and keep the tests passing without them.
 
 The web UI in `vaalstreet/web/` is plain ES modules and CSS, served as static files by `vaalstreet/server.py`. There is no JavaScript build step and no `package.json`.
 
@@ -40,7 +40,7 @@ To try the CLI or the server without touching the user's archive, set `VAAL_DATA
 
 - **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and `strategies/` holds strategy code they imported; nothing can rebuild either. The raw archive is about 1.5 GB and takes hours to download again.
 - **Start a large download.** Examples are `sync --all` or a backfill into the real data directory. These put load on GGG's servers and on the user's connection.
-- **Add a runtime dependency.** The package has only three today.
+- **Add a runtime dependency.** The package has only three today. The same goes for adding a library to an optional extra.
 
 ## Invariants
 
@@ -52,7 +52,7 @@ These rules hold across the code base. If a change you want to make would break 
 - **Raw data is the source of truth.** `data/raw/` keeps the digests byte for byte as the exchange served them. Everything under `data/parquet/` must stay rebuildable from raw.
 - **Derived data carries a version.** Existing installs rebuild derived files only when the version changes. If you change how hourly prices are derived in `ingest.py`, bump `PRICES_VERSION`. If `items.build` learns something new, bump `VERSION` in `items.py`. Without the bump, users keep their old files and your change does nothing for them.
 - **Tests stay offline.** `tests/conftest.py` builds a small synthetic exchange archive with known prices, premiums and recipes. `tests/test_data.py` serves digests from a local HTTP server and passes its address as `base_url`. New tests should use the same approach, so that the suite stays fast and its answers stay known. If a model change needs a property the synthetic archive lacks, extend the archive and state the new known answer in a comment.
-- **Local and read-only.** The server binds to `127.0.0.1` and rejects requests whose Host or Origin is not local; keep those checks. The only outbound traffic is read-only requests for exchange digests, the item export and item icons, sent with the `POE_USER_AGENT` identification string. There are no accounts, no tokens and no in-game automation. The README promises this to users.
+- **Local and read-only.** The server binds to `127.0.0.1` and rejects requests whose Host or Origin is not local; keep those checks. The only outbound traffic is read-only requests for exchange digests, the item export and item icons, sent with the `POE_USER_AGENT` identification string. There are no accounts, no tokens and no in-game automation. The screen check companion reads the screen only once per manual key press, sends nothing to the game, never writes a screenshot to disk, and talks only to the local desk, as GGG's rules require. The README promises this to users.
 - **Shared strategies are code.** `strategy import` parses the file without running or importing it, shows the source under a warning, saves it only with `--yes`, and never overwrites a file. Export writes a local file only; nothing is uploaded.
 - **GGG's assets are not committed.** Item icons are fetched at run time and cached in the data directory. The README's license section depends on this.
 
