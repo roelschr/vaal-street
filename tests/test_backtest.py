@@ -386,3 +386,77 @@ def test_portfolio_runs_stay_causal_when_the_league_is_cut_short(con):
         part = folio(full.window(0, cut))
         for series in ("equity", "cash", "gold", "holdings", "risk"):
             np.testing.assert_allclose(getattr(part, series), getattr(whole, series)[:cut], err_msg=series)
+
+
+def test_the_desk_api_takes_the_fill_model_and_a_portfolio(server):
+    from conftest import call
+
+    status, queued = call(f"{server}/api/backtest", {"strategy": "swing", "capital": 2000, "fill_model": "queue"})
+    assert status == 200 and "peak_risk" in queued["summary"]
+    status, folio = call(f"{server}/api/backtest", {"capital": 2000, "strategies": [
+        {"strategy": "swing", "params": {"per_item": 0.5}}, {"strategy": "reversion"}]})
+    assert status == 200 and [m["strategy"] for m in folio["summary"]["strategies"]] == ["swing", "reversion"]
+    assert call(f"{server}/api/backtest", {"strategies": [{"strategy": "/tmp/x.py:X"}]})[0] == 400
+    assert call(f"{server}/api/backtest", {"strategy": "swing", "fill_model": "magic"})[0] == 400
+
+
+EXAMPLE = '''import numpy as np
+
+
+class Patient:
+    def __init__(self, cut=0.95):
+        self.cut = cut
+
+    def step(self, ctx):
+        if ctx.t >= 24:
+            ctx.quote_buys("r", ctx.fair * self.cut, np.where(np.isfinite(ctx.fair), 5.0, 0.0))
+'''
+
+
+def test_a_strategy_exports_with_its_results_and_imports_only_with_consent(archive_root, tmp_path, monkeypatch, capsys):
+    import json
+
+    from vaalstreet import cli
+
+    mine = tmp_path / "mine" / "my strategy.py"
+    mine.parent.mkdir()
+    mine.write_text(EXAMPLE)
+    shared = tmp_path / "shared.json"
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["backtest", f"{mine}:Patient", "--league", NEW, "--league", OLD, "--params", '{"cut": 0.97}',
+              "--capital", "2000", "--fill-model", "queue", "--export", str(shared), "--json"])
+    doc = json.loads(shared.read_text())
+    assert doc["params"] == {"cut": 0.97} and doc["options"]["fill_model"] == "queue"
+    assert [r["league"] for r in doc["results"]] == [NEW, OLD] and doc["source"] == EXAMPLE
+    assert doc["class"] == "Patient" and doc["code_version"]
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("VAAL_DATA_DIR", str(home))
+    capsys.readouterr()
+    cli.main(["strategy", "import", str(shared)])
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "class Patient" in out and "Nothing was saved" in out
+    assert not (home / "strategies").exists(), "without --yes nothing is written"
+
+    cli.main(["strategy", "import", str(shared), "--yes"])
+    saved = home / "strategies" / "my_strategy.py"
+    assert saved.read_text() == EXAMPLE and f"{saved}:Patient" in capsys.readouterr().out
+    cli.main(["strategy", "import", str(shared), "--yes"])
+    assert (home / "strategies" / "my_strategy_2.py").exists(), "an import never overwrites"
+
+    doc.update(file="../../evil.py", **{"class": "not a name"})
+    shared.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit):
+        cli.main(["strategy", "import", str(shared), "--yes"])
+    assert not (tmp_path / "evil.py").exists()
+
+
+def test_a_portfolio_from_the_command_line(archive_root, monkeypatch, capsys):
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["backtest", 'swing:{"per_item": 0.5}', "reversion", "--portfolio", "--league", NEW, "--capital", "2000"])
+    out = capsys.readouterr().out
+    assert "Worst drop" in out and "Share" in out and "swing + reversion" in out
+    with pytest.raises(SystemExit):
+        cli.main(["backtest", "swing", "reversion", "--league", NEW])
