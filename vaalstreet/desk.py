@@ -45,6 +45,7 @@ PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # 
 PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
+SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fill within one
 MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
 
 
@@ -269,16 +270,28 @@ def replayed_rate(replay: dict | None, stake: float, against_divine: bool = True
     return ((stake + profit) / (1 + divines) - stake) / hours
 
 
+def lot_hours(plan: dict) -> float:
+    """Hours the plan's markets take to fill one whole lot at its share of the flow (inf if it never does)."""
+    units = max(plan.get("buy_order", {}).get("item_units") or 1, plan.get("sell_order", {}).get("item_units") or 1)
+    per_hour = plan.get("units_per_hour") or 0
+    return units / per_hour if per_hour > 0 else math.inf
+
+
 def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None = None,
                  max_picks: int = 12) -> dict:
     """The flips to run in one sitting with `bankroll` Chaos, one per item.
+
+    Each item gets at most a quarter of the bankroll. A plan whose one whole lot costs more than that
+    is eligible only if its markets fill a lot within `SESSION_HOURS` at the plan's share of the
+    flow: a lot that takes a day to fill would tie up most of a small purse in one item for the whole
+    sitting. Such a pick's stake is that one lot, and it carries `lot_share`, the share of the
+    bankroll the lot takes ("one lot is 40% of your purse").
 
     A plan is eligible if one whole lot fits the bankroll and the same rule, replayed over the last
     week, sold at least twice and, at the stake it would get here, beat holding Divines over the same
     hours (`replayed_rate`; at a league start the Divine rises fast, and a gain in Chaos can still be
     a loss next to it). Plans that made Chaos but trailed Divines are counted in `trailing_divines`,
-    and `divines` says what Divines made, so an empty plan can say why. Each item gets a
-    quarter of the bankroll, or one whole lot if a lot costs more. A stake of S earns
+    and `divines` says what Divines made, so an empty plan can say why. A stake of S earns
     margin x min(flow value, S / cycle hours) an hour: the purse turns over at most once per
     buy-then-sell, and that takes as long as the two markets take to reach the levels.
 
@@ -293,7 +306,9 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
         flow = r.get("flow_value")
         return r["margin"] * min(flow if flow is not None else math.inf, stake / cycle_hours(r))
 
+    quarter = bankroll / 4
     eligible = [r for r in plans if (r.get("lot_cost") or 0) > 0 and r["lot_cost"] <= bankroll
+                and (r["lot_cost"] <= quarter or lot_hours(r) <= SESSION_HOURS)
                 and r.get("margin") is not None and r.get("replay")
                 and (r["replay"].get("sales") or 0) >= 2]
     def per_gold(r: dict) -> float | None:
@@ -302,7 +317,7 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
             return math.inf
         return r.get("chaos_per_1000_gold")
 
-    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], bankroll / 4)]]
+    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], quarter)]]
     # Judged at the stake it would get: a thin market's replay used only part of its 1,000 Chaos,
     # and the Divine's rise is charged on the whole stake, idle or not.
     trailing = [r for r, s, _ in sized if (replayed_rate(r["replay"], s) or 0) <= 0]
@@ -345,6 +360,7 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
                       "chaos_per_1000_gold": r.get("chaos_per_1000_gold"), "gold_sources": r.get("gold_sources"),
                       "minutes": r.get("minutes"),
                       "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour,
+                      "lot_share": _num(r["lot_cost"] / bankroll, 3) if r["lot_cost"] > quarter else None,
                       "share_source": r.get("share_source")})
     return {
         "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
