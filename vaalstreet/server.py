@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, calibrate, check, db, items
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, SETTINGS, Ledger
+from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert
 from vaalstreet.paths import data_dir, icons_dir
 
 WEB = Path(__file__).parent / "web"
@@ -198,9 +198,62 @@ class App:
         try:
             desk = self.desk()
             rows = {row["id"]: row for row in desk.market()}
-            self.ledger.evaluate_alerts(desk.league, rows, desk.as_of)
+            self.ledger.evaluate_alerts(desk.league, rows, desk.as_of, self._alert_context(desk))
         except ApiError:
             pass
+
+    def _alert_context(self, desk) -> dict:
+        """What the plan, round-trip, order and precedent alerts look at, computed only for kinds in use.
+
+        Each piece is computed on its own, so one failing model call skips only its own alerts.
+        """
+        alerts = [a for a in self.ledger.alerts(desk.league) if a["active"]]
+        kinds = {a.get("kind") or "price" for a in alerts}
+        out: dict = {}
+
+        def attempt(key, fn):
+            try:
+                out[key] = fn()
+            except Exception:  # an alert must never take the refresh down
+                traceback.print_exc()
+
+        if "plan" in kinds:
+            low = min(a["params"]["min_margin"] for a in alerts if a.get("kind") == "plan") / 100
+            # The same calibrated shares as the Flips page, so an alert names the plan you see there.
+            attempt("flips", lambda: desk.flips(min_margin=low, costs=self.costs(desk.league),
+                                                share_by_item=calibrate.shares(self.fill_calibration(desk))))
+        if "trip" in kinds:
+            low = min(a["params"]["min_edge"] for a in alerts if a.get("kind") == "trip") / 100
+            attempt("loops", lambda: desk.loops(min_edge=low, fixed=self.ledger.fixed_conversions(),
+                                                costs=self.costs(desk.league)))
+        if "order" in kinds:
+            attempt("orders", lambda: self._advise(desk))
+        precedents = [a["params"] for a in alerts if a.get("kind") == "precedent"]
+        if any(p["mode"] == "standing" for p in precedents):
+            attempt("standing", lambda: self.book().standing(desk.league)["items"])
+        horizons = {p["horizon"] for p in precedents if p["mode"] == "playbook"}
+        if horizons:
+            attempt("playbook", lambda: {h: self.book().playbook(desk.league, h)["items"] for h in horizons})
+        return out
+
+    def _alerts(self, desk) -> list[dict]:
+        alerts = self.ledger.alerts(desk.league)
+        names = {a["item"]: desk._name(a["item"]) for a in alerts if a["item"]}
+        return [dict(a, description=describe_alert(a, names), name=names.get(a["item"])) for a in alerts]
+
+    def api_alerts(self, q: dict) -> dict:
+        desk = self.desk(q.get("league"))
+        return {"alerts": self._alerts(desk), "kinds": ALERT_KINDS, "alert_fields": ALERT_FIELDS}
+
+    def api_events(self, q: dict) -> dict:
+        """New events after event id `since`, for notifications; cheap enough to poll every few seconds."""
+        league = q.get("league") or self.default_league()
+        try:
+            since = int(q.get("since") or 0)
+        except ValueError as err:
+            raise ApiError("since must be an event number.") from err
+        events = self.ledger.events_since(league, since)
+        return {"events": events, "last": events[-1]["id"] if events else since}
 
     # ------------------------------------------------------------------ api
     def api_status(self, q: dict) -> dict:
@@ -393,9 +446,9 @@ class App:
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
-            "watchlist": self.ledger.watchlist(desk.league), "alerts": self.ledger.alerts(desk.league),
+            "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
             "fill_calibration": self.fill_calibration(desk),
-            "alert_fields": ALERT_FIELDS,
+            "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,
             "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
             "orders": self._advise(desk), "sessions": self.ledger.sessions(desk.league),
             **self._recipes(desk),
@@ -513,7 +566,16 @@ class App:
                 if body.get("delete"):
                     self.ledger.delete_alert(body["delete"])
                 else:
-                    self.ledger.add_alert(league, body["item"], body["field"], body["op"], body["threshold"])
+                    kind = body.get("kind", "price")
+                    if kind == "price":
+                        if not all(body.get(k) not in (None, "") for k in ("item", "field", "op", "threshold")):
+                            raise ApiError("A price alert needs an item, a field, a direction and a threshold.")
+                        self.ledger.add_alert(league, body["item"], body["field"], body["op"], body["threshold"])
+                    else:
+                        params = body.get("params") or {}
+                        if not isinstance(params, dict):
+                            raise ApiError("The alert's rule must be a set of named values.")
+                        self.ledger.add_alert(league, kind=kind, params=params)
             elif path == "/api/settings":
                 for key, value in body.items():
                     if key not in SETTINGS:
@@ -570,6 +632,7 @@ GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash",
+    "/api/alerts": "api_alerts", "/api/events": "api_events",
 }
 
 
