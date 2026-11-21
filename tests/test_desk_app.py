@@ -193,3 +193,14 @@ def test_api_your_recipes_and_vendor_prices_with_their_checks(server):
     for f in arb["fixed"]:
         assert call(f"{server}/api/recipe", {"delete": f["id"]})[0] == 200
     assert call(f"{server}/api/arbitrage")[1]["fixed"] == []
+
+
+def test_api_recipe_takes_names_or_ids(server):
+    # The desk's form sends names; Chaos Orb never appears in the market list but the item export knows it.
+    assert call(f"{server}/api/recipe", {"kind": "vendor", "inputs": [["chaos orb", 12]], "output": "Test Orb"})[0] == 200
+    assert call(f"{server}/api/recipe", {"kind": "recipe", "inputs": [[CARD, 5]], "output": ITEM, "gives": 1})[0] == 200
+    status, body = call(f"{server}/api/recipe", {"kind": "recipe", "inputs": [["No Such Thing", 1]], "output": "Test Orb"})
+    assert status == 400 and "No item called" in body["error"]
+    fixed = call(f"{server}/api/arbitrage")[1]["fixed"]
+    assert [f["output"] for f in fixed] == [ITEM, ITEM]
+    assert fixed[0]["inputs"][0]["name"] == "Chaos Orb" and fixed[0]["check"] == "unchecked"

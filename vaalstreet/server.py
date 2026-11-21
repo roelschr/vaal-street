@@ -531,6 +531,17 @@ class App:
         return {"recipes": [{"key": k, "label": v, "check": checks.get(k)} for k, v in recipes.items()],
                 "recipe_checks": [dict(c, label=recipes.get(c["key"], c["key"])) for c in checks.values()]}
 
+    def _item_ref(self, text) -> str:
+        """An item id from an id or a name (any case) in the item export, which knows items that never traded."""
+        text = str(text or "").strip()
+        meta = items.load(self.root, REALM)
+        if text in meta:
+            return text
+        found = next((i for i, m in meta.items() if (m.get("name") or "").casefold() == text.casefold()), None)
+        if not found:
+            raise ApiError(f"No item called {text!r}. Use the name as the exchange shows it.")
+        return found
+
     def api_post(self, path: str, body: dict) -> dict:
         league = body.get("league") or self.default_league()
         try:
@@ -568,7 +579,9 @@ class App:
                 if body.get("delete"):
                     self.ledger.delete_fixed(body["delete"])
                 else:
-                    self.ledger.add_fixed(body["kind"], body["inputs"], body["output"], body.get("gives", 1),
+                    # The desk's form sends names, as the CLI takes them; ids still work.
+                    inputs = [[self._item_ref(item), units] for item, units in body["inputs"]]
+                    self.ledger.add_fixed(body["kind"], inputs, self._item_ref(body["output"]), body.get("gives", 1),
                                           body.get("note", ""))
             elif path == "/api/watch":
                 self.ledger.watch(league, body["item"], bool(body.get("on", True)))

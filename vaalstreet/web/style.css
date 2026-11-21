@@ -52,7 +52,7 @@ select,input[type=text],input[type=number],input[type=search]{background:var(--p
 select:focus,input:focus{border-color:var(--accent)}
 input[type=number]{width:92px;font-family:var(--mono)}
 input[type=range]{accent-color:var(--accent);width:120px}
-label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+label.f,div.f.ctl{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
 .btn{background:var(--panel2);border:1px solid var(--line2);border-radius:7px;padding:5px 11px;cursor:pointer;font-weight:500}
 .btn:hover{border-color:var(--muted)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#10150b;font-weight:600}
@@ -121,6 +121,18 @@ svg.spark{width:84px;height:22px;vertical-align:middle}
 .orders{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
 .order{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
 .order .big{font:500 14px var(--mono);margin:5px 0 2px}
+
+/* trade check: a floating panel that survives page refreshes under it */
+#tc{position:fixed;top:60px;right:20px;width:min(400px,calc(100vw - 20px));max-height:calc(100vh - 80px);overflow:auto;background:var(--side);border:1px solid var(--line2);border-radius:10px;box-shadow:0 18px 50px #0009;z-index:30}
+#tc[hidden]{display:none}
+#tc form{display:grid;gap:10px;padding:0 14px 14px}
+#tc header{display:flex;align-items:center;gap:8px;margin:0 -14px;padding:10px 14px;border-bottom:1px solid var(--line)}
+#tc header .grow{flex:1}
+#tc .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+#tc input[type=number]{width:90px}
+#tc ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.5}
+.verdict{font:600 20px var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+body.hideout #tc{top:6px;right:6px;left:6px;width:auto}
 
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50}
 .toast{background:var(--panel2);border:1px solid var(--line2);border-left:3px solid var(--accent);border-radius:8px;padding:9px 13px;max-width:340px}

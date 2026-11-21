@@ -102,7 +102,7 @@ function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br>Not affiliated with Grinding Gear Games.</div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>Not affiliated with Grinding Gear Games.</div>`;
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
@@ -198,7 +198,7 @@ async function viewDesk(main) {
 async function viewMarkets(main) {
   const d = await loadDesk(); renderTop();
   const f = state.filters, cats = [...new Set(d.market.map(r => r.category))].sort();
-  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div><span class="grow"></span><button class="btn" id="tcBtn" title="Is an offer in the order window a good deal? (C)">Check an offer</button></div>
     <div class="bar">
       <label class="f">Search<input type="search" id="q" placeholder="Item name" value="${esc(f.q)}"></label>
       <label class="f">Category<select id="cat"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
@@ -213,7 +213,7 @@ async function viewMarkets(main) {
     const t = table([
       { h: '', l: 1, f: r => `<button class="star ${r.watched ? 'on' : ''}" data-watch="${esc(r.id)}" title="Watch">★</button>` },
       { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
-      { h: 'Price', f: r => money(r.price), s: r => r.price },
+      { h: 'Price', f: r => `${money(r.price)}${fairRange(r)}`, s: r => r.price, title: 'Fair value, and how far either side of it the item’s worth plausibly sits right now' },
       { h: '24h', f: r => pct(r.change_24h), s: r => r.change_24h },
       { h: '7d', f: r => pct(r.change_7d), s: r => r.change_7d },
       { h: 'vs Chaos', f: r => money(r.chaos), s: r => r.chaos, title: 'Typical price in the item-for-Chaos market' },
@@ -230,6 +230,7 @@ async function viewMarkets(main) {
     });
     $('#tbl', main).replaceChildren(t);
   };
+  $('#tcBtn', main).onclick = () => openCheck();
   $('#q', main).oninput = e => { f.q = e.target.value; draw(); };
   $('#cat', main).onchange = e => { f.category = e.target.value; draw(); };
   $('#minv', main).onchange = e => { f.minValue = +e.target.value || 0; draw(); };
@@ -237,6 +238,12 @@ async function viewMarkets(main) {
   draw();
 }
 
+// "±0.3%" after a fair value: half the width of its likely range, with the range itself on hover.
+function fairRange(r) {
+  if (r.fair_low == null || r.fair_high == null || !r.price) return '';
+  const half = (r.fair_high - r.fair_low) / 2 / r.price, unit = state.unit === 'divine' && state.bridge ? state.bridge : 1;
+  return `<span class="dim small" title="Likely between ${fmt(r.fair_low / unit)} and ${fmt(r.fair_high / unit)} ${unit === 1 ? 'Chaos' : 'Divine'}"> ±${(half * 100).toFixed(half < 0.01 ? 2 : 1)}%</span>`;
+}
 // Where each Gold fee came from, in words: the fee schedule is not published, so it is learned or assumed.
 const feeSource = r => (r.gold_sources || []).map(x => x.source === 'your trades' ? `from your trades (${x.trades})` : x.source === 'your assumption' ? 'your assumed fee' : 'unknown').filter((v, i, a) => a.indexOf(v) === i).join(', ');
 const goldCell = (r, value) => r.gold == null
@@ -324,24 +331,47 @@ async function viewFlips(main) {
   draw();
 }
 
-const HOW = { set: 'Card set', vendor: 'Vendor 3-for-1', stack: 'Full stack' };
+const HOW = { set: 'Card set', vendor: 'Vendor 3-for-1', stack: 'Full stack', yours: 'Your recipe' };
+// How a round trip moves from one item to the next.
+const VIA = {
+  swap: ['', 'Swap in the item-for-item market'],
+  divine: ['Divine', 'Sell for Divines, or buy with them, in the Divine market'],
+  vendor: ['vendor', 'Buy from a vendor at the price you entered'],
+};
+const viaArrow = how => { const [word, title] = VIA[how] || VIA.swap; return ` <span class="dim" title="${title}">→${word ? `<span class="tag" style="margin-left:3px">${word}</span>` : ''}</span> `; };
+// Whether a recipe or round trip worked when you tried it in game, with buttons to say so.
+const CHECKED = { confirmed: '<span class="up">Worked</span>', failed: '<span class="down">Did not work</span>', unchecked: '<span class="dim">Not tried</span>' };
+const checkCell = r => `<span title="${esc(r.check_note || (r.check === 'unchecked' ? 'Nobody has marked this as tried in game yet' : ''))}">${CHECKED[r.check] || CHECKED.unchecked}${r.check_note ? ' <span class="dim">✎</span>' : ''}</span>
+  <button class="btn ghost" data-ck="${esc(r.recipe_key)}" data-st="confirmed" title="It worked in game">✓</button><button class="btn ghost" data-ck="${esc(r.recipe_key)}" data-st="failed" title="It did not work in game">✗</button>`;
+// One click handler per panel, because the tables re-render on sort.
+const onCheck = host => host.addEventListener('click', async e => {
+  const b = e.target.closest('[data-ck]'); if (!b) return;
+  const note = prompt(b.dataset.st === 'confirmed' ? 'It worked. A note? (optional)' : 'It did not work. What went wrong? (optional)', '');
+  if (note === null) return;
+  try { await api('/api/recipe_check', { key: b.dataset.ck, status: b.dataset.st, note }); route(); } catch (err) { toast(err.message, true); }
+});
+const fixedText = r => `${r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ')} ${r.kind === 'vendor' ? '<span class="dim">buys</span>' : '<span class="dim">→</span>'} ${+r.gives} ${esc(r.output_name)}`;
+
 async function viewArbitrage(main) {
   if (!state.summary) await loadDesk();
   const f = state.filters, purse = +f.capital > 0 ? +f.capital : 0;
-  const d = await api(withLeague('/api/arbitrage', { share: state.share, ...bankQuery() }));
+  f.swaps ??= +(localStorage.swaps || 3);
+  const d = await api(withLeague('/api/arbitrage', { share: state.share, swaps: f.swaps, ...bankQuery() }));
   state.bridge = d.summary.bridge; renderTop();
+  const names = [...new Set(['Chaos Orb', ...state.market.map(r => r.name)])];
   main.innerHTML = `<div class="head"><div><h1>Arbitrage</h1><p>Prices that disagree with each other: things that turn into something dearer, and round trips through item-for-item markets.</p></div></div>
     <div class="bar">
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 40" min="0" step="10"></label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px"><input type="checkbox" id="fit" ${f.fit !== false ? 'checked' : ''} ${purse ? '' : 'disabled'}> Only what my bankroll can start</label>
       <label class="f">Min. traded / 24h (c)<input type="number" id="liq" value="${f.arbLiquidity ?? 2000}" min="0" step="500"></label>
-    </div><div class="grid" id="g"></div>`;
+      <div class="f ctl">Swaps per round trip<div class="seg" id="swaps">${[1, 2, 3].map(n => `<button type="button" data-n="${n}" class="${f.swaps === n ? 'on' : ''}" title="Round trips with up to ${n} swap${n === 1 ? '' : 's'}">up to ${n}</button>`).join('')}</div></div>
+    </div><div class="grid" id="g"></div><datalist id="arbItems">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
   const fits = cost => !purse || f.fit === false || cost <= purse;
   const liquid = f.arbLiquidity ?? 2000;
   const sets = panel('Conversions', 'c12');
-  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once). “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk.</p></div>`;
+  sets.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Fixed recipes: a full set of divination cards for its reward, a full stack of shards or splinters for the item they form, and three essences or oils of one tier sold to a vendor for one of the next (shown for up to three tiers at once), plus the recipes you entered below. “Margin” values both sides at fair value — what a patient trader gets. “In a hurry” buys the inputs in the dearer market and sells the result in the cheaper one. Try a recipe once in game before buying in bulk, then mark it with ✓ or ✗.</p></div>`;
   sets.append(table([
-    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
+    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.inputs?.length > 1 ? r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') : r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
     { h: 'How', l: 1, f: r => `<span class="tag">${HOW[r.how] || r.how}${r.steps > 1 ? ` × ${r.steps}` : ''}</span>`, s: r => r.how, title: 'A number after × means the recipe is applied that many tiers in a row' },
     { h: 'Cost', f: r => money(r.cost), s: r => r.cost, title: 'Fair value of everything you need to buy for one conversion' },
     { h: 'Worth', f: r => money(r.proceeds), s: r => r.proceeds },
@@ -352,12 +382,14 @@ async function viewArbitrage(main) {
     { h: 'Result traded 24h', f: r => money(r.reward_value_24h), s: r => r.reward_value_24h, title: 'How much of the result changes hands: can you sell it?' },
     { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold to buy the inputs for one conversion and sell the result' },
     { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the orders cost' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check, title: 'Whether you marked this as working when you tried it in game' },
   ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
   { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
+  onCheck(sets);
   const loops = panel('Round trips through item-for-item markets', 'c12');
-  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, swap it along the path in the small markets where items trade directly for each other, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
+  loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, move it along the path, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. A plain arrow is a swap in the small markets where items trade directly for each other; <span class="tag">Divine</span> means selling for Divines and buying with them; <span class="tag">vendor</span> means buying from a vendor at a price you entered below. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
   loops.append(table([
-    { h: 'Path', l: 1, f: r => r.path.map(x => `<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join(' <span class="dim">→</span> ') },
+    { h: 'Path', l: 1, f: r => r.path.map((x, k) => `${k ? viaArrow((r.via || [])[k - 1]) : ''}<span style="white-space:nowrap">${icon(x.id).replace('<img', '<img style="width:18px;height:18px;vertical-align:middle"')} ${esc(x.name)}</span>`).join('') },
     { h: 'First swap', f: r => `${r.first_swap.give} <span class="dim">for</span> ${r.first_swap.get}`, title: 'Units of the first item you give, for units of the second' },
     { h: 'Buy at', f: r => money(r.buy), s: r => r.buy }, { h: 'Sell at', f: r => money(r.sell), s: r => r.sell },
     { h: 'Edge', f: r => r.edge > 3 ? `<span class="up">×${(1 + r.edge).toFixed(1)}</span>` : pct(r.edge, 0), s: r => r.edge },
@@ -367,11 +399,52 @@ async function viewArbitrage(main) {
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
     { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold for one trip per unit of the first item: buying it, each swap, and selling the last item. The game does not say what a swap costs; the desk assumes the fee of the item you give, as if you sold it' },
     { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the trip costs' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check, title: 'Whether you marked this round trip as working when you tried it in game' },
   ], d.loops.filter(r => fits(r.lot_cost)), { sort: 5, limit: 15, empty: 'No round trip traded steadily in the last day.' }));
-  $('#g', main).append(sets, loops);
+  onCheck(loops);
+
+  const mine = panel('Your recipes and vendor prices', 'c12', '<span class="muted small">Kept for every league. The desk prices recipes like the built-in ones and uses vendor prices as steps in round trips.</span>');
+  const form = document.createElement('form'); form.className = 'body'; form.autocomplete = 'off';
+  let kind = 'recipe';
+  const itemInput = (cls, ph) => `<input type="text" class="${cls}" list="arbItems" placeholder="${ph}" style="width:200px">`;
+  const inputRow = () => `<div class="bar" style="margin:0 0 6px" data-in><label class="f">Count<input type="number" class="n" min="0" step="any" value="1" style="width:70px"></label><label class="f">Item${itemInput('it', 'Start typing…')}</label></div>`;
+  const drawForm = () => {
+    form.innerHTML = `<div class="bar" style="margin-bottom:8px"><div class="seg" id="fk"><button type="button" data-k="recipe" class="${kind === 'recipe' ? 'on' : ''}">Recipe</button><button type="button" data-k="vendor" class="${kind === 'vendor' ? 'on' : ''}">Vendor price</button></div>
+      <span class="muted small">${kind === 'recipe' ? 'What goes in, and what comes out. Any item the exchange knows.' : 'A vendor sells an item for a count of one currency, for example 1 Some Shard for 3 Chaos Orb.'}</span></div>
+      <div class="muted small" style="margin-bottom:4px">${kind === 'recipe' ? 'Goes in' : 'The vendor asks'}</div><div id="ins">${inputRow()}</div>
+      ${kind === 'recipe' ? '<button type="button" class="btn ghost" id="more" style="margin-bottom:8px">+ another input</button>' : ''}
+      <div class="bar" style="margin:0"><label class="f">${kind === 'recipe' ? 'Comes out' : 'and gives'}<span style="display:flex;gap:6px"><input type="number" id="gv" min="0" step="any" value="1" style="width:70px">${itemInput('', 'Start typing…').replace('class=""', 'id="out"')}</span></label>
+      <label class="f">Note<input type="text" id="fn" placeholder="optional" style="width:200px"></label>
+      <button class="btn primary">Add</button></div>`;
+    $('#fk', form).onclick = e => { const k = e.target.dataset.k; if (k) { kind = k; drawForm(); } };
+    const more = $('#more', form); if (more) more.onclick = () => $('#ins', form).insertAdjacentHTML('beforeend', inputRow());
+  };
+  drawForm();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const inputs = [...form.querySelectorAll('[data-in]')].map(r => [$('.it', r).value.trim(), +$('.n', r).value]).filter(([item]) => item);
+    if (!inputs.length || !$('#out', form).value.trim()) return toast('Name what goes in and what comes out.', true);
+    try { await api('/api/recipe', { kind, inputs, output: $('#out', form).value.trim(), gives: +$('#gv', form).value || 1, note: $('#fn', form).value }); toast('Added. It starts as not tried in game.'); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  const ft = table([
+    { h: 'Kind', l: 1, f: r => `<span class="tag">${r.kind === 'vendor' ? 'Vendor price' : 'Recipe'}</span>` },
+    { h: 'What', l: 1, f: fixedText },
+    { h: 'Note', l: 1, f: r => esc(r.note) },
+    { h: 'In game', l: 1, f: checkCell },
+    { h: '', f: r => `<button class="btn ghost" data-delfix="${r.id}" title="Delete this entry">✕</button>` },
+  ], d.fixed, { empty: 'None yet. The desk cannot read recipes or vendor prices from the game, so add the ones you know.' });
+  ft.addEventListener('click', async e => {
+    const b = e.target.closest('[data-delfix]'); if (!b) return;
+    try { await api('/api/recipe', { delete: +b.dataset.delfix }); route(); } catch (err) { toast(err.message, true); }
+  });
+  onCheck(ft);
+  mine.append(form, ft);
+  $('#g', main).append(sets, loops, mine);
   $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
   $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
+  $('#swaps', main).onclick = e => { const n = +e.target.dataset.n; if (n) { f.swaps = n; localStorage.swaps = n; route(); } };
 }
 
 const unitOf = f => f(1).trim().slice(-1);
@@ -509,6 +582,58 @@ async function viewLab(main) {
 // An empty field means "not recorded", which is not the same as zero.
 const optional = v => (v === '' || v == null ? null : +v);
 
+// What you hold, valued now: typed in, or the positions your recorded trades add up to.
+async function stashPanel(names) {
+  const source = localStorage.stashSource === 'ledger' ? 'ledger' : 'stash';
+  const p = panel('Stash', 'c12', `<div class="seg" id="stsrc" title="Value what you typed in, or the positions your recorded trades add up to">${[['stash', 'What I entered'], ['ledger', 'My ledger positions']].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === source ? 'on' : ''}">${l}</button>`).join('')}</div>`);
+  let d;
+  try { d = await api(withLeague('/api/stash', source === 'ledger' ? { source } : {})); }
+  catch (err) { p.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); return p; }
+  const t = d.total, body = document.createElement('div'); body.className = 'body';
+  body.innerHTML = `<div class="kpis" style="margin-bottom:10px">
+      <div class="kpi"><span>Worth at fair value</span><b>${money(t.value)}</b></div>
+      <div class="kpi" title="Every line's low added up, and every line's high: assumes all prices are wrong the same way at once, so the true range is narrower"><span>Range</span><b>${money(t.low)} <span class="dim">to</span> ${money(t.high)}</b></div>
+      <div class="kpi" title="Each line sold in whichever market pays more for it, at that market's own price"><span>Sold in the better market</span><b>${money(t.best)}</b></div>
+    </div>
+    ${source === 'stash' ? `<form class="bar" style="margin:0 0 4px" autocomplete="off">
+      <label class="f">Item<input type="text" name="what" list="items" placeholder="Start typing…" style="width:240px"></label>
+      <label class="f">Units you hold<input type="number" name="units" min="0" step="any" title="0 removes the line"></label>
+      <button class="btn primary">Set</button><button type="button" class="btn ghost" data-clear>Clear the stash</button>
+      <span class="muted small" style="padding-bottom:7px">Setting 0 units removes a line. Kept on this machine, per league.</span></form>`
+    : '<p class="note">Valued from the units your recorded trades leave you holding. Switch to “What I entered” to type in a stash instead.</p>'}
+    ${d.unpriced ? `<p class="note">${d.unpriced} item${d.unpriced === 1 ? ' has' : 's have'} no price in this league and ${d.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
+  const better = r => {
+    if (!r.best) return '<span class="dim">neither trades steadily</span>';
+    const word = r.best === 'divine' ? 'Divine' : 'Chaos';
+    return r.best_by == null ? `<span class="tag ${r.best}">${word}</span> <span class="dim">the only market trading steadily</span>` : `<span class="tag ${r.best}">${word}</span> pays ${plainPct(r.best_by, 1)} more`;
+  };
+  const tbl = table([
+    { h: 'Item', l: 1, f: r => itemCell(r, r.note ? esc(r.note) : ''), s: r => r.name },
+    { h: 'Units', f: r => fmt(r.units), s: r => r.units },
+    { h: 'Worth', f: r => money(r.value), s: r => r.value, title: 'Units at fair value' },
+    { h: 'Low – high', f: r => r.value == null ? '–' : `${money(r.low)} <span class="dim">–</span> ${money(r.high)}`, s: r => r.high, title: 'Units at the low and high end of where fair value plausibly sits' },
+    { h: 'Chaos market', f: r => money(r.chaos?.value), s: r => r.chaos?.value, title: 'Units at the Chaos market’s own price' },
+    { h: 'Divine market', f: r => money(r.divine?.value), s: r => r.divine?.value, title: 'Units at the Divine market’s own price, converted at the current Divine price' },
+    { h: 'Better market', l: 1, f: r => r.value == null ? '' : better(r), s: r => r.best_by },
+    { h: 'Selling it all', l: 1, f: r => r.value == null || !r.best ? '' : r.thin ? `<span class="gold" title="More than three hours of that market's volume: selling it all will push the price">thin market${r.hours != null ? ` · ${dur(r.hours)} of volume` : ''}</span>` : `<span class="muted">${dur(r.hours)} of volume</span>`, s: r => r.hours, title: 'How many hours of the better market’s volume this holding is' },
+    ...(source === 'stash' ? [{ h: '', f: r => `<button class="btn ghost" data-edit="${esc(r.name)}" data-units="${r.units}" title="Change the units">Edit</button><button class="btn ghost" data-rm="${esc(r.name)}" title="Remove this line">✕</button>` }] : []),
+  ], d.rows, { sort: 2, onRow: r => openItem(r.id), empty: source === 'stash' ? 'Enter what you hold to see what it is worth and where to sell it.' : 'Your recorded trades leave you holding nothing in this league.' });
+  p.append(body, tbl);
+  const set = async (item, units) => { try { await api('/api/stash', { league: state.league, item, units }); route(); } catch (err) { toast(err.message, true); } };
+  $('#stsrc', p).onclick = e => { const s = e.target.dataset.s; if (s) { localStorage.stashSource = s; route(); } };
+  const form = $('form', body);
+  if (form) {
+    form.onsubmit = e => { e.preventDefault(); const item = form.elements.what.value.trim(); if (!item) return toast('Pick an item from the list.', true); set(item, +form.elements.units.value || 0); };
+    $('[data-clear]', form).onclick = async () => { if (!confirm('Remove every line of the stash you entered?')) return; try { await api('/api/stash', { league: state.league, clear: true }); route(); } catch (err) { toast(err.message, true); } };
+  }
+  tbl.addEventListener('click', e => {
+    const rm = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]');
+    if (rm) set(rm.dataset.rm, 0);
+    if (ed && form) { form.elements.what.value = ed.dataset.edit; form.elements.units.value = ed.dataset.units; form.elements.units.focus(); form.elements.units.select(); }
+  });
+  return p;
+}
+
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger'));
@@ -635,7 +760,8 @@ async function viewLedger(main) {
   ], d.alerts, { empty: 'Open an item to add a price alert.' });
   at.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/alert', { delete: +b.dataset.del }); route(); } };
   al.append(at);
-  $('#g', main).append(ses, ord, pos, tr, fee, rc, al);
+  const stash = await stashPanel(names);
+  $('#g', main).append(ses, ord, pos, stash, tr, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ drawer
@@ -652,15 +778,15 @@ async function openItem(id, hours = 168) {
     <div class="item" style="margin-bottom:4px">${icon(s.id)}<h1>${esc(s.name)}</h1></div>
     <div class="muted" style="margin-bottom:12px">${esc(s.category)}${d.meta.set ? ` · ${d.meta.set.need} turn into ${d.meta.set.gives} ${esc(d.meta.set.reward)}` : ''}</div>
     <div class="kpis">
-      <div class="kpi"><span>Fair value</span><b>${money(row.price)}</b><i>${pct(row.change_24h)}</i></div>
+      <div class="kpi"><span>Fair value</span><b>${money(row.price)}</b><i>${pct(row.change_24h)}</i>${row.fair_low != null ? `<div class="muted small">likely ${money(row.fair_low)} to ${money(row.fair_high)}</div>` : ''}</div>
       <div class="kpi"><span>vs Chaos</span><b>${money(row.chaos)}</b></div>
       <div class="kpi"><span>vs Divine</span><b>${money(row.divine)}</b><i>${pct(row.premium)}</i></div>
       <div class="kpi"><span>Traded 24h</span><b>${money(row.value_24h)}</b></div>
     </div>
     ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <span class="grow"></span><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
-    <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
+      <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
+    <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#b2ef7840;height:8px"></i>Its likely range</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
     <div id="pc"></div>
     <h2 style="margin:18px 0 8px">Flip plans</h2><div class="orders" id="plans"></div>
     ${d.conversions.length ? `<h2 style="margin:18px 0 8px">Sets</h2><div class="orders">${d.conversions.map(c => `<div class="order"><b>${c.need} ${esc(c.name)}</b> → ${c.gives} ${esc(c.reward)}<div class="big">${pct(c.margin)}</div><span class="muted small">Costs ${money(c.cost)}, worth ${money(c.proceeds)}</span></div>`).join('')}</div>` : ''}
@@ -674,7 +800,8 @@ async function openItem(id, hours = 168) {
       { label: 'Fair value', color: '#b2ef78', x: s.t, y: conv(s.fair), width: 2, bridge: true },
       { label: 'Chaos market', color: '#d9a05b', x: s.t, y: conv(s.chaos), dots: true },
       { label: 'Divine market', color: '#8fb8f2', x: s.t, y: conv(s.divine), dots: true },
-    ], bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
+    ], band: { label: 'Fair value range', x: s.t, lo: conv(s.fair_low), hi: conv(s.fair_high), color: '#b2ef7826' },
+    bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
@@ -685,6 +812,7 @@ async function openItem(id, hours = 168) {
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);
   else $('#lc', drawer).innerHTML = '<div class="muted">No league history for this item.</div>';
   $('.close', drawer).onclick = closeDrawer;
+  $('#tcItem', drawer).onclick = () => openCheck(s.name);
   $('#rg', drawer).onclick = e => { const h = +e.target.dataset.h; if (h) openItem(id, h); };
   $('#watchBtn', drawer).onclick = async () => { row.watched = !row.watched; await api('/api/watch', { league: state.league, item: s.id, on: row.watched }); $('#watchBtn', drawer).textContent = row.watched ? '★ Watching' : '☆ Watch'; };
   $('#aa', drawer).onclick = async () => {
@@ -699,11 +827,60 @@ async function openItem(id, hours = 168) {
 }
 function closeDrawer() { $('#drawer').hidden = true; $('#drawer').innerHTML = ''; }
 
+// --------------------------------------------------------------- trade check
+// A small panel outside #main, so a refresh of the page under it never wipes what you typed.
+const VERDICT = { go: ['up', 'Go'], caution: ['gold', 'Caution'], 'no-go': ['down', 'No-go'] };
+function openCheck(item) {
+  let host = $('#tc');
+  if (!host) { host = document.createElement('aside'); host.id = 'tc'; document.body.append(host); }
+  const mkt = localStorage.tcMarket || 'chaos', side = localStorage.tcSide || 'buy';
+  const names = (state.market || []).map(r => r.name);
+  host.hidden = false;
+  host.innerHTML = `<form autocomplete="off">
+    <header><h2>Check an offer</h2><span class="grow"></span><span class="muted small"><kbd>Enter</kbd> check · <kbd>Esc</kbd> close</span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <label class="f">Item<input type="text" name="what" list="tcItems" placeholder="Start typing…" value="${esc(item || '')}"><datalist id="tcItems">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
+    <div class="row">
+      <div class="seg" data-g="side" title="Would you buy the item or sell it?">${[['buy', 'I buy'], ['sell', 'I sell']].map(([k, l]) => `<button type="button" data-v="${k}" class="${side === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg" data-g="market" title="Which market the offer is in">${[['chaos', 'Chaos market'], ['divine', 'Divine market']].map(([k, l]) => `<button type="button" data-v="${k}" class="${mkt === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    </div>
+    <div class="row"><label class="f">Items<input type="number" name="iu" min="1" step="1" placeholder="64"></label><span class="muted" style="padding-bottom:6px">for</span>
+      <label class="f"><span data-cur>${mkt === 'divine' ? 'Divine' : 'Chaos'}</span><input type="number" name="cu" min="1" step="1" placeholder="1"></label>
+      <label class="f">Stock (optional)<input type="number" name="stock" min="0" step="1" placeholder="on offer"></label></div>
+    <button class="btn primary">Check</button>
+    <div data-out></div></form>`;
+  const form = $('form', host), out = $('[data-out]', host);
+  const pick = g => $(`[data-g="${g}"] .on`, form).dataset.v;
+  form.onclick = e => {
+    if (e.target.closest('[data-x]')) return closeCheck();
+    const b = e.target.closest('[data-g] button'); if (!b) return;
+    b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    localStorage[b.parentNode.dataset.g === 'side' ? 'tcSide' : 'tcMarket'] = b.dataset.v;
+    $('[data-cur]', form).textContent = pick('market') === 'divine' ? 'Divine' : 'Chaos';
+  };
+  form.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCheck(); } };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const v = name => form.elements[name].value.trim();
+    if (!v('what') || !(+v('iu') > 0) || !(+v('cu') > 0)) { out.innerHTML = '<p class="muted">Give the item and both sides of the ratio, items first.</p>'; return; }
+    out.innerHTML = '<p class="muted">Checking…</p>';
+    try {
+      const r = await api('/api/check', { league: state.league, item: v('what'), market: pick('market'), side: pick('side'), item_units: Math.round(+v('iu')), currency_units: Math.round(+v('cu')), stock: v('stock') || null });
+      const [cls, word] = VERDICT[r.verdict] || ['muted', r.verdict];
+      out.innerHTML = `<div class="verdict ${cls}">${word} <span class="muted small">${esc(r.name)} at ${fmt(r.price)} c each${r.trusted ? '' : ' · this market barely trades'}</span></div>
+        <ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    } catch (err) { out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
+  };
+  (item ? form.elements.iu : form.elements.what).focus();
+}
+function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
+
 // ----------------------------------------------------------------- hideout
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+    <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
+  $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
   fp.append(table([
     { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">Buy ${order(r.buy_order, true)}</span><span class="sub">Sell ${order(r.sell_order, false)}</span>` },
@@ -767,8 +944,10 @@ function announce(event) {
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === 'Escape') closeDrawer();
+  if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else closeDrawer(); }
+  else if (e.ctrlKey || e.metaKey || e.altKey) return;
   else if (e.key === 'h' || e.key === 'H') openHideout();
+  else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); openCheck(); }
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
 });
 poll(true);
