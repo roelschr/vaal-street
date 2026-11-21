@@ -170,3 +170,24 @@ def test_snapshot_restores_the_archive_without_raw_files(archive_root, tmp_path,
     # Restored hours count as on disk, so a sync only fetches what came after them.
     assert archive.missing(restored, "poe1", H0, H0 + 5 * HOUR) == []
     assert archive.have(restored, "poe1") == archive.have(archive_root, "poe1")
+
+
+def test_ingest_bounds_duckdb_memory(monkeypatch, tmp_path):
+    """DuckDB reserves JSON buffers per thread; ingest must cap both, or many-core machines run out of memory."""
+    import duckdb
+
+    from vaalstreet import ingest as ingest_mod
+
+    seen = {}
+    real_connect = duckdb.connect
+
+    def spy(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        seen["threads"] = con.execute("SELECT current_setting('threads')").fetchone()[0]
+        return con
+
+    monkeypatch.setattr(ingest_mod.duckdb, "connect", spy)
+    ingest(tmp_path, log=None)
+    assert 1 <= seen["threads"] <= 4
+    assert "maximum_object_size = 268435456" not in ingest_mod._PARSE
+    assert ingest_mod._MAX_DIGEST_BYTES * 2 * seen["threads"] <= 512 * 1024 * 1024

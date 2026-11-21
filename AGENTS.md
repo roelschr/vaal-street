@@ -34,12 +34,12 @@ To try the CLI or the server without touching the user's archive, set `VAAL_DATA
 - Create a virtualenv and install the project and its dev extras into it.
 - Run pytest, and run the CLI or the server against a temporary `VAAL_DATA_DIR`. This includes the two-week download that `serve` makes into an empty directory, when you need real data to check a change. A temporary directory you created is yours to delete.
 - Run read-only git commands, and create a branch for your work.
+- Commit, push or open a pull request. Do your work on a branch, not on `main`. Use contextual commits and small stacked PRs. Request the user to send approval message or to merge them into `main`.
 
 ## Ask before you do these
 
 - **Change the user's data directory.** This is `data/` in the checkout, or `~/.vaalstreet` for an installed package, or the directory the user's own `VAAL_DATA_DIR` names. Ask before you delete, overwrite or migrate anything in it. `desk.sqlite` holds the user's ledger, watchlist and alerts, and nothing can rebuild it. The raw archive is about 1.5 GB and takes hours to download again.
 - **Start a large download.** Examples are `sync --all` or a backfill into the real data directory. These put load on GGG's servers and on the user's connection.
-- **Commit, push or open a pull request.** Do your work on a branch, not on `main`.
 - **Add a runtime dependency.** The package has only three today.
 
 ## Invariants
