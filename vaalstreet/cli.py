@@ -306,6 +306,7 @@ def _arb(args: argparse.Namespace) -> None:
         return found["status"] if found else "unchecked"
 
     rows = desk.conversions(share=args.share, fixed=fixed)
+    outside = _outside_rows(desk, ledger, args.share)
     for r in rows:
         if r.get("inputs"):
             r["recipe"] = " + ".join(f"{x['units']:g} {x['name']}" for x in r["inputs"]) + f" -> {r['gives']:g} {r['reward']}"
@@ -317,6 +318,23 @@ def _arb(args: argparse.Namespace) -> None:
     _table(rows, [("name", "Item", ""), ("recipe", "Set", ""), ("cost", "Cost", ",.4g"), ("proceeds", "Worth", ",.4g"),
                   ("margin", "Margin", ".1%"), ("margin_now", "In a hurry", ".1%"),
                   ("profit_per_hour", "c/hour", ",.0f"), ("checked", "In game", "")], args.rows)
+    if outside:
+        print(f"\nCard sets whose reward does not trade on the exchange: "
+              f"reward priced by poe.ninja (stash listings, not the exchange) - prices from poe.ninja")
+        now = time.time()
+        for r in outside:
+            r["recipe"] = f"{r['need']} -> {r['gives']} {r['reward']}"
+            r["checked"] = check(r)
+            age = (now - r["reward_fetched"]) / HOUR if r.get("reward_fetched") else None
+            r["evidence"] = (f"{r['reward_listings'] or 0} listed, {age:.0f}h old" if age is not None else "?")
+            r["evidence"] += " (stale)" if r["reward_stale"] else ""
+        _table(outside, [("name", "Card", ""), ("recipe", "Set", ""), ("cost", "Cost", ",.4g"),
+                         ("proceeds", "Worth", ",.4g"), ("margin", "Margin", ".1%"),
+                         ("profit_per_hour", "c/hour", ",.0f"), ("evidence", "poe.ninja", ""),
+                         ("checked", "In game", "")], args.rows)
+        notes = [f"{r['reward']}: {r['reward_variant']}" for r in outside[: args.rows] if r.get("reward_variant")]
+        for note in notes:
+            print(f"  {note}")
 
     loops = desk.loops(share=args.share, swaps=args.swaps, fixed=fixed)
     for r in loops:
@@ -326,6 +344,50 @@ def _arb(args: argparse.Namespace) -> None:
     _table(loops, [("route", "Route", ""), ("edge", "Edge", ".1%"), ("value_24h", "Thinnest swap/day", ",.0f"),
                    ("resting_value", "Resting now", ",.0f"), ("profit_per_day", "c/day", ",.0f"),
                    ("checked", "In game", "")], args.rows)
+
+
+def _outside_rows(desk, ledger, share: float) -> list[dict]:
+    """Card sets priced from the poe.ninja cache (no network), unless you turned that off."""
+    from vaalstreet import ninja
+
+    if not ledger.settings().get("ninja_prices"):
+        return []
+    client = ninja.Ninja(data_dir(), os.environ.get("NINJA_BASE_URL", ninja.DEFAULT_BASE_URL))
+    return desk.outside_conversions(ninja.reward_prices(client, desk.league, desk.meta), share=share)
+
+
+def _ninja(args: argparse.Namespace) -> None:
+    from datetime import datetime, timezone
+
+    from vaalstreet import ninja
+    from vaalstreet.ledger import Ledger
+
+    root = data_dir()
+    client = ninja.Ninja(root, os.environ.get("NINJA_BASE_URL", ninja.DEFAULT_BASE_URL))
+    if args.action == "refresh":
+        if not Ledger(root).settings().get("ninja_prices"):
+            sys.exit("poe.ninja prices are turned off (setting ninja_prices = 0).")
+        con = connect()
+        league = _league(con, args)
+        summary = ninja.refresh(client, league, items.load(root, "poe1"))
+        if summary["league_id"] is None:
+            sys.exit(summary["errors"][0])
+        print(f"{league}: checked {', '.join(summary['types']) or 'nothing (no card rewards need it)'} "
+              f"- prices from poe.ninja. Each list is asked for at most once an hour.")
+        for error in summary["errors"]:
+            print(f"  {error} (the last good answer is kept and marked stale)")
+        return
+    rows = client.status()
+    if not rows:
+        print("Nothing from poe.ninja yet. Run `python -m vaalstreet ninja refresh`, or start the desk.")
+        return
+    when = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if t else "never"
+    print("Cached answers from poe.ninja (prices from poe.ninja):")
+    for r in rows:
+        what = r["params"].get("type") or "leagues"
+        league = r["params"].get("league", "")
+        state = f"failed: {r['error']}" if r["error"] else "ok"
+        print(f"  {what:<16} {league:<12} fetched {when(r['fetched'])}, last asked {when(r['checked'])}, {state}")
 
 
 def _item_id(names: dict[str, str], text: str) -> str:
@@ -674,6 +736,13 @@ def main(argv: list[str] | None = None) -> None:
     p = commands.add_parser("status", help="leagues and coverage in the archive")
     p.add_argument("--realm", choices=REALMS, default="poe1")
     p.set_defaults(run=_status)
+
+    p = commands.add_parser("ninja", help="prices from poe.ninja for card rewards the exchange does not trade")
+    p.add_argument("action", choices=("refresh", "status"),
+                   help="refresh: ask poe.ninja for what the card rewards need (at most hourly); "
+                        "status: what is cached and how old it is")
+    p.add_argument("--league")
+    p.set_defaults(run=_ninja)
 
     p = commands.add_parser("price", help="latest hourly prices for an item")
     p.add_argument("item", help='item name or ID ending, e.g. "Divine Orb"')

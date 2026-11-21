@@ -34,7 +34,9 @@ from vaalstreet.paths import ledger_file
 
 # Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
 # publish the schedule. Minutes per order is a rough guess at your clicking speed.
-SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+# `ninja_prices`: 1 lets the desk fetch prices from poe.ninja for card rewards the exchange does
+# not trade (uniques, gems, base types); 0 turns that off. On unless you turn it off.
+SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades(

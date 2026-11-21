@@ -200,7 +200,8 @@ class Costs:
             sources.append({"id": item_id, **src_in})
             orders += 1
             gold = None if gold is None or fee_in is None else gold + units * fee_in
-        if row["reward_id"] != chaos_id:
+        # A reward with no exchange id (priced from stash listings) is sold outside the exchange.
+        if row["reward_id"] not in (chaos_id, None):
             fee_out, src_out = self.fee(row["reward_id"])
             sources.append({"id": row["reward_id"], **src_out})
             orders += 1
@@ -792,6 +793,50 @@ class Desk:
                 row = self._your_recipe(recipe, share, value_24h)
                 if row:
                     out.append(row)
+        out = [(costs or Costs()).conversion(row, ANCHORS[self.realm][0]) for row in out]
+        out.sort(key=lambda row: -(row["profit_per_hour"] or 0))
+        return out
+
+    def outside_conversions(self, prices: dict[str, dict], share: float = 0.1,
+                            costs: Costs | None = None) -> list[dict]:
+        """Card sets whose reward does not trade on the exchange - a unique, a gem or a base type -
+        against that reward's price from stash listings (`ninja.reward_prices`: card id -> price).
+
+        The cards are priced from the exchange as usual; only the reward comes from outside. Those
+        listing prices never enter fair value, and these rows stay out of round trips and alerts.
+        There is no quick exit on the exchange for the reward, so `margin_now` is left empty.
+        """
+        from vaalstreet.ninja import CREDIT, NOTE
+
+        p = self.panel
+        r, quick = self.legs["r"], self.legs["b"]
+        fair = self.fv.fair[-1]
+        value_24h = np.nansum(p["value"][-DAY:], axis=0)
+        age = self._age()
+        on_exchange = set(p.names)  # the exchange stays the source wherever it has a price
+        out = []
+        for item_id, price in prices.items():
+            i = p._by_id.get(item_id)
+            recipe = self.meta.get(item_id, {}).get("set")
+            if (i is None or not recipe or recipe["reward"] in on_exchange
+                    or not math.isfinite(fair[i]) or age[i] >= DAY):
+                continue
+            need, gives = recipe["need"], recipe["gives"]
+            cost, proceeds = need * float(fair[i]), gives * price["chaos"]
+            sets = share * (r.flow[i] + quick.flow[i]) / need
+            out.append({
+                "id": item_id, "name": p.names[i], "need": need, "gives": gives, "steps": 1, "how": "set",
+                "reward": recipe["reward"], "reward_id": None, "reward_kind": recipe["kind"],
+                "cost": _num(cost), "proceeds": _num(proceeds), "margin": _num(proceeds / cost - 1, 4),
+                "margin_now": None,
+                "sets_per_hour": _num(sets, 4), "profit_per_hour": _num(sets * (proceeds - cost), 4),
+                "value_24h": _num(value_24h[i]), "reward_value_24h": None,
+                "recipe_key": recipe_key("set", [item_id, "poe.ninja:" + recipe["reward"]]),
+                "reward_source": "poe.ninja", "reward_note": NOTE, "credit": CREDIT,
+                "reward_price": _num(price["chaos"]), "reward_listings": price.get("listings"),
+                "reward_fetched": price.get("fetched"), "reward_stale": bool(price.get("stale")),
+                "reward_variant": price.get("variant"),
+            })
         out = [(costs or Costs()).conversion(row, ANCHORS[self.realm][0]) for row in out]
         out.sort(key=lambda row: -(row["profit_per_hour"] or 0))
         return out

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, calibrate, check, db, items, search
+from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, search
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
@@ -41,8 +41,13 @@ class ApiError(Exception):
 class App:
     """Shared state: one DuckDB over the Parquet files, cached desks, the ledger, the sync thread."""
 
-    def __init__(self, root: Path | None = None, *, sync: bool = True, bootstrap_days: int = 14) -> None:
+    def __init__(self, root: Path | None = None, *, sync: bool = True, bootstrap_days: int = 14,
+                 ninja_base_url: str = ninja.DEFAULT_BASE_URL) -> None:
         self.root = root or data_dir()
+        self.ninja_base_url = ninja_base_url
+        self._ninja: ninja.Ninja | None = None
+        # Kept apart from sync_state: a poe.ninja failure must not hold up the exchange sync.
+        self.ninja_state = {"last_run": None, "league_id": None, "types": [], "errors": []}
         self.ledger = Ledger(self.root)
         self.bootstrap_days = bootstrap_days
         self._lock = threading.RLock()
@@ -115,6 +120,7 @@ class App:
     def _sync_loop(self) -> None:
         while not self._stop.is_set():
             self.sync_once()
+            self.refresh_ninja()  # at most hourly per category; the client enforces it
             if self._reach_league_start():
                 continue  # keep going back, a fortnight at a time, until the live league's first hour is on disk
             self._wake.wait(timeout=300)
@@ -145,6 +151,38 @@ class App:
         finally:
             self.sync_state.update(running=False)
         return not self._stop.is_set()
+
+    def ninja(self) -> ninja.Ninja:
+        with self._lock:
+            if self._ninja is None:
+                self._ninja = ninja.Ninja(self.root, self.ninja_base_url)
+            return self._ninja
+
+    def ninja_on(self) -> bool:
+        return bool(self.settings().get("ninja_prices"))
+
+    def refresh_ninja(self) -> None:
+        """Ask poe.ninja for the categories the card rewards need. Never raises."""
+        if not self.ninja_on():
+            return
+        try:
+            summary = ninja.refresh(self.ninja(), self.default_league(), items.load(self.root, REALM))
+            self.ninja_state.update(last_run=int(time.time()), league_id=summary["league_id"],
+                                    types=summary["types"], errors=summary["errors"])
+        except Exception as err:  # the desk works without these prices
+            self.ninja_state.update(last_run=int(time.time()), errors=[str(err)])
+
+    def _outside(self, desk, share: float, costs: Costs | None = None) -> list[dict]:
+        """Card sets whose reward is priced by poe.ninja, read from the cache only."""
+        if not self.ninja_on():
+            return []
+        prices = ninja.reward_prices(self.ninja(), desk.league, desk.meta)
+        rows = desk.outside_conversions(prices, share=share, costs=costs)
+        now = time.time()
+        for row in rows:
+            fetched = row.get("reward_fetched")
+            row["reward_age_minutes"] = int((now - fetched) // 60) if fetched else None
+        return rows
 
     def request_sync(self, backfill: bool = False) -> None:
         if backfill:
@@ -279,6 +317,7 @@ class App:
             "archive_start": archive.FIRST_HOUR[REALM],
             "generation": self._generation,
             "ready": db.has_data(self.root, REALM),
+            "ninja": dict(self.ninja_state, on=self.ninja_on(), credit=ninja.CREDIT),
         }
         if out["ready"]:
             try:
@@ -349,7 +388,8 @@ class App:
         checks = self.ledger.recipe_checks()
         # Three swaps answer in well under a second on a full league; four can take several.
         swaps = max(1, min(int(q.get("swaps", 3)), 3))
-        conversions = desk.conversions(share=share, fixed=fixed, costs=costs)
+        conversions = desk.conversions(share=share, fixed=fixed, costs=costs) + self._outside(desk, share, costs)
+        conversions.sort(key=lambda row: -(row["profit_per_hour"] or 0))
         loops = desk.loops(chaos_only=poor, share=share, swaps=swaps, fixed=fixed, costs=costs)[:80]
         for row in conversions + loops:
             _flag(row, checks)
@@ -680,7 +720,7 @@ class App:
             return path.read_bytes()
         try:
             request = urllib.request.Request(items.ICON_URL.format(art=urllib.parse.quote(art)),
-                                             headers={"User-Agent": "vaal-street/2.0"})
+                                             headers={"User-Agent": archive.user_agent()})
             with urllib.request.urlopen(request, timeout=10) as response:
                 data = response.read()
         except Exception:

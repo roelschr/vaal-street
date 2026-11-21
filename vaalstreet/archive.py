@@ -43,8 +43,14 @@ class Unpublished(Exception):
     """The hour exists on the calendar but the exchange has not published it."""
 
 
-def _user_agent() -> str:
-    return os.environ.get("POE_USER_AGENT", "vaal-street/2.0 (local research tool)")
+USER_AGENT = "vaal-street/2.0 (+https://github.com/roelschr/vaal-street)"
+
+
+def user_agent() -> str:
+    """The identification every outbound request carries: the app, its version and where to reach
+    its authors. `POE_USER_AGENT` overrides it. Exchange digests, the item export, icons and
+    poe.ninja all use this one string."""
+    return os.environ.get("POE_USER_AGENT", USER_AGENT)
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -53,7 +59,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _retry_after(header: str | None) -> float | None:
+def retry_after(header: str | None) -> float | None:
     if not header:
         return None
     try:
@@ -100,7 +106,7 @@ def missing(root: Path, realm: str, start: int, end: int) -> list[int]:
 def fetch_hour(base_url: str, realm: str, hour: int) -> bytes:
     """Return the raw digest for one hour. Backs off on 429 and 5xx."""
     url = f"{base_url}{REALM_PATH[realm]}/{hour}"
-    request = urllib.request.Request(url, headers={"User-Agent": _user_agent(), "Accept-Encoding": "gzip"})
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent(), "Accept-Encoding": "gzip"})
     for attempt in range(MAX_ATTEMPTS + 1):
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -116,7 +122,7 @@ def fetch_hour(base_url: str, realm: str, hour: int) -> bytes:
             # Any other 4xx except 429 will not fix itself; stop instead of hammering the API.
             if 400 <= err.code < 500 and err.code != 429:
                 raise RuntimeError(f"HTTP {err.code} for {url}") from err
-            wait = _retry_after(err.headers.get("Retry-After")) or min(900, 15 * 2**attempt)
+            wait = retry_after(err.headers.get("Retry-After")) or min(900, 15 * 2**attempt)
             reason = f"HTTP {err.code}"
         except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, OSError) as err:
             wait = min(300, 5 * 2**attempt)
