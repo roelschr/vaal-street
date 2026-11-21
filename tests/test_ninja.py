@@ -298,3 +298,45 @@ def test_gem_reward_matches_level_quality_and_corruption():
     assert ninja._pick(reward, [(l, got) for l in lines])["chaos"] == 40
     loose = ninja._pick(reward | {"level": 19}, [(l, got) for l in lines])
     assert loose["chaos"] == 40 and "no listing at level 19" in loose["variant"]
+
+
+# Trimmed from one real poe.ninja sample (Covens, 2026-11-21): support gems are named "<card name> Support",
+# gems absent from a field mean no quality and not corrupted, unique lines have no `corrupted` field, and
+# foil uniques come with itemClass 10.
+REAL_GEMS = [
+    {"name": "Enhance Support", "variant": "4c", "gemLevel": 4, "corrupted": True, "itemClass": 4, "chaosValue": 1048, "listingCount": 109},
+    {"name": "Enhance Support", "variant": "1", "gemLevel": 1, "itemClass": 4, "chaosValue": 2.0, "listingCount": 706},
+    {"name": "Mirror Arrow", "variant": "1/20", "gemLevel": 1, "gemQuality": 20, "itemClass": 4, "chaosValue": 2.0, "listingCount": 1353},
+    {"name": "Mirror Arrow", "variant": "1", "gemLevel": 1, "itemClass": 4, "chaosValue": 1.0, "listingCount": 276},
+    {"name": "Mirror Arrow of Bombarding Clones", "variant": "1/20", "gemLevel": 1, "gemQuality": 20, "itemClass": 4,
+     "chaosValue": 8.0, "listingCount": 48},
+    {"name": "Vaal Molten Shell", "variant": "21c", "gemLevel": 21, "corrupted": True, "itemClass": 4, "chaosValue": 17.0, "listingCount": 30},
+    {"name": "Vaal Molten Shell", "variant": "21/20c", "gemLevel": 21, "gemQuality": 20, "corrupted": True, "itemClass": 4,
+     "chaosValue": 40.0, "listingCount": 60},
+]
+REAL_UNIQUES = [
+    {"name": "Windripper", "baseType": "Imperial Bow", "itemClass": 3, "chaosValue": 5.0, "listingCount": 80},
+    {"name": "Windripper", "baseType": "Imperial Bow", "itemClass": 3, "links": 6, "chaosValue": 60.0, "listingCount": 9},
+    {"name": "Windripper", "baseType": "Imperial Bow", "itemClass": 10, "chaosValue": 900.0, "listingCount": 2},
+]
+
+
+@pytest.mark.parametrize("description, chaos", [
+    ("<gemitem>{Level 4 Enhance}\r\n<corrupted>{Corrupted}", 1048),  # the card's "Enhance" is poe.ninja's "Enhance Support"
+    ("<gemitem>{Mirror Arrow}\r\n<default>{Quality:} <augmented>{+20%}", 2.0),  # no level named: a level 1 gem
+    ("<gemitem>{Level 21 Vaal Molten Shell}\r\n<corrupted>{Twice Corrupted}", 17.0),  # no quality named: none
+])
+def test_gem_rewards_match_real_poe_ninja_lines(description, chaos):
+    reward = items.build({"c": {"name": "Card", "item_class": "DivinationCard",
+                                "properties": {"stack_size": 3, "description": description}}})["c"]["set"]
+    got = ninja.Cached(None, 1, False, None)
+    picked = ninja._pick(reward, [(line, got) for line in REAL_GEMS])
+    assert picked["chaos"] == chaos and picked["variant"] is None
+
+
+def test_unique_reward_skips_foil_and_linked_copies():
+    got = ninja.Cached(None, 1, False, None)
+    plain = ninja._pick({"reward": "Windripper", "kind": "unique", "corrupted": False}, [(l, got) for l in REAL_UNIQUES])
+    assert plain["chaos"] == 5.0 and plain["variant"] is None
+    corrupt = ninja._pick({"reward": "Windripper", "kind": "unique", "corrupted": True}, [(l, got) for l in REAL_UNIQUES])
+    assert corrupt["chaos"] == 5.0 and "priced as uncorrupted" in corrupt["variant"]

@@ -268,8 +268,10 @@ def reward_prices(client: Ninja, league: str, meta: dict[str, dict]) -> dict[str
 def _pick(reward: dict, found: list[tuple[dict, Cached]]) -> dict | None:
     """The listing that best matches what the card gives; the most-listed one when several do."""
     name = reward["reward"]
+    # poe.ninja names support gems "Enhance Support" where the card says "Enhance" (sample of 2026-11-21).
+    names = {name, f"{name} Support"} if reward["kind"] == "gem" else {name}
     candidates = [(line, got) for line, got in found
-                  if (line.get("name") == name or (reward["kind"] == "base" and line.get("baseType") == name))
+                  if (line.get("name") in names or (reward["kind"] == "base" and line.get("baseType") == name))
                   and (line.get("chaosValue") or 0) > 0]
     if not candidates:
         return None
@@ -285,16 +287,16 @@ def _pick(reward: dict, found: list[tuple[dict, Cached]]) -> dict | None:
 
     corrupted = bool(reward.get("corrupted"))
     if reward["kind"] == "unique":
-        narrow(lambda line: line.get("itemClass") != 9, "only foil listings")  # foil (relic) copies cost far more
+        # Foil copies cost far more: itemClass 9 in poe.ninja's docs, 10 in their live data.
+        narrow(lambda line: line.get("itemClass") not in (9, 10), "only foil listings")
         narrow(lambda line: not line.get("links"), "no unlinked listing")
-        narrow(lambda line: bool(line.get("corrupted")) == corrupted,
-               "no corrupted listing" if corrupted else "no uncorrupted listing")
+        if corrupted:  # unique lines carry no corruption flag; the uncorrupted price stands in
+            notes.append("priced as uncorrupted (poe.ninja does not list corrupted uniques apart)")
     elif reward["kind"] == "gem":
-        if reward.get("level") is not None:
-            narrow(lambda line: line.get("gemLevel") == reward["level"], f"no listing at level {reward['level']}")
-        if reward.get("quality") is not None:
-            narrow(lambda line: (line.get("gemQuality") or 0) == reward["quality"],
-                   f"no listing at {reward['quality']}% quality")
+        # A card that names no level gives a level 1 gem, and one that names no quality gives none.
+        level, quality = reward.get("level") or 1, reward.get("quality") or 0
+        narrow(lambda line: line.get("gemLevel") == level, f"no listing at level {level}")
+        narrow(lambda line: (line.get("gemQuality") or 0) == quality, f"no listing at {quality}% quality")
         narrow(lambda line: bool(line.get("corrupted")) == corrupted,
                "no corrupted listing" if corrupted else "no uncorrupted listing")
     else:
