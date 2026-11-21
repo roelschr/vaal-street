@@ -622,6 +622,18 @@ def _research(args: argparse.Namespace) -> None:
         print()
 
 
+def _report(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from vaalstreet import report
+
+    con = connect()
+    league = _league(con, args)
+    con.close()
+    report.write(None, Path(args.out), league, args.day, all_days=args.all_days)
+    print("Nothing was uploaded. The folder is yours to publish wherever you like, or to keep.", file=sys.stderr)
+
+
 def _sql(args: argparse.Namespace) -> None:
     connect(realm=args.realm).sql(args.query).show(max_rows=200, max_width=220)
 
@@ -791,6 +803,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--all", action="store_true", help="show the noisy gaps too, not only the structural ones")
     p.add_argument("--rows", type=int, default=30)
     p.set_defaults(run=_cross_league)
+
+    p = commands.add_parser("report", help="write a 'state of the economy' web page for a league day to a local folder")
+    p.add_argument("--league")
+    p.add_argument("--day", type=int, help="league day (default: today, or the last day of an ended league)")
+    p.add_argument("--all-days", action="store_true", help="write a page for every day of the league")
+    p.add_argument("--out", default="reports", help="folder to write to (default: ./reports)")
+    p.set_defaults(run=_report)
 
     p = commands.add_parser("backtest", help="replay a strategy over one or more leagues")
     p.add_argument("strategy", nargs="+",

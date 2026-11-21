@@ -88,6 +88,8 @@ Precedents come from the same family of league, and only from leagues that have 
 
 **Meta shifts.** `meta` compares each item's demand, the units traded in the last 24 hours against league day 1, with the same league hours in every past league of the family. Units, not Chaos, because Chaos loses value through a league; day 1 rather than day 0, because the first day is a scramble. An item whose demand grew at least 1.5 times and faster than in any past league is a candidate for a meta shift: players are using it for something they did not before. Each row shows the growth against the past leagues' lowest, median and highest, and how many leagues that is.
 
+**League report.** `report` writes a "state of the economy" web page for one league day to a local folder: the Divine price and its move against past leagues on the same day, the biggest movers among the most traded items with both markets' prices, the most traded items, what past leagues did next from this day and what is cheap or dear against them, meta shifts, and steady gaps against Hardcore and Standard. Sections with no data are left out. A page uses only data published up to the end of its day, so the page for day 5 is the same whether you write it on day 5 or a month later. Each page is one self-contained HTML file with no scripts, no item icons and nothing loaded from elsewhere, and it holds nothing of yours: no ledger, stash, watchlist or alerts. `--all-days` writes every day of a league and an `index.html` that links them. The command never uploads anything; where to publish the folder, if anywhere, is up to you.
+
 **Other leagues' prices.** `cross-league` puts the same item, on the same hour, next to its price in this league's Hardcore, Ruthless and Hardcore Ruthless versions and in Standard. Each league has its own Chaos, worth a different number of Divines, so items are compared in each league's own Divines, and the Chaos and Divine markets are compared separately. The Divine's price in Chaos gets its own line. Over the last week, the gap is taken per day (the median of the hours both leagues traded), and it is called **structural** when it held on at least 3 days and 12 hours, kept the same sign on 80% of the days, is at least 3%, and moves less from day to day than its own size. A gap that flips or closes is **noise**, and one that stays within 3% is **none**. Items cannot move between leagues, so a gap is not a trade: it tells you which differences are real when you read prices from another league, and which will close.
 
 **Backtests.** One league is replayed hour by hour. Orders posted at hour *t* meet hour *t+1*.
@@ -141,6 +143,7 @@ python -m vaalstreet playbook --launch           # the first 72 hours of past le
 python -m vaalstreet divine-timing               # on which league days the Divine was cheapest in Chaos
 python -m vaalstreet meta                        # items in more demand than any past league at this point
 python -m vaalstreet cross-league                # the same items in Hardcore, Ruthless and Standard: real gaps or noise
+python -m vaalstreet report --out reports        # today's "state of the economy" page; --all-days for every day
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
 python -m vaalstreet backtest swing --fill-model queue   # orders wait behind the stock already on offer
 python -m vaalstreet backtest swing 'reversion:{"entry_z": -2.5}' --portfolio
@@ -261,6 +264,7 @@ vaalstreet/calibrate.py share of the flow learned from your orders
 vaalstreet/sharing.py   strategy files: export and import
 vaalstreet/search.py    strategy search, judged walk-forward on later leagues
 vaalstreet/research.py  experiments with pass rules fixed in advance
+vaalstreet/report.py    league report pages, one per league day
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.

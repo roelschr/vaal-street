@@ -107,7 +107,7 @@ Waves run in order. Within a wave, the tasks touch different files, so they can 
 | Idea | Verdict | Why |
 | --- | --- | --- |
 | Strategy sharing | Build, wave 3 | You export a strategy file with its cross-league results to a local file, and import one. Nothing is uploaded. |
-| Public league report | After the sync, wave 4 | A command writes a "state of the economy" page per league day to a local folder. Where to publish it is up to you. |
+| Public league report | Built, wave 5 | `vaalstreet report` writes a "state of the economy" page per league day to a local folder, using only data up to the end of that day. It has no icons, scripts or remote assets, and nothing from your ledger. Where to publish it is up to you. |
 | Anonymous fill data | Not building (owner's decision) | Pooling needs a server and uploads. The desk does not upload anything. |
 
 ## How a measurement passes
