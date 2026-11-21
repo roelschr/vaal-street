@@ -485,7 +485,7 @@ def main(argv: list[str] | None = None) -> None:
         description="The desk cannot read recipes or vendor prices from any source it may use, so you type in "
                     "the ones you know. A recipe turns what you give into what you get; a vendor price says an NPC "
                     "sells what you get for what you give, as many times as you like. Each one counts as "
-                    "unchecked until you confirm it in game on the desk's Arbitrage page.",
+                    "unchecked until you mark it confirmed in the desk after trying it in game.",
         epilog='examples:\n  recipe add --give "5 Test Card" --get "Test Orb" --note "full stack"\n'
                '  recipe add --vendor --give "3 Chaos Orb" --get "Test Shard"\n  recipe delete --id 2',
         formatter_class=argparse.RawDescriptionHelpFormatter)
