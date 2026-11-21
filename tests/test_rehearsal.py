@@ -63,7 +63,10 @@ def test_as_of_desk_equals_a_desk_from_an_archive_that_ends_there(cut, con, cuts
     try:
         live = Desk.build(con, league, root=archive_root, as_of=end)
         assert live.as_of == end
-        _same(_desk_views(live), _desk_views(Desk.build(cut_con, league, root=archive_root)))
+        views = _desk_views(live)
+        _same(views, _desk_views(Desk.build(cut_con, league, root=archive_root)))
+        if cut == (NEW, 95):  # not an empty comparison: by day 3 there are plans and round trips to compare
+            assert views["market"] and views["flips"] and views["conversions"] and views["loops"]
     finally:
         cut_con.close()
 
@@ -216,6 +219,35 @@ def test_rehearsal_clock_runs_at_its_speed_and_stops_at_the_end(archive_root, tm
     with pytest.raises(ValueError):
         Rehearsal(archive_root, NEW, first, last, last + HOUR, ledger_path=tmp_path / "x.sqlite")
     practice.close()
+
+
+def test_rehearsal_result_is_plain_json_without_a_divine_price_at_the_start(archive_root, tmp_path):
+    first = _hour(NEW, 0)
+    practice = Rehearsal(archive_root, NEW, first, _hour(NEW, NEW_HOURS - 1), first, ledger_path=tmp_path / "r.sqlite")
+    practice.start_bridge = float("nan")  # as if the Divine had not traded yet at the start hour
+    practice.step(2)
+    out = practice.result()
+    json.dumps(out, allow_nan=False)
+    assert out["divine_then"] == pytest.approx(100.0), "measured from the first Divine price it saw"
+    practice.step(-5)
+    assert practice.hour == first + 3 * HOUR, "a step never goes back"
+    practice.close()
+
+
+def test_a_bad_start_keeps_the_running_rehearsal(archive_root, tmp_path):
+    from vaalstreet.ledger import Ledger
+    from vaalstreet.server import ApiError, App
+
+    app = App(archive_root, sync=False)
+    app.ledger = Ledger(tmp_path)
+    app.start_rehearsal({"league": NEW, "start_day": 1})
+    app.api_post("/api/trade", {"item": ITEM, "side": "buy", "units": 5, "price": 10.0})
+    with pytest.raises(LookupError):
+        app.start_rehearsal({"league": "No Such League"})
+    with pytest.raises(ApiError):
+        app.start_rehearsal({"league": NEW, "start_day": 99})
+    assert app.rehearsal and len(app.ledger.trades(NEW)) == 1
+    app.stop_rehearsal()
 
 
 def test_sync_thread_stays_live_while_requests_see_the_rehearsal(archive_root, tmp_path):

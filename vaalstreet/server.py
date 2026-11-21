@@ -83,8 +83,9 @@ class App:
 
     def cursor(self):
         practice = self._practice()
-        if practice:
-            return practice.cursor()
+        return practice.cursor() if practice else self._live_cursor()
+
+    def _live_cursor(self):
         with self._lock:
             if self._con is None:
                 if not db.has_data(self.root, REALM):
@@ -784,16 +785,20 @@ class App:
 
     def start_rehearsal(self, body: dict) -> dict:
         """Start practice on a past league; any running rehearsal ends first (its result is returned too)."""
-        ended = self.stop_rehearsal()["result"] if self.rehearsal else None
         league = str(body["league"])
-        first, last = league_hours(self.cursor(), league)
+        first, last = league_hours(self._live_cursor(), league)  # checked before a running session is ended
         if body.get("start") not in (None, ""):
             start = int(body["start"])
         else:
             start = first + int(float(body.get("start_day") or 0) * 24) * HOUR
-        bankroll = body.get("bankroll")
-        practice = Rehearsal(self.root, league, first, last, start, realm=REALM, speed=float(body.get("speed") or 0),
-                             bankroll=float(bankroll) if bankroll not in (None, "") else 1000.0,
+        speed, bankroll = float(body.get("speed") or 0), body.get("bankroll")
+        bankroll = float(bankroll) if bankroll not in (None, "") else 1000.0
+        if not first <= start <= last:
+            raise ApiError(f"{league} has {(last - first) // HOUR // 24 + 1} days on disk; start inside them.")
+        if not (math.isfinite(speed) and speed >= 0 and math.isfinite(bankroll) and bankroll > 0):
+            raise ApiError("speed must be zero or more game hours per real minute, and bankroll a positive number.")
+        ended = self.stop_rehearsal()["result"] if self.rehearsal else None
+        practice = Rehearsal(self.root, league, first, last, start, realm=REALM, speed=speed, bankroll=bankroll,
                              ledger_path=self._ledger.path.with_name(PRACTICE_FILE))
         with self._lock:
             self.rehearsal, self._rehearsal_alerts = practice, None
@@ -866,8 +871,8 @@ def make_handler(app: App):
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, payload, status: int = 200) -> None:
-            if isinstance(payload, dict) and app.rehearsal and "rehearsal" not in payload:
+        def _json(self, payload, status: int = 200, banner: bool = True) -> None:
+            if banner and isinstance(payload, dict) and app.rehearsal and "rehearsal" not in payload:
                 # Every answer says it is practice, so the page can show a banner and never pass for live.
                 payload = payload | {"rehearsal": app.rehearsal_banner()}
             self._send(status, json.dumps(payload, separators=(",", ":"), default=_default).encode(), "application/json")
@@ -946,7 +951,7 @@ def make_handler(app: App):
             if url.path == "/api/backtest":
                 self._json(app.api_backtest({}, body))
             elif url.path == "/api/strategy_export":
-                self._json(app.api_strategy_export(body))
+                self._json(app.api_strategy_export(body), banner=False)  # a file to share, not a page
             elif url.path == "/api/search":
                 self._json(app.api_search(body))
             elif url.path == "/api/check":

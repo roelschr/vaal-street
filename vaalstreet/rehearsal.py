@@ -23,9 +23,10 @@ from pathlib import Path
 from typing import Callable
 
 import duckdb
+import numpy as np
 
 from vaalstreet import db
-from vaalstreet.desk import Desk
+from vaalstreet.desk import Desk, _num
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import Ledger
 
@@ -83,8 +84,9 @@ class Rehearsal:
             return min(self.last, self._hour + ahead * HOUR)
 
     def step(self, hours: int = 1) -> int:
+        """Move forward; never back, since practice trades are already stamped with the hours passed."""
         with self._lock:
-            self._hour = max(self.start, min(self.last, self.hour + int(hours) * HOUR))
+            self._hour = min(self.last, self.hour + max(1, int(hours)) * HOUR)
             self._since = self._wall()
             return self._hour
 
@@ -162,14 +164,19 @@ class Rehearsal:
             else:
                 value += p["units"] * mark
         profit = realized + value - cost
+        if not math.isfinite(self.start_bridge):
+            # No Divine price yet at the start hour: compare from the first one the rehearsal saw.
+            seen = desk.panel.bridge[(desk.panel.hours >= self.start) & np.isfinite(desk.panel.bridge)]
+            if len(seen):
+                self.start_bridge = float(seen[0])
         divine = self.bankroll * (desk.bridge / self.start_bridge - 1)
         hours = (self.hour - self.start) // HOUR
         return {
             "league": self.league, "start": self.start, "hour": self.hour, "hours": hours,
-            "bankroll": self.bankroll, "profit": round(profit, 2), "realized": round(realized, 2),
-            "unrealized": round(value - cost, 2), "return": round(profit / self.bankroll, 4),
-            "divine_then": round(self.start_bridge, 2), "divine_now": round(desk.bridge, 2),
-            "hold_divines": round(divine, 2), "vs_divines": round(profit - divine, 2),
+            "bankroll": self.bankroll, "profit": _num(profit), "realized": _num(realized),
+            "unrealized": _num(value - cost), "return": _num(profit / self.bankroll, 4),
+            "divine_then": _num(self.start_bridge), "divine_now": _num(desk.bridge),
+            "hold_divines": _num(divine), "vs_divines": _num(profit - divine),
             "trades": len(self.ledger.trades(self.league)), "unpriced": unpriced,
         }
 
