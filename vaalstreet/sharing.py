@@ -25,8 +25,10 @@ FORMAT_VERSION = 1
 def code_version() -> str:
     try:
         return metadata.version("vaalstreet")
-    except metadata.PackageNotFoundError:
-        return "unknown"
+    except metadata.PackageNotFoundError:  # a source checkout that was never installed
+        project = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        found = re.search(r'^version = "([^"]+)"', project.read_text(), re.M) if project.is_file() else None
+        return found.group(1) if found else "unknown"
 
 
 def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
@@ -49,6 +51,7 @@ def export(path: Path, spec: str, params: dict, options: dict, summaries: list[d
             raise ValueError(f"Cannot export {spec!r}: {file} is not a file.")
         doc["class"] = cls or "Strategy"
         doc["file"] = source.name
+        doc["strategy"] = f"{source.name}:{doc['class']}"  # not the folder: it would name your home directory
         doc["source"] = source.read_text(encoding="utf-8")
     Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     return doc
@@ -67,6 +70,11 @@ def read(path: Path) -> dict:
     if "source" in doc:
         if not isinstance(doc["source"], str) or not str(doc.get("class", "")).isidentifier():
             raise ValueError(f"{path}: the source or the class name is not valid.")
+    else:
+        from vaalstreet.backtest import STRATEGIES
+
+        if doc.get("strategy") not in STRATEGIES:
+            raise ValueError(f"{path} names a strategy that is neither built in nor included as code.")
     return doc
 
 

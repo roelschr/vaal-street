@@ -560,15 +560,23 @@ class Simulation:
     def _queue_at(self, t: int, key: str, side: str, item: int, limit: float) -> float:
         """Units resting ahead of an order posted at hour t: the queue it joins at the back of.
 
-        The digest publishes, per market and hour, the lowest and the highest stock on offer
-        during the hour, for each side: `*_stock_lo/_hi` is the item on offer (the sellers you
-        queue behind with a sell), `*_bid_lo/_hi` is the Chaos on offer for it (the buyers you
-        queue behind with a buy; divided by your limit to count it in items). We take the
-        lowest. It is stock that rested through the whole hour, so it was really there when you
-        posted. The highest adds orders that came and went within the hour. And both count the
-        stock at every price, not just at yours or better, so they already overstate the queue;
-        the lowest overstates it least. Read at hour t (forward-filled up to six hours when the
-        market printed nothing), so it is known when the order goes up. Unknown counts as empty.
+        The digest publishes, per market and hour, `lowest_stock` and `highest_stock` for each of
+        the two currencies. `ingest` keeps them as `*_stock_lo/_hi`, the item on offer (the
+        sellers you queue behind with a sell), and `*_bid_lo/_hi`, the Chaos on offer for it (the
+        buyers you queue behind with a buy; divided by your limit to count it in items).
+
+        GGG does not document the fields beyond their names, so two readings here are
+        assumptions: that they are the least and the most stock seen on offer during the hour,
+        and that they count the whole side of the book, at every price. We take the lowest: on
+        that reading it rested through the whole hour, so it was there when you posted, while the
+        highest adds orders that came and went. The desk's own displays show the geometric mean
+        of the two as a typical level; a queue wants what certainly stood ahead of you.
+
+        Where the guess errs: if the stock spans every price, the queue is too long for an order
+        at a sharp price; taking the hour's lowest, and counting unknown stock as empty, can make
+        it too short. It is read at hour t (forward-filled up to six hours when the market printed
+        nothing), so it is known when the order goes up. Once the queue is gone, nothing else caps
+        the order: at the front it can take the whole hour's volume through its level.
         """
         if (side == "buy" and math.isinf(limit)) or (side == "sell" and limit <= 0):
             return 0.0  # market orders take liquidity; they do not queue

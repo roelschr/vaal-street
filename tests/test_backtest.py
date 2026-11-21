@@ -356,14 +356,15 @@ def test_a_portfolio_settles_in_the_order_given_on_shared_cash_and_volume():
 
 
 def test_portfolio_shares_add_up_and_one_strategy_alone_matches_a_plain_run(con):
-    specs = ['swing:{"per_item": 0.5}', 'reversion:{"per_item": 0.5}']
+    # Two flippers at different patience share 2000 Chaos; hold would spend it all before swing's warmup ends.
+    specs = ['swing:{"per_item": 0.3}', 'swing:{"per_item": 0.3, "reach": 0.4}']
     folio = backtest.run_portfolio(con, NEW, specs, capital=2000, gold_per_unit=0.2)
     profits = [m["profit"] for m in folio.summary()["strategies"]]
-    assert folio.members[0]["fills"] > 0
+    assert all(m["fills"] > 0 and m["peak_capital"] > 0 for m in folio.members), "both strategies trade"
     assert sum(profits) == pytest.approx(folio.equity[-1] - 2000, abs=0.05)
     assert folio.gold_spent == pytest.approx(sum(m["gold_spent"] for m in folio.members), abs=1)
     alone = backtest.run_portfolio(con, NEW, specs[:1], capital=2000, gold_per_unit=0.2)
-    plain = backtest.run(con, NEW, "swing", params={"per_item": 0.5}, capital=2000, gold_per_unit=0.2)
+    plain = backtest.run(con, NEW, "swing", params={"per_item": 0.3}, capital=2000, gold_per_unit=0.2)
     np.testing.assert_array_equal(alone.equity, plain.equity)
     assert backtest.parse_spec('x.py:Mine:{"a": 1}') == ("x.py:Mine", {"a": 1})
     with pytest.raises(ValueError):
@@ -377,11 +378,11 @@ def test_portfolio_runs_stay_causal_when_the_league_is_cut_short(con):
     def folio(panel):
         return backtest.Portfolio(panel, **options).run([
             (backtest.Swing(per_item=0.5, warmup=24), "swing", {}),
-            (backtest.Reversion(per_item=0.5, warmup=24, entry_z=-1.0), "reversion", {}),
+            (backtest.Hold(top=3, warmup=30), "hold", {}),
         ])
 
     whole = folio(full)
-    assert whole.fills > 0
+    assert all(m["fills"] > 0 for m in whole.members), "both strategies trade before the shortest cut"
     for cut in (60, 101, 150):
         part = folio(full.window(0, cut))
         for series in ("equity", "cash", "gold", "holdings", "risk"):
@@ -428,7 +429,8 @@ def test_a_strategy_exports_with_its_results_and_imports_only_with_consent(archi
     doc = json.loads(shared.read_text())
     assert doc["params"] == {"cut": 0.97} and doc["options"]["fill_model"] == "queue"
     assert [r["league"] for r in doc["results"]] == [NEW, OLD] and doc["source"] == EXAMPLE
-    assert doc["class"] == "Patient" and doc["code_version"]
+    assert doc["class"] == "Patient" and doc["strategy"] == "my strategy.py:Patient", "no local folders in the file"
+    assert doc["code_version"] != "unknown" and str(tmp_path) not in shared.read_text()
 
     home = tmp_path / "home"
     monkeypatch.setenv("VAAL_DATA_DIR", str(home))
@@ -449,6 +451,14 @@ def test_a_strategy_exports_with_its_results_and_imports_only_with_consent(archi
     with pytest.raises(SystemExit):
         cli.main(["strategy", "import", str(shared), "--yes"])
     assert not (tmp_path / "evil.py").exists()
+    doc.update(file="../../evil.py", **{"class": "Patient"})
+    shared.write_text(json.dumps(doc))
+    cli.main(["strategy", "import", str(shared), "--yes"])
+    assert (home / "strategies" / "evil.py").exists() and not (tmp_path / "evil.py").exists(), "stays in the folder"
+    del doc["source"]
+    shared.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit):
+        cli.main(["strategy", "import", str(shared)])
 
 
 def test_a_portfolio_from_the_command_line(archive_root, monkeypatch, capsys):
