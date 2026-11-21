@@ -37,6 +37,12 @@ def test_fair_value_is_causal():
     a, b = pricing.fair_value(seen), pricing.fair_value(changed)
     assert np.array_equal(a.fair[:400], b.fair[:400]), "the future must not move the past"
     assert np.array_equal(a.z[:400], b.z[:400], equal_nan=True)
+    # With traded value, as the desk runs it: typical units and the reprice check stay causal too.
+    units = np.full(seen.shape, 100.0)
+    later = units.copy()
+    later[400:] *= 9
+    a, b = pricing.fair_value(seen, seen * units), pricing.fair_value(changed, changed * later)
+    assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
 
 
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
@@ -438,6 +444,18 @@ def test_round_trips_skip_swap_markets_far_out_of_line(desk):
     paths = {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_edge=-1, min_value=10, chaos_only=True)}
     assert (OTHER, ITEM) in paths
     assert not [p for p in paths if CARD in p]
+
+
+def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
+    from vaalstreet.ingest import DIVINE
+
+    path = (ITEM, DIVINE, EMBER)
+    trips = lambda: {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_value=10)}
+    assert path in trips()
+    # The orb's Divine market now "pays" 4x its Chaos market, as thin joke hours do: no Divine stop.
+    desk.legs["b"].fair[-1, desk.panel.index(ITEM)] *= 4
+    desk._cache.clear()  # loops() remembers its answer for the desk's hour
+    assert not [p for p in trips() if p[0] == ITEM and DIVINE in p]
 
 
 def test_your_recipes_are_priced_like_the_built_in_ones(desk):
