@@ -8,7 +8,7 @@ If you ever change anything relevant, make sure to keep this file up to date.
 
 ## The project
 
-Vaal Street is **hobbyst project** for a local trading desk for the Path of Exile Currency Exchange. It is one Python package, `vaalstreet/`. The package mirrors GGG's public hourly exchange digests into a Parquet archive, queries the archive with DuckDB, and serves a browser desk on localhost. The runtime dependencies are `duckdb`, `pyarrow` and `numpy`.
+Vaal Street is a **hobbyist project** for a local trading desk for the Path of Exile Currency Exchange. It is one Python package, `vaalstreet/`. The package mirrors GGG's public hourly exchange digests into a Parquet archive, queries the archive with DuckDB, and serves a browser desk on localhost. The runtime dependencies are `duckdb`, `pyarrow` and `numpy`.
 
 The web UI in `vaalstreet/web/` is plain ES modules and CSS, served as static files by `vaalstreet/server.py`. There is no JavaScript build step and no `package.json`.
 
