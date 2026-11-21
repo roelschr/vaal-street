@@ -37,6 +37,12 @@ def test_fair_value_is_causal():
     a, b = pricing.fair_value(seen), pricing.fair_value(changed)
     assert np.array_equal(a.fair[:400], b.fair[:400]), "the future must not move the past"
     assert np.array_equal(a.z[:400], b.z[:400], equal_nan=True)
+    # With traded value, as the desk runs it: typical units and the reprice check stay causal too.
+    units = np.full(seen.shape, 100.0)
+    later = units.copy()
+    later[400:] *= 9
+    a, b = pricing.fair_value(seen, seen * units), pricing.fair_value(changed, changed * later)
+    assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
 
 
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
@@ -59,6 +65,21 @@ def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
     assert fv.fair[300, 0] == fv.fair[299, 0], "not believed on the first print"
     assert fv.fair[301, 0] == pytest.approx(crashed[301, 0]), "believed on the second"
     assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
+
+
+def test_two_thin_joke_prints_in_a_row_do_not_reprice_an_item():
+    # As seen live on Tainted Armourer's Scrap's Divine market: ~100 units an hour at about 6.5,
+    # then 2 and 12 units at half a Divine (~107), then 260 units back at 8. Known answer: the
+    # value never leaves the old level, while a real crash (full volume) is still believed.
+    _, seen = noisy_walk(noise=0.02, N=2)
+    units = np.full(seen.shape, 100.0)
+    seen[300:302] *= 16
+    units[300:302] = [[2, 2], [12, 12]]
+    seen[302:, 1] *= 16  # column 1: the move is real and keeps trading at full volume
+    fv = pricing.fair_value(seen, seen * units)
+    assert abs(math.log(fv.fair[301, 0] / fv.fair[299, 0])) < 0.1, "thin prints confirm nothing"
+    assert abs(math.log(fv.fair[310, 0] / seen[310, 0])) < 0.1
+    assert fv.fair[302, 1] == pytest.approx(seen[302, 1]), "a full-volume print confirms the move"
 
 
 def test_scorecard_measures_fair_value_against_the_last_print():
@@ -410,6 +431,31 @@ def test_longer_round_trips_and_vendor_prices_you_enter(desk):
     assert only["edge"] == pytest.approx(orb / 5 - 1, rel=1e-3)
     assert only["value_24h"] > 0 and only["resting_value"] is None
     json.dumps(only, allow_nan=False)
+
+
+def test_round_trips_skip_swap_markets_far_out_of_line(desk):
+    # Live data had 1 Vaal Orb fetching 5 Scours every hour, items worth about the same. A side
+    # market whose rate is more than 3x off the two items' own prices is joke trades: here 1 card
+    # (1.5 Chaos) "fetches" 5 shards (10 Chaos), while 3 shards per orb (implied ~5.3) stays.
+    desk.cross = [
+        {"item": CARD, "quote": OTHER, "volume": 1000, "rate": 5.0, "hours": 24, "item_resting": 50, "quote_resting": 70},
+        {"item": ITEM, "quote": OTHER, "volume": 100, "rate": 3.0, "hours": 20, "item_resting": 500, "quote_resting": 900},
+    ]
+    paths = {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_edge=-1, min_value=10, chaos_only=True)}
+    assert (OTHER, ITEM) in paths
+    assert not [p for p in paths if CARD in p]
+
+
+def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
+    from vaalstreet.ingest import DIVINE
+
+    path = (ITEM, DIVINE, EMBER)
+    trips = lambda: {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_value=10)}
+    assert path in trips()
+    # The orb's Divine market now "pays" 4x its Chaos market, as thin joke hours do: no Divine stop.
+    desk.legs["b"].fair[-1, desk.panel.index(ITEM)] *= 4
+    desk._cache.clear()  # loops() remembers its answer for the desk's hour
+    assert not [p for p in trips() if p[0] == ITEM and DIVINE in p]
 
 
 def test_your_recipes_are_priced_like_the_built_in_ones(desk):

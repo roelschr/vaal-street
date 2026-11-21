@@ -754,7 +754,8 @@ async function viewLedger(main) {
   const al = panel('Alerts', 'c12');
   const at = table([
     { h: 'Item', l: 1, f: r => esc((state.market.find(m => m.id === r.item) || {}).name || r.item) },
-    { h: 'Rule', l: 1, f: r => `${esc(d.alert_fields[r.field])} ${r.op} ${r.threshold}` },
+    // Plan, round-trip, order and league alerts have no field or threshold; the server describes every kind.
+    { h: 'Rule', l: 1, f: r => esc(r.description || `${d.alert_fields[r.field]} ${r.op} ${r.threshold}`) },
     { h: 'State', l: 1, f: r => r.hot ? '<span class="gold">Triggered</span>' : 'Armed' },
     { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this alert">✕</button>` },
   ], d.alerts, { empty: 'Open an item to add a price alert.' });

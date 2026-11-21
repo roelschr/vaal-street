@@ -36,6 +36,8 @@ import numpy as np
 from vaalstreet.panel import rolling, rolling_quantile
 
 _EPS = 1e-12
+# A far print confirms a reprice only if it traded at least this share of a typical hour's units.
+CONFIRM_UNITS = 0.5
 
 
 @dataclass
@@ -120,6 +122,8 @@ def fair_value(
     q = np.full(N, 0.02**2)
     r = np.full(N, 0.05**2)
     typical = np.ones(N)
+    typical_units = np.ones(N)
+    units = value / np.where(price > 0, price, np.nan) if value is not None else None
     pending = np.full(N, np.nan)  # log price of an unconfirmed far-out print
 
     for t in range(T):
@@ -129,6 +133,8 @@ def fair_value(
             if value is not None:
                 med = np.nanmedian(value[lo:t], axis=0)
                 typical = np.where(np.isfinite(med) & (med > 0), med, 1.0)
+                med = np.nanmedian(units[lo:t], axis=0)
+                typical_units = np.where(np.isfinite(med) & (med > 0), med, 1.0)
         obs = ~np.isnan(y[t])
         fresh = obs & np.isnan(x)
         P_pred = P + q
@@ -145,8 +151,13 @@ def fair_value(
         K = P_pred / (P_pred + R_eff + _EPS)
         seen = obs & ~fresh
         far = seen & (np.abs(score) > reject_z)
-        # Confirmed when this print is closer to the one set aside than to the old value.
+        # Confirmed when this print is closer to the one set aside than to the old value, and is not
+        # a thin hour. Counted in units, because a joke price inflates the traded value: two joke
+        # trades in a row (a few units at half a Divine each) must not reprice an item whose next
+        # real hour trades hundreds at the old level.
         confirmed = far & np.isfinite(pending) & (np.abs(y[t] - pending) < 0.5 * np.abs(pending - x))
+        if units is not None:
+            confirmed &= units[t] >= CONFIRM_UNITS * typical_units
         update = seen & ~far
         z[t] = np.where(seen, score, np.nan)
         x = np.where(update, x + K * innovation, x)
