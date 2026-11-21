@@ -28,7 +28,7 @@ Three pieces turn prints into numbers a trader can act on.
 from __future__ import annotations
 
 import math
-
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,8 +77,10 @@ class FairValue:
 
 def _noise_split(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Split the variance of hourly log returns d[T, N] into signal q and noise r per item."""
-    med = np.nanmedian(d, axis=0)
-    mad = 1.4826 * np.nanmedian(np.abs(d - med), axis=0)
+    with warnings.catch_warnings():  # an item that never printed in the window is all NaN, and stays NaN
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        med = np.nanmedian(d, axis=0)
+        mad = 1.4826 * np.nanmedian(np.abs(d - med), axis=0)
     limit = np.where(mad > 0, 4 * mad, np.inf)
     c = np.clip(d - med, -limit, limit)
     n = np.sum(~np.isnan(c), axis=0)
@@ -133,10 +135,11 @@ def fair_value(
             lo = max(0, t - lookback)
             q, r = _noise_split(d[lo:t])
             if value is not None:
-                med = np.nanmedian(value[lo:t], axis=0)
-                typical = np.where(np.isfinite(med) & (med > 0), med, 1.0)
-                med = np.nanmedian(units[lo:t], axis=0)
-                typical_units = np.where(np.isfinite(med) & (med > 0), med, 1.0)
+                with warnings.catch_warnings():  # all-NaN columns fall back to 1 just below
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    med_value, med_units = np.nanmedian(value[lo:t], axis=0), np.nanmedian(units[lo:t], axis=0)
+                typical = np.where(np.isfinite(med_value) & (med_value > 0), med_value, 1.0)
+                typical_units = np.where(np.isfinite(med_units) & (med_units > 0), med_units, 1.0)
         obs = ~np.isnan(y[t])
         fresh = obs & np.isnan(x)
         P_pred = P + q

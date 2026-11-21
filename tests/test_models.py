@@ -45,6 +45,18 @@ def test_fair_value_is_causal():
     assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
 
 
+def test_fair_value_is_quiet_about_items_that_never_print():
+    import warnings
+
+    _, seen = noisy_walk()
+    seen = seen.copy()
+    seen[:, 0] = np.nan  # an item with no prints at all, as many have on a young league
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=RuntimeWarning)
+        fv = pricing.fair_value(seen, seen * 100.0)
+    assert np.isnan(fv.fair[:, 0]).all() and np.isfinite(fv.fair[-1, 1:]).all()
+
+
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
     _, seen = noisy_walk(noise=0.02)
     spiked = seen.copy()
