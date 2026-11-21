@@ -1045,6 +1045,42 @@ function openCheck(item) {
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
 // ----------------------------------------------------------------- hideout
+// Fired alerts in the hideout window: a browser notification and/or the title read aloud, both opt-in.
+// Only events after the last one this window has seen; nothing is ever sent to the game.
+const ringing = { since: null, busy: false };
+const ringOn = key => localStorage[key] === '1';
+async function pollEvents() {
+  if (ringing.busy) return;
+  ringing.busy = true;
+  try {
+    const first = ringing.since == null;
+    const d = await api(withLeague('/api/events', { since: ringing.since ?? +(localStorage.hoLastEvent || 0) }));
+    // On opening, catch up silently unless this window has heard events before: old alerts are not news.
+    const fresh = first && !localStorage.hoLastEvent ? [] : d.events;
+    ringing.since = d.last; localStorage.hoLastEvent = d.last;
+    for (const e of fresh.slice(-3)) {
+      if (ringOn('hoNotify') && window.Notification?.permission === 'granted') new Notification(e.title, { body: e.body, icon: '/mark.svg', tag: 'vaal-' + e.id });
+      if (ringOn('hoSpeak') && window.speechSynthesis) speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance(e.title), { rate: 1.05 }));
+    }
+  } catch { /* the next poll tries again */ }
+  ringing.busy = false;
+}
+function ringControls() {
+  const box = document.createElement('div'); box.className = 'panel'; box.style.padding = '8px 12px';
+  const notifyState = !window.Notification ? 'unsupported' : Notification.permission;
+  box.innerHTML = `<div class="muted small" style="margin-bottom:4px">When an alert fires</div>
+    <label style="display:flex;gap:7px;align-items:center"><input type="checkbox" data-ring="hoNotify" ${ringOn('hoNotify') && notifyState === 'granted' ? 'checked' : ''} ${notifyState === 'unsupported' || notifyState === 'denied' ? 'disabled' : ''}> Show a notification${notifyState === 'denied' ? ' <span class="dim small">(blocked in the browser’s site settings)</span>' : notifyState === 'unsupported' ? ' <span class="dim small">(this browser cannot)</span>' : ''}</label>
+    <label style="display:flex;gap:7px;align-items:center"><input type="checkbox" data-ring="hoSpeak" ${ringOn('hoSpeak') ? 'checked' : ''} ${window.speechSynthesis ? '' : 'disabled'}> Read its title aloud</label>`;
+  box.onchange = async e => {
+    const key = e.target.dataset.ring; if (!key) return;
+    let on = e.target.checked;
+    // The permission prompt only ever appears here, after your click.
+    if (key === 'hoNotify' && on && Notification.permission !== 'granted') on = (await Notification.requestPermission()) === 'granted';
+    e.target.checked = on; localStorage[key] = on ? '1' : '0';
+    if (key === 'hoSpeak' && on) speechSynthesis.speak(new SpeechSynthesisUtterance('Alerts will be read aloud.'));
+  };
+  return box;
+}
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
@@ -1060,6 +1096,7 @@ async function viewHideout(main) {
   wp.append(table([{ h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Price', f: r => money(r.price) }, { h: '24h', f: r => pct(r.change_24h, 0) }], watched, { empty: 'Star items in Markets.' }));
   main.append(fp, wp);
   if (d.events.length) { const ev = panel('Alerts', ''); ev.innerHTML += `<div class="body small">${d.events.slice(0, 5).map(e => `<div><b>${esc(e.title)}</b> <span class="muted">${ago(e.t)}</span></div>`).join('')}</div>`; main.append(ev); }
+  main.append(ringControls());
 }
 async function openHideout() {
   const url = '/?hideout=1';
@@ -1098,6 +1135,7 @@ async function poll(first) {
     const changed = s.generation !== state.generation || s.ready !== state.status?.ready;
     state.status = s; state.league ||= s.league; state.generation = s.generation;
     announce(s.last_event);
+    if (changed && state.hideout) pollEvents();  // right after the hourly refresh
     if (first || changed) await route(); else if (!state.hideout && state.summary) renderTop();
     else if (!s.ready) route();
   } catch (err) { if (first) $('#main').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
@@ -1109,7 +1147,8 @@ function announce(event) {
   localStorage.lastEvent = Math.max(seen, event.id);
   if (!seen || event.id <= seen) return;
   toast(`${event.title} — ${event.body}`);
-  if (window.Notification?.permission === 'granted') new Notification(event.title, { body: event.body, icon: '/mark.svg' });
+  // The hideout window rings for itself, only if you turned that on there.
+  if (!state.hideout && window.Notification?.permission === 'granted') new Notification(event.title, { body: event.body, icon: '/mark.svg' });
 }
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
 window.addEventListener('keydown', e => {
@@ -1122,3 +1161,4 @@ window.addEventListener('keydown', e => {
 });
 poll(true);
 setInterval(poll, state.hideout ? 60000 : 20000);
+if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
