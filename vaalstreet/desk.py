@@ -75,6 +75,7 @@ class Leg:
     high: np.ndarray
     ask_units: np.ndarray  # [N] item units resting on offer (latest known)
     bid_value: np.ndarray  # [N] reference-currency value bidding for the item (latest known)
+    sd: np.ndarray | None = None  # [N] latest sd of log(this leg's fair value): how sure its own price is
 
 
 def kind_currency(plan: dict, side: str) -> bool:
@@ -134,6 +135,7 @@ class Desk:
                 pricing.activity(price, DAY)[-1], _age(price), low, high,
                 ffill(_geo(panel[f"{key}_stock_lo"], panel[f"{key}_stock_hi"]), limit=6)[-1],
                 ffill(_geo(panel[f"{key}_bid_lo"], panel[f"{key}_bid_hi"]), limit=6)[-1],
+                sd=leg_fv.sd[-1],
             )
         premium = pricing.leg_premium(panel["r_price"][-DAY:], panel["b_price"][-DAY:])[-1]
         ref, bridge = ANCHORS[realm]
