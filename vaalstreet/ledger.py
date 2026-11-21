@@ -29,6 +29,7 @@ import statistics
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from vaalstreet.paths import ledger_file
 
@@ -109,14 +110,22 @@ ALERT_FIELDS = {"price": "Price", "chaos": "Chaos-market price", "divine": "Divi
 
 
 class Ledger:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, path: Path | None = None, clock: Callable[[], float] | None = None) -> None:
+        """The ledger in `root` (desk.sqlite), or in `path`. `clock` stamps new rows: a rehearsal's
+        practice ledger runs on the rehearsal's hour, not the wall clock."""
         root.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(ledger_file(root), check_same_thread=False)
+        self.clock = clock or time.time
+        self.path = path or ledger_file(root)
+        self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock, self._db:
             self._db.executescript(_SCHEMA)
             self._migrate()
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
 
     def _migrate(self) -> None:
         for table, columns in _COLUMNS.items():
@@ -156,7 +165,7 @@ class Ledger:
                 raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}.")
         return self._run(
             "INSERT INTO trades(t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?)",
-            (int(t or time.time()), league, item, side, units, price, str(note)[:200], gold, order_id),
+            (int(t or self.clock()), league, item, side, units, price, str(note)[:200], gold, order_id),
         )
 
     def delete_trade(self, trade_id: int) -> None:
@@ -224,7 +233,7 @@ class Ledger:
             raise ValueError("The exchange only takes whole-number ratios.")
         if not int(currency_units) > 0 or not int(item_units) > 0 or not float(units) > 0:
             raise ValueError("An order needs a positive ratio and positive units.")
-        now = int(t or time.time())
+        now = int(t or self.clock())
         return self._run(
             "INSERT INTO orders(league, item, side, market, currency_units, item_units, units, gold, created, updated)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -249,7 +258,7 @@ class Ledger:
         The trade is written first: if it is refused (selling more than the ledger holds), the order
         is left as it was.
         """
-        order, units, now = self.order(order_id), float(units), int(t or time.time())
+        order, units, now = self.order(order_id), float(units), int(t or self.clock())
         if order["status"] not in ("open", "part-filled"):
             raise ValueError("Only an open order can fill.")
         left = order["units"] - order["filled"]
@@ -274,7 +283,7 @@ class Ledger:
         if status not in ("cancelled", "closed"):
             raise ValueError("An order can only be cancelled or closed by hand; fills go through fill_order.")
         self.order(order_id)
-        self._run("UPDATE orders SET status = ?, updated = ? WHERE id = ?", (status, int(t or time.time()), int(order_id)))
+        self._run("UPDATE orders SET status = ?, updated = ? WHERE id = ?", (status, int(t or self.clock()), int(order_id)))
 
     def delete_order(self, order_id: int) -> None:
         self._run("DELETE FROM orders WHERE id = ?", (int(order_id),))
@@ -335,11 +344,11 @@ class Ledger:
             raise ValueError("A session is already running in this league.")
         expected = float(expected_per_hour) if expected_per_hour not in (None, "") else None
         return self._run("INSERT INTO sessions(league, started, expected_per_hour, plan) VALUES (?,?,?,?)",
-                         (league, int(t or time.time()), expected, json.dumps(plan or {})))
+                         (league, int(t or self.clock()), expected, json.dumps(plan or {})))
 
     def stop_session(self, session_id: int, gold_earned: float | None = None, t: int | None = None) -> None:
         self._run("UPDATE sessions SET stopped = ?, gold_earned = ? WHERE id = ? AND stopped IS NULL",
-                  (int(t or time.time()), _gold(gold_earned), int(session_id)))
+                  (int(t or self.clock()), _gold(gold_earned), int(session_id)))
 
     def delete_session(self, session_id: int) -> None:
         self._run("DELETE FROM sessions WHERE id = ?", (int(session_id),))
@@ -356,7 +365,7 @@ class Ledger:
         bought before, so stock carried in from earlier counts at what you paid for it.
         Gold spent is the Gold on trades made and orders posted inside the session.
         """
-        now = int(now or time.time())
+        now = int(now or self.clock())
         _, sales = self._replay(league)
         out = []
         for s in self._all("SELECT * FROM sessions WHERE league = ? ORDER BY id DESC LIMIT ?", (league, limit)):
@@ -378,7 +387,7 @@ class Ledger:
         if status not in ("confirmed", "failed") or not key:
             raise ValueError("A recipe check needs a recipe and confirmed or failed.")
         return self._run("INSERT INTO recipe_checks(key, status, note, t) VALUES (?,?,?,?)",
-                         (str(key)[:300], status, str(note)[:200], int(t or time.time())))
+                         (str(key)[:300], status, str(note)[:200], int(t or self.clock())))
 
     def delete_recipe_check(self, check_id: int) -> None:
         self._run("DELETE FROM recipe_checks WHERE id = ?", (int(check_id),))
@@ -405,7 +414,7 @@ class Ledger:
             self._run("DELETE FROM stash WHERE league = ? AND item = ?", (league, item))
             return
         self._run("INSERT INTO stash VALUES (?, ?, ?, ?) ON CONFLICT(league, item) DO UPDATE SET "
-                  "units = excluded.units, updated = excluded.updated", (league, item, units, int(t or time.time())))
+                  "units = excluded.units, updated = excluded.updated", (league, item, units, int(t or self.clock())))
 
     def clear_stash(self, league: str) -> None:
         self._run("DELETE FROM stash WHERE league = ?", (league,))
@@ -433,7 +442,7 @@ class Ledger:
         if any(item == output for item, _ in clean):
             raise ValueError("The output cannot also be an input.")
         return self._run("INSERT INTO fixed_conversions(kind, inputs, output, gives, note, t) VALUES (?,?,?,?,?,?)",
-                         (kind, json.dumps(clean), str(output), gives, str(note)[:200], int(t or time.time())))
+                         (kind, json.dumps(clean), str(output), gives, str(note)[:200], int(t or self.clock())))
 
     def delete_fixed(self, fixed_id: int) -> None:
         self._run("DELETE FROM fixed_conversions WHERE id = ?", (int(fixed_id),))
