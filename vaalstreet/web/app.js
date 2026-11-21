@@ -112,7 +112,7 @@ function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
-    <select id="leagueSel" title="League">${leagues.map(l => `<option ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}</option>`).join('')}</select>
+    <select id="leagueSel" title="League">${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
     ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
@@ -467,6 +467,72 @@ function leagueChart(host, curves, current, key, yFormat) {
   return `<div class="legend">${series.slice().reverse().map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('')}</div>`;
 }
 
+// A league family in words: "challenge league", "event", "Standard (Hardcore)".
+function familyWord(f) {
+  if (!f) return '';
+  const [base, ...rest] = f.split('_');
+  const head = { challenge: 'challenge league', event: 'event', private: 'private league', standard: 'Standard' }[base] || base;
+  return rest.length ? `${head} (${rest.map(x => x[0].toUpperCase() + x.slice(1)).join(' ')})` : head;
+}
+const times = x => x == null ? '–' : `${+(+x).toFixed(x >= 10 ? 0 : 1)}×`;
+const MOVE = { rise: '<span class="up">rose</span>', fall: '<span class="down">fell</span>', flat: '<span class="muted">flat</span>' };
+const GAP = {
+  structural: ['gold', 'Steady', 'Held on most days with the same sign, at least 3%: a real difference between the leagues'],
+  noise: ['muted', 'Noise', 'Flips sign or closes from day to day: it will not hold'],
+  none: ['dim', 'None', 'Within 3%: no real gap'],
+};
+// The League start sections added for launch day, Divine timing, meta shifts and other leagues.
+async function leagueExtras(g, d) {
+  const fam = familyWord(d.family);
+  const L = d.launch;
+  if (L) {
+    const lp = panel(`Launch day: the first ${L.hours} hours of past ${esc(fam)}s`, 'c12', `<span class="muted small">Moves against each league’s first-day value, in ${L.unit === 'divine' ? 'Divine' : 'Chaos'}</span>`);
+    lp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">For each item: the hour its market first traded (“wakes up”), what it did first (rose or fell 5% from its first three traded hours, or stayed flat), and where it stood at hours ${L.checks.join(', ')} against its first-day value. Medians over ${L.precedents.length ? esc(L.precedents.join(', ')) : 'no past league'}. ${L.shortfall ? `<b>${esc(L.shortfall)}</b>` : ''}</p></div>`);
+    lp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
+      { h: 'Wakes up', f: r => r.wake == null ? '–' : `hour ${r.wake}`, s: r => r.wake, title: 'Median hour after launch when its market first traded' },
+      { h: 'First move', l: 1, f: r => MOVE[r.first] || esc(r.first), s: r => r.first },
+      ...L.checks.map(h => ({ h: `At ${h} h`, f: r => pct(r.moves?.[h], 0), s: r => r.moves?.[h], title: `Against its first-day value, ${h} hours after launch` })),
+      { h: 'Leagues agree', f: r => r.n ? `${Math.round(r.agree * r.n)} of ${r.n}` : '–', s: r => r.agree, title: 'How many past leagues made the same first move' },
+    ], L.items || [], { sort: 2 + L.checks.length, limit: 30, onRow: r => openItem(r.id), empty: 'No past league’s first hours are on disk.' }));
+    g.append(lp);
+  }
+  const dt = d.divine_timing;
+  if (dt) {
+    const tp = panel('When to buy Divines', 'c6');
+    tp.insertAdjacentHTML('beforeend', `<div class="body"><p style="margin:0 0 10px">${esc(dt.advice || `No past ${fam} to learn from yet.`)}</p><div class="legend"><span><i style="background:#8fb8f2"></i>How much dearer than its cheapest day the Divine was, median over past leagues</span></div><div id="dtc"></div></div>`);
+    g.append(tp);
+    if (dt.curve?.length) drawChart($('#dtc', tp), { series: [{ label: 'Dearer than its cheapest day', color: '#8fb8f2', x: dt.curve.map(c => c.day), y: dt.curve.map(c => c.dearer), width: 2 }], xType: 'day', yFormat: x => `+${(x * 100).toFixed(0)}%`, height: 200 });
+  }
+  const m = d.meta;
+  if (m) {
+    const mp = panel('Meta shifts: demand growing faster than ever before', 'c6');
+    mp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">Units traded in the last 24 hours against league day 1, next to the same hours in past ${esc(fam)}s. Grown at least 1.5× and faster than in any past league: players may be using it for something new. ${m.note ? esc(m.note) : ''}</p></div>`);
+    mp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
+      { h: 'Demand grew', f: r => times(r.growth), s: r => r.growth },
+      { h: 'Past leagues', f: r => `${times(r.past_low)} <span class="dim">/</span> ${times(r.past_median)} <span class="dim">/</span> ${times(r.past_high)}`, title: 'Lowest / median / highest growth over the same hours in past leagues' },
+      { h: 'Leagues', f: r => r.n, s: r => r.n },
+    ], m.items || [], { sort: 1, onRow: r => openItem(r.id), empty: 'No item’s demand is growing faster than in past leagues.' }));
+    g.append(mp);
+  }
+  const cp = panel('Other leagues’ prices', 'c12', '<span class="muted small">Same item, same hours, in each league’s own Divines; a gap is not a trade, since items cannot move between leagues</span>');
+  g.append(cp);
+  try {
+    const x = await api(withLeague('/api/cross_league'));
+    const rows = [...(x.divine || []), ...(x.items || [])];
+    cp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">Over the last ${x.days} days, compared with ${x.others.map(esc).join(', ') || 'no other league'}. “Steady” gaps held on most days with the same sign: trust them when you read prices from that league. “Noise” gaps flip or close.</p></div>`);
+    cp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.market}">${r.market === 'divine' ? 'Divine market' : 'Chaos market'}</span>`), s: r => r.name },
+      { h: 'Other league', l: 1, f: r => `${esc(r.other)}<div class="muted small">${esc(familyWord(r.family))}</div>`, s: r => r.other },
+      { h: 'There it costs', f: r => pct(r.gap, 0), s: r => r.gap, title: 'How much more (or less) it costs in the other league, in that league’s Divines, typical day' },
+      { h: 'Gap', l: 1, f: r => { const [c, w, t] = GAP[r.verdict] || ['dim', esc(r.verdict), '']; return `<span class="${c}" title="${t}">${w}</span>`; }, s: r => ({ structural: 2, noise: 1 })[r.verdict] || 0 },
+      { h: 'Same sign', f: r => plainPct(r.same_sign), title: 'Share of days the gap kept the same direction' },
+      { h: 'Days', f: r => r.days },
+    ], rows, { sort: 3, limit: 40, onRow: r => openItem(r.id), empty: 'No other league traded these items in the same hours.' }));
+  } catch (err) { cp.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); }
+}
+
 async function viewLeague(main) {
   const v = state.league_view;
   const d = await api(withLeague('/api/league', { horizon: v.horizon, unit: v.unit }));
@@ -474,16 +540,19 @@ async function viewLeague(main) {
   renderTop();
   const past = d.precedents, unitWord = v.unit === 'divine' ? 'Divine' : 'Chaos';
   const st0 = state.status, shallow = st0.first_hour > st0.archive_start + 86400;
-  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${d.truncated ? `The archive does not reach back to the start of ${esc(d.league)}, so its league days cannot be counted yet.` : `${esc(d.league)} is on day ${d.day}.`} ${past.length ? `Lined up against the same day of ${past.map(esc).join(', ')}.` : 'No earlier league in the archive yet.'}</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${d.truncated ? `The archive does not reach back to the start of ${esc(d.league)}, so its league days cannot be counted yet.` : `${esc(d.league)} is on day ${d.day}.`} It is a ${esc(familyWord(d.family))}, so it is lined up only against past ${esc(familyWord(d.family))}s that have ended${past.length ? `: ${past.map(esc).join(', ')}.` : ', and there is none in the archive yet.'}</p></div></div>
     ${shallow ? `<p class="note">History on disk starts ${new Date(st0.first_hour * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}. The exchange has published every hour since July 2024; the full archive is about 1.5 GB and takes one to two hours to download, in the background, newest first. <button class="btn" id="bf" ${st0.sync.backfill ? 'disabled' : ''}>${st0.sync.backfill ? 'Downloading…' : 'Download full history'}</button></p>` : ''}
     <div class="grid" id="g"></div>`;
   const g = $('#g', main);
   if ($('#bf', main)) $('#bf', main).onclick = async e => { e.target.disabled = true; e.target.textContent = 'Downloading…'; await api('/api/sync', { backfill: true }); toast('Downloading the full history in the background. Pages refresh as leagues arrive.'); };
-  const dv = panel('Divine Orb in Chaos, by league day', 'c12');
+  const dv = panel('Divine Orb in Chaos, by league day', 'c12', `<div class="seg" id="dvf" title="Which leagues to draw"><button data-f="family" class="${v.allLeagues ? '' : 'on'}">Same family</button><button data-f="all" class="${v.allLeagues ? 'on' : ''}">All leagues</button></div>`);
   const outlook = d.truncated ? '' : (d.divine_outlook || []).map(o => `<span style="margin-right:18px">next ${o.horizon} days: <b class="num">${pct(o.median, 0)}</b> <span class="dim">(${(o.worst * 100).toFixed(0)}% to ${o.best > 0 ? '+' : ''}${(o.best * 100).toFixed(0)}%, ${o.n} league${o.n === 1 ? '' : 's'})</span></span>`).join('');
   dv.innerHTML += `<div class="body">${outlook ? `<div class="muted" style="margin-bottom:10px">From day ${d.day} in past leagues, a Divine went on to cost — ${outlook}</div>` : ''}<div id="lg"></div><div id="dvc"></div></div>`;
   g.append(dv);
-  $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), d.divine, d.league, 'price', x => fmt(x) + ' c');
+  const keep = new Set([d.league, ...past]);
+  const curves = v.allLeagues ? d.divine : Object.fromEntries(Object.entries(d.divine).filter(([name]) => keep.has(name)));
+  $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), curves, d.league, 'price', x => fmt(x) + ' c');
+  $('#dvf', dv).onclick = e => { const f = e.target.dataset.f; if (f) { v.allLeagues = f === 'all'; route(); } };
 
   const moneyU = x => x == null ? '–' : v.unit === 'divine' ? `${fmt(x)}<span class="dim"> d</span>` : `${fmt(x)}<span class="dim"> c</span>`;
   const controls = `<div class="seg" id="hz">${[3, 7, 14, 30].map(h => `<button data-h="${h}" class="${v.horizon === h ? 'on' : ''}">${h} days</button>`).join('')}</div>
@@ -516,6 +585,7 @@ async function viewLeague(main) {
   g.append(cheap, rich);
   $('#hz', main).onclick = e => { const h = +e.target.dataset.h; if (h) { v.horizon = h; route(); } };
   $('#lu', main).onclick = e => { const u = e.target.dataset.u; if (u) { v.unit = u; route(); } };
+  await leagueExtras(g, d);
 }
 
 const STRATS = {
