@@ -35,7 +35,7 @@ python -m vaalstreet sync --all      # every hour since July 2024, newest first,
 | **Backtest lab** | Replay a strategy over any league and compare it with simply holding Divines. |
 | **Ledger** | Record your trades and the Gold they cost; positions are marked at fair value with realised and unrealised profit. Record the orders you post, and the desk says for each one whether to keep it, re-price it (with the ratio to post instead), cancel it (it now pays more, or asks less, than its market) or collect it; a fill adds the trade for you. Start and stop a session to see the profit, Gold spent and Chaos per hour it made, next to what the Flips session plan expected. Mark whether a recipe or round trip worked when you tried it in game; these checks hold for every league. |
 
-**Hideout mode** (press `H`) opens a small always-on-top window with the top flips, your watchlist and alerts, so it can sit over the game. Prices can be shown in Chaos or Divine anywhere. `/` jumps to search.
+**Hideout mode** (press `H`) opens a small always-on-top window with the top flips, your watchlist and alerts, so it can sit over the game. **Check an offer** (press `C` anywhere, including the hideout window, or use the button on Markets and on an item) opens a small panel: type the item, pick buy or sell and the Chaos or Divine market, enter the ratio as two whole numbers with the items first, and press Enter for go, caution or no-go with the reasons. It remembers the market and side you used last. Prices can be shown in Chaos or Divine anywhere. `/` jumps to search.
 
 ## How the numbers are made
 

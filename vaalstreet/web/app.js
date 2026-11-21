@@ -102,7 +102,7 @@ function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br>Not affiliated with Grinding Gear Games.</div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>Not affiliated with Grinding Gear Games.</div>`;
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
@@ -198,7 +198,7 @@ async function viewDesk(main) {
 async function viewMarkets(main) {
   const d = await loadDesk(); renderTop();
   const f = state.filters, cats = [...new Set(d.market.map(r => r.category))].sort();
-  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div><span class="grow"></span><button class="btn" id="tcBtn" title="Is an offer in the order window a good deal? (C)">Check an offer</button></div>
     <div class="bar">
       <label class="f">Search<input type="search" id="q" placeholder="Item name" value="${esc(f.q)}"></label>
       <label class="f">Category<select id="cat"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
@@ -230,6 +230,7 @@ async function viewMarkets(main) {
     });
     $('#tbl', main).replaceChildren(t);
   };
+  $('#tcBtn', main).onclick = () => openCheck();
   $('#q', main).oninput = e => { f.q = e.target.value; draw(); };
   $('#cat', main).onchange = e => { f.category = e.target.value; draw(); };
   $('#minv', main).onchange = e => { f.minValue = +e.target.value || 0; draw(); };
@@ -725,7 +726,7 @@ async function openItem(id, hours = 168) {
     </div>
     ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <span class="grow"></span><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
+      <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
     <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
     <div id="pc"></div>
     <h2 style="margin:18px 0 8px">Flip plans</h2><div class="orders" id="plans"></div>
@@ -751,6 +752,7 @@ async function openItem(id, hours = 168) {
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);
   else $('#lc', drawer).innerHTML = '<div class="muted">No league history for this item.</div>';
   $('.close', drawer).onclick = closeDrawer;
+  $('#tcItem', drawer).onclick = () => openCheck(s.name);
   $('#rg', drawer).onclick = e => { const h = +e.target.dataset.h; if (h) openItem(id, h); };
   $('#watchBtn', drawer).onclick = async () => { row.watched = !row.watched; await api('/api/watch', { league: state.league, item: s.id, on: row.watched }); $('#watchBtn', drawer).textContent = row.watched ? '★ Watching' : '☆ Watch'; };
   $('#aa', drawer).onclick = async () => {
@@ -765,11 +767,60 @@ async function openItem(id, hours = 168) {
 }
 function closeDrawer() { $('#drawer').hidden = true; $('#drawer').innerHTML = ''; }
 
+// --------------------------------------------------------------- trade check
+// A small panel outside #main, so a refresh of the page under it never wipes what you typed.
+const VERDICT = { go: ['up', 'Go'], caution: ['gold', 'Caution'], 'no-go': ['down', 'No-go'] };
+function openCheck(item) {
+  let host = $('#tc');
+  if (!host) { host = document.createElement('aside'); host.id = 'tc'; document.body.append(host); }
+  const mkt = localStorage.tcMarket || 'chaos', side = localStorage.tcSide || 'buy';
+  const names = (state.market || []).map(r => r.name);
+  host.hidden = false;
+  host.innerHTML = `<form autocomplete="off">
+    <header><h2>Check an offer</h2><span class="grow"></span><span class="muted small"><kbd>Enter</kbd> check · <kbd>Esc</kbd> close</span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <label class="f">Item<input type="text" name="what" list="tcItems" placeholder="Start typing…" value="${esc(item || '')}"><datalist id="tcItems">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
+    <div class="row">
+      <div class="seg" data-g="side" title="Would you buy the item or sell it?">${[['buy', 'I buy'], ['sell', 'I sell']].map(([k, l]) => `<button type="button" data-v="${k}" class="${side === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <div class="seg" data-g="market" title="Which market the offer is in">${[['chaos', 'Chaos market'], ['divine', 'Divine market']].map(([k, l]) => `<button type="button" data-v="${k}" class="${mkt === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    </div>
+    <div class="row"><label class="f">Items<input type="number" name="iu" min="1" step="1" placeholder="64"></label><span class="muted" style="padding-bottom:6px">for</span>
+      <label class="f"><span data-cur>${mkt === 'divine' ? 'Divine' : 'Chaos'}</span><input type="number" name="cu" min="1" step="1" placeholder="1"></label>
+      <label class="f">Stock (optional)<input type="number" name="stock" min="0" step="1" placeholder="on offer"></label></div>
+    <button class="btn primary">Check</button>
+    <div data-out></div></form>`;
+  const form = $('form', host), out = $('[data-out]', host);
+  const pick = g => $(`[data-g="${g}"] .on`, form).dataset.v;
+  form.onclick = e => {
+    if (e.target.closest('[data-x]')) return closeCheck();
+    const b = e.target.closest('[data-g] button'); if (!b) return;
+    b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    localStorage[b.parentNode.dataset.g === 'side' ? 'tcSide' : 'tcMarket'] = b.dataset.v;
+    $('[data-cur]', form).textContent = pick('market') === 'divine' ? 'Divine' : 'Chaos';
+  };
+  form.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCheck(); } };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const v = name => form.elements[name].value.trim();
+    if (!v('what') || !(+v('iu') > 0) || !(+v('cu') > 0)) { out.innerHTML = '<p class="muted">Give the item and both sides of the ratio, items first.</p>'; return; }
+    out.innerHTML = '<p class="muted">Checking…</p>';
+    try {
+      const r = await api('/api/check', { league: state.league, item: v('what'), market: pick('market'), side: pick('side'), item_units: Math.round(+v('iu')), currency_units: Math.round(+v('cu')), stock: v('stock') || null });
+      const [cls, word] = VERDICT[r.verdict] || ['muted', r.verdict];
+      out.innerHTML = `<div class="verdict ${cls}">${word} <span class="muted small">${esc(r.name)} at ${fmt(r.price)} c each${r.trusted ? '' : ' · this market barely trades'}</span></div>
+        <ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    } catch (err) { out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
+  };
+  (item ? form.elements.iu : form.elements.what).focus();
+}
+function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
+
 // ----------------------------------------------------------------- hideout
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>`;
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+    <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
+  $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
   fp.append(table([
     { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">Buy ${order(r.buy_order, true)}</span><span class="sub">Sell ${order(r.sell_order, false)}</span>` },
@@ -833,8 +884,10 @@ function announce(event) {
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === 'Escape') closeDrawer();
+  if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else closeDrawer(); }
+  else if (e.ctrlKey || e.metaKey || e.altKey) return;
   else if (e.key === 'h' || e.key === 'H') openHideout();
+  else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); openCheck(); }
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
 });
 poll(true);
