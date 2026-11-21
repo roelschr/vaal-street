@@ -47,7 +47,7 @@ To try the CLI or the server without touching the user's archive, set `VAAL_DATA
 These rules hold across the code base. If a change you want to make would break one, explain the conflict to the user instead of working around it.
 
 - **Causality.** Fair value, typical ranges, the leg premium and every backtest input at hour *t* use only data published up to hour *t*. Model parameters are re-fitted on trailing data. A strategy's `ctx` sees only the past. A league report page for day *d* opens the archive with `db.connect(until=...)`, so it sees nothing after that day. Look-ahead makes backtests and the scorecard look better than the truth, and nothing else will catch it, so add or extend a test whenever you touch these paths.
-- **Two markets per item.** An item's Chaos market and its Divine market are different prices; the Divine market is usually several percent dearer. Keep them apart in derived data. Convert Divine-market prices at the same hour's Divine price.
+- **Two markets per item.** An item's Chaos market and its Divine market are different prices; the Divine market is usually dearer, and for cheap items by a lot. On the first week of Covens, across 293 items, the Divine market's price was a median 1.16 times the Chaos market's (5th percentile 0.84, 75th 1.69, 95th 3.8), about 1.05 for items above 100 Chaos and up to about 3 times for cheap ones. Keep them apart in derived data. Convert Divine-market prices at the same hour's Divine price.
 - **Published lowest and highest ratios do not set order levels.** Joke trades and single-unit rounding pollute them in most hours. Flip levels come from volume-weighted hourly averages, as the README describes. Where the ratios are used, as in `pricing.typical_range`, they go through a robust trailing median that tolerates a large share of garbage.
 - **Raw data is the source of truth.** `data/raw/` keeps the digests byte for byte as the exchange served them. Everything under `data/parquet/` must stay rebuildable from raw.
 - **Derived data carries a version.** Existing installs rebuild derived files only when the version changes. If you change how hourly prices are derived in `ingest.py`, bump `PRICES_VERSION`. If `items.build` learns something new, bump `VERSION` in `items.py`. Without the bump, users keep their old files and your change does nothing for them.
@@ -60,7 +60,7 @@ These rules hold across the code base. If a change you want to make would break 
 
 Match the code around you. Modules open with a docstring that explains the model or the job of the module and why it works that way. Comments explain reasons, not mechanics. Python modules use `from __future__ import annotations` and type hints. Model code works on dense numpy arrays shaped hour × item, loaded through `Panel`.
 
-User-facing text is written for a player and junior trader, in plain words. This covers UI labels, CLI help and the README. For example, write "the Divine market pays 8% more", not a term from the code such as "the b-leg premium".
+User-facing text is written for a player and junior trader, in plain words. This covers UI labels, CLI help and the README. For example, write "the Divine market pays 16% more", not a term from the code such as "the b-leg premium".
 
 When a change affects what the user sees or how a number is computed, update the README in the same change. The README is the one place that describes the models.
 
