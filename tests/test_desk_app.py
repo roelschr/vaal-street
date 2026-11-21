@@ -122,3 +122,34 @@ def test_server_refuses_other_sites_and_serves_the_app(server):
         urllib.request.urlopen(f"{server}/../pyproject.toml")
     with pytest.raises(urllib.error.HTTPError):
         urllib.request.urlopen(f"{server}/%2e%2e/%2e%2e/pyproject.toml")
+
+
+def test_api_orders_sessions_and_recipe_checks(server):
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9, "gold": 40})[0] == 200
+    assert call(f"{server}/api/order", {"item": ITEM, "side": "buy", "market": "divine", "currency_units": 1,
+                                        "item_units": 5, "units": 10, "gold": 60})[0] == 200
+    ledger = call(f"{server}/api/ledger")[1]
+    order = ledger["orders"][0]
+    assert order["advice"] in {"keep", "re-price", "cancel"} and order["reason"] and order["name"]
+    assert ledger["gold_fees"][0]["gold_per_unit"] == 5 and ledger["gold_fees"][0]["trades"] == 2
+    assert call(f"{server}/api/order", {"fill": order["id"], "units": 10})[0] == 200
+    ledger = call(f"{server}/api/ledger")[1]
+    assert ledger["orders"][0]["advice"] == "collect" and ledger["positions"][0]["units"] == 20
+    assert call(f"{server}/api/order", {"id": order["id"], "status": "closed"})[0] == 200
+    assert call(f"{server}/api/order", {"item": ITEM, "side": "up", "market": "chaos", "currency_units": 1,
+                                        "item_units": 1, "units": 1})[0] == 400
+
+    assert call(f"{server}/api/session", {"expected_per_hour": 12.5, "plan": {"flips": 3}})[0] == 200
+    assert call(f"{server}/api/session", {})[0] == 400, "one session at a time"
+    session = call(f"{server}/api/ledger")[1]["sessions"][0]
+    assert session["running"] and session["expected_per_hour"] == 12.5
+    assert call(f"{server}/api/session", {"stop": session["id"], "gold_earned": 1000})[0] == 200
+    assert not call(f"{server}/api/ledger")[1]["sessions"][0]["running"]
+
+    recipes = call(f"{server}/api/ledger")[1]["recipes"]
+    assert recipes and all(r["check"] is None for r in recipes)
+    key = next(r["key"] for r in recipes if r["key"].startswith("set:"))
+    assert call(f"{server}/api/recipe_check", {"key": key, "status": "confirmed", "note": "ok"})[0] == 200
+    after = call(f"{server}/api/ledger")[1]
+    assert next(r for r in after["recipes"] if r["key"] == key)["check"]["status"] == "confirmed"
+    assert after["recipe_checks"][0]["label"] != key

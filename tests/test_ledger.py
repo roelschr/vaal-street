@@ -1,0 +1,168 @@
+"""The ledger's Gold, orders, sessions and recipe checks, and its additive migration."""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from vaalstreet.ledger import Ledger, recipe_key
+from vaalstreet.paths import ledger_file
+
+# The schema as it shipped before Gold, orders, sessions and recipe checks; copied verbatim.
+OLD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trades(
+    id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, item TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('buy','sell')), units REAL NOT NULL CHECK(units > 0),
+    price REAL NOT NULL CHECK(price >= 0), note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS trades_league ON trades(league, t, id);
+CREATE TABLE IF NOT EXISTS watchlist(league TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY(league, item));
+CREATE TABLE IF NOT EXISTS alerts(
+    id INTEGER PRIMARY KEY, league TEXT NOT NULL, item TEXT NOT NULL,
+    field TEXT NOT NULL, op TEXT NOT NULL CHECK(op IN ('above','below')), threshold REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1, hot INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS events(
+    id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+"""
+
+
+def test_old_ledger_file_keeps_its_rows_and_gains_the_new_features(tmp_path):
+    db = sqlite3.connect(ledger_file(tmp_path))
+    db.executescript(OLD_SCHEMA)
+    db.execute("INSERT INTO trades(t, league, item, side, units, price, note) VALUES (1,'L','orb','buy',10,2,'old')")
+    db.execute("INSERT INTO trades(t, league, item, side, units, price, note) VALUES (2,'L','orb','sell',4,3,'')")
+    db.execute("INSERT INTO watchlist VALUES ('L','orb')")
+    db.execute("INSERT INTO alerts(league, item, field, op, threshold) VALUES ('L','orb','price','above',5)")
+    db.execute("INSERT INTO settings VALUES ('league', '\"L\"')")
+    db.commit()
+    db.close()
+
+    Ledger(tmp_path)  # opening twice proves the migration can run again safely
+    ledger = Ledger(tmp_path)
+    trades = ledger.trades("L")
+    assert [t["note"] for t in trades] == ["old", ""] and all(t["gold"] is None for t in trades)
+    pos = ledger.positions("L")["orb"]
+    assert pos["units"] == 6 and pos["realized"] == pytest.approx(4)
+    assert ledger.watchlist("L") == ["orb"] and len(ledger.alerts("L")) == 1 and ledger.get("league") == "L"
+    assert ledger.gold_fees("L") == {}, "old trades carry no Gold, so the fee stays unknown"
+
+    ledger.add_trade("L", "orb", "buy", 5, 2, gold=50)
+    order = ledger.add_order("L", "orb", "sell", "chaos", 3, 1, 5)
+    ledger.fill_order(order, 5)
+    session = ledger.start_session("L", 10)
+    ledger.check_recipe(recipe_key("set", ["a", "b"]), "confirmed")
+    assert ledger.gold_fees("L")["orb"]["gold_per_unit"] == 10
+    assert ledger.sessions("L")[0]["id"] == session and ledger.recipe_checks()
+
+
+def test_gold_fees_are_learned_from_records_and_never_counted_twice(tmp_path):
+    ledger = Ledger(tmp_path)
+    assert ledger.gold_fees("L") == {}
+    ledger.add_trade("L", "orb", "buy", 10, 1, gold=100)  # 10 Gold per unit
+    ledger.add_trade("L", "orb", "buy", 10, 1, gold=120)  # 12
+    ledger.add_trade("L", "orb", "buy", 10, 1, gold=5000)  # a typo: the median shrugs it off
+    ledger.add_trade("L", "orb", "buy", 10, 1)  # no Gold given: unknown, not zero
+    ledger.add_trade("L", "gem", "buy", 1, 1, gold=0)  # a real zero is kept
+    order = ledger.add_order("L", "orb", "sell", "chaos", 2, 1, 10, gold=110)  # 11 per unit
+    ledger.fill_order(order, 10)
+    fees = ledger.gold_fees("L")
+    # Samples 10, 12, 500 and the order's 11: the fill's trade carries no Gold of its own.
+    assert fees["orb"] == {"gold_per_unit": pytest.approx(11.5), "trades": 4}
+    assert fees["gem"]["gold_per_unit"] == 0 and "chaos" not in fees
+    assert ledger.trades("L")[-1]["gold"] is None and ledger.trades("L")[-1]["order_id"] == order
+    with pytest.raises(ValueError):
+        ledger.add_trade("L", "orb", "buy", 1, 1, gold=-1)
+
+
+def test_order_fills_create_trades_at_the_right_price(tmp_path):
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_order("L", "orb", "buy", "divine", 1, 64, 128, t=10)  # 64 orbs for 1 Divine
+    with pytest.raises(ValueError):
+        ledger.fill_order(buy, 64)  # a Divine fill needs the Divine price
+    ledger.fill_order(buy, 64, bridge=200, t=11)
+    assert ledger.order(buy)["status"] == "part-filled"
+    trade = ledger.trades("L")[-1]
+    assert trade["price"] == pytest.approx(200 / 64) and trade["units"] == 64
+    with pytest.raises(ValueError):
+        ledger.fill_order(buy, 65, bridge=200)  # more than is still open
+    ledger.fill_order(buy, 64, bridge=200, t=12)
+    assert ledger.order(buy)["status"] == "filled" and ledger.positions("L")["orb"]["units"] == 128
+
+    sell = ledger.add_order("L", "orb", "sell", "chaos", 4, 1, 500)
+    with pytest.raises(ValueError):
+        ledger.fill_order(sell, 200)  # the ledger holds only 128
+    assert ledger.order(sell)["status"] == "open" and ledger.order(sell)["filled"] == 0, "a refused fill changes nothing"
+    ledger.fill_order(sell, 10, record_trade=False)
+    assert len(ledger.trades("L")) == 2
+    ledger.set_order_status(sell, "cancelled")
+    assert [o["id"] for o in ledger.orders("L")] == [buy]
+    with pytest.raises(ValueError):
+        ledger.add_order("L", "orb", "buy", "chaos", 1.5, 1, 1)  # the exchange takes whole numbers only
+    with pytest.raises(ValueError):
+        ledger.set_order_status(buy, "filled")
+
+
+def test_order_advice(tmp_path):
+    ledger = Ledger(tmp_path)
+    bridge = 100.0
+    # Orb: combined fair value 10 c, Chaos market 9.8 c, Divine market 10.6 c (the Divine market is dearer).
+    prices = {"orb": {"fair": 10.0, "chaos": 9.8, "divine": 10.6}, "gem": {"fair": None, "chaos": None, "divine": None}}
+    plans = {"orb": {"buy": {"chaos": {"currency_units": 19, "item_units": 2, "price": 9.5}},
+                     "sell": {"divine": {"currency_units": 1, "item_units": 9, "price": bridge / 9}}}}
+    keep = ledger.add_order("L", "orb", "buy", "chaos", 19, 2, 10)  # exactly the plan's buy order
+    plan_sell = ledger.add_order("L", "orb", "sell", "divine", 1, 9, 9)  # 11.1 c: above fair, as planned
+    stale = ledger.add_order("L", "orb", "buy", "chaos", 8, 1, 10)  # 8 c: far under the plan's 9.5
+    wrong = ledger.add_order("L", "orb", "buy", "chaos", 11, 1, 10)  # paying 11 c in a 9.8 c market
+    cheap_sell = ledger.add_order("L", "orb", "sell", "chaos", 9, 1, 10)  # asking 9 c in a 9.8 c market
+    unknown = ledger.add_order("L", "gem", "buy", "chaos", 1, 1, 1)
+    done = ledger.add_order("L", "orb", "buy", "chaos", 9, 1, 1)
+    ledger.fill_order(done, 1)
+    gone = ledger.add_order("L", "orb", "buy", "chaos", 9, 1, 1)
+    ledger.set_order_status(gone, "cancelled")
+
+    advice = {o["id"]: o for o in ledger.advise_orders("L", prices, plans, bridge)}
+    assert gone not in advice
+    assert advice[keep]["advice"] == "keep" and advice[plan_sell]["advice"] == "keep"
+    assert advice[stale]["advice"] == "re-price" and advice[stale]["suggest"]["currency_units"] == 19
+    assert advice[wrong]["advice"] == "cancel" and advice[cheap_sell]["advice"] == "cancel"
+    assert advice[unknown]["advice"] == "keep" and "no recent price" in advice[unknown]["reason"]
+    assert advice[done]["advice"] == "collect"
+    assert all(o["reason"] for o in advice.values())
+    ledger.set_order_status(done, "closed")
+    assert done not in {o["id"] for o in ledger.advise_orders("L", prices, plans, bridge)}
+
+
+def test_session_figures(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "orb", "buy", 10, 2.0, t=100, gold=30)  # bought before the session
+    session = ledger.start_session("L", expected_per_hour=5, plan={"flips": ["orb"]}, t=1000)
+    with pytest.raises(ValueError):
+        ledger.start_session("L", t=1001)  # one running session per league
+    ledger.add_trade("L", "orb", "sell", 10, 3.0, t=2000, gold=20)  # realises 10 against the cost from before
+    ledger.add_order("L", "orb", "buy", "chaos", 2, 1, 5, gold=15, t=2500)
+    ledger.add_trade("L", "orb", "buy", 1, 2.0, t=9000)  # after the session: not counted
+
+    live = ledger.sessions("L", now=1000 + 1800)[0]
+    assert live["running"] and live["hours"] == 0.5 and live["profit"] == pytest.approx(10)
+    assert live["per_hour"] == pytest.approx(20) and live["gold_spent"] == 35
+    ledger.stop_session(session, gold_earned=400, t=1000 + 7200)
+    done = ledger.sessions("L", now=99999)[0]
+    assert not done["running"] and done["hours"] == 2 and done["per_hour"] == pytest.approx(5)
+    assert done["gold_spent"] == 35 and done["gold_earned"] == 400
+    assert done["expected_per_hour"] == 5 and done["plan"] == {"flips": ["orb"]}
+    empty = ledger.start_session("L", t=5000)
+    assert ledger.sessions("L", now=5000)[0]["per_hour"] is None, "no time has passed yet"
+    assert ledger.sessions("Other") == [] and ledger.running_session("L")["id"] == empty
+
+
+def test_recipe_checks_are_shared_across_leagues_and_keep_the_latest(tmp_path):
+    ledger = Ledger(tmp_path)
+    key = recipe_key("set", ["shard", "orb"])
+    assert key == "set:shard>orb" and recipe_key("loop", ["shard", "orb"]) != key
+    ledger.check_recipe(key, "failed", "wrong count", t=1)
+    ledger.check_recipe(key, "confirmed", "20 for 1", t=2)
+    checks = ledger.recipe_checks()
+    assert checks[key]["status"] == "confirmed" and checks[key]["note"] == "20 for 1"
+    with pytest.raises(ValueError):
+        ledger.check_recipe(key, "maybe")

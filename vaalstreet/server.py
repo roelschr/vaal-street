@@ -23,7 +23,7 @@ from vaalstreet import archive, backtest, db, items
 from vaalstreet.desk import Desk, _num
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, Ledger
+from vaalstreet.ledger import ALERT_FIELDS, Ledger, recipe_key
 from vaalstreet.paths import data_dir, icons_dir
 
 WEB = Path(__file__).parent / "web"
@@ -325,13 +325,45 @@ class App:
         trades = self.ledger.trades(desk.league)
         for tr in trades:
             tr["name"] = desk._name(tr["item"])
+        fees = self.ledger.gold_fees(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self.ledger.alerts(desk.league),
             "alert_fields": ALERT_FIELDS,
+            "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
+            "orders": self._advise(desk), "sessions": self.ledger.sessions(desk.league),
+            **self._recipes(desk),
         }
+
+    def _advise(self, desk) -> list[dict]:
+        """Open orders with advice, from today's prices and the flip plan's own order levels."""
+        prices = {r["id"]: {"fair": r["price"], "chaos": r["chaos"], "divine": r["divine"]} for r in desk.market()}
+        plans: dict[str, dict] = {}
+        markets = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
+        for plan in desk.flips():  # best first, so the first plan for a market wins
+            buy_market, sell_market = markets[plan["kind"]]
+            sides = plans.setdefault(plan["id"], {})
+            sides.setdefault("buy", {}).setdefault(buy_market, plan["buy_order"])
+            sides.setdefault("sell", {}).setdefault(sell_market, plan["sell_order"])
+        orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
+        for order in orders:
+            order["name"] = desk._name(order["item"])
+        return orders
+
+    def _recipes(self, desk) -> dict:
+        """The recipes and round trips the desk knows today, and your checks of them (all leagues)."""
+        recipes = {}
+        for c in desk.conversions():
+            key = recipe_key("set", [c["id"], c["reward_id"]])
+            recipes[key] = f"{c['need']} {c['name']} → {c['gives']} {c['reward']}"
+        for loop in desk.loops()[:80]:
+            key = recipe_key("loop", [step["id"] for step in loop["path"]])
+            recipes.setdefault(key, " → ".join(step["name"] for step in loop["path"]))
+        checks = self.ledger.recipe_checks()
+        return {"recipes": [{"key": k, "label": v, "check": checks.get(k)} for k, v in recipes.items()],
+                "recipe_checks": [dict(c, label=recipes.get(c["key"], c["key"])) for c in checks.values()]}
 
     def api_post(self, path: str, body: dict) -> dict:
         league = body.get("league") or self.default_league()
@@ -341,7 +373,31 @@ class App:
                     self.ledger.delete_trade(body["delete"])
                 else:
                     self.ledger.add_trade(league, body["item"], body["side"], body["units"], body["price"],
-                                          body.get("note", ""))
+                                          body.get("note", ""), gold=body.get("gold"))
+            elif path == "/api/order":
+                if body.get("delete"):
+                    self.ledger.delete_order(body["delete"])
+                elif body.get("fill"):
+                    bridge = self.desk(league).bridge if self.ledger.order(body["fill"])["market"] == "divine" else None
+                    self.ledger.fill_order(body["fill"], body["units"], bridge=bridge,
+                                           record_trade=bool(body.get("record_trade", True)))
+                elif body.get("status"):
+                    self.ledger.set_order_status(body["id"], body["status"])
+                else:
+                    self.ledger.add_order(league, body["item"], body["side"], body["market"], body["currency_units"],
+                                          body["item_units"], body["units"], gold=body.get("gold"))
+            elif path == "/api/session":
+                if body.get("delete"):
+                    self.ledger.delete_session(body["delete"])
+                elif body.get("stop"):
+                    self.ledger.stop_session(body["stop"], gold_earned=body.get("gold_earned"))
+                else:
+                    self.ledger.start_session(league, body.get("expected_per_hour"), body.get("plan"))
+            elif path == "/api/recipe_check":
+                if body.get("delete"):
+                    self.ledger.delete_recipe_check(body["delete"])
+                else:
+                    self.ledger.check_recipe(body["key"], body["status"], body.get("note", ""))
             elif path == "/api/watch":
                 self.ledger.watch(league, body["item"], bool(body.get("on", True)))
             elif path == "/api/alert":
