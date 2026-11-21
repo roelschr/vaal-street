@@ -388,13 +388,18 @@ class App:
 
     def api_backtest(self, q: dict, body: dict) -> dict:
         league = body.get("league") or self.default_league()
-        spec = body.get("strategy", "swing")
-        if spec not in backtest.STRATEGIES:
-            raise ApiError("The desk runs built-in strategies only; use the CLI for your own modules.")
-        params = {k: v for k, v in (body.get("params") or {}).items() if v not in ("", None)}
+        # A portfolio is a list of {"strategy": name, "params": {...}}, settled in the order given.
+        members = body.get("strategies") or [{"strategy": body.get("strategy", "swing"), "params": body.get("params")}]
+        if not isinstance(members, list) or not all(isinstance(m, dict) for m in members):
+            raise ApiError("strategies must be a list of {strategy, params}.")
+        runs = []
+        for m in members:
+            if m.get("strategy", "swing") not in backtest.STRATEGIES:
+                raise ApiError("The desk runs built-in strategies only; use the CLI for your own modules.")
+            runs.append((m.get("strategy", "swing"),
+                         {k: v for k, v in (m.get("params") or {}).items() if v not in ("", None)}))
         try:
-            result = backtest.run(
-                self.cursor(), league, spec, params=params,
+            options = dict(
                 capital=float(body.get("capital", 10000)), participation=float(body.get("participation", 0.1)),
                 slippage=float(body.get("slippage", 0.03)), start_day=float(body.get("start_day", 0)),
                 days=float(body["days"]) if body.get("days") else None,
@@ -403,7 +408,12 @@ class App:
                 gold_per_unit=float(body.get("gold_per_unit") or 0),
                 gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
                 schedule=body.get("schedule") or None,
+                fill_model=str(body.get("fill_model") or "share"),
             )
+            if body.get("strategies"):
+                result = backtest.run_portfolio(self.cursor(), league, runs, **options)
+            else:
+                result = backtest.run(self.cursor(), league, runs[0][0], params=runs[0][1], **options)
         except (TypeError, ValueError, LookupError) as err:
             raise ApiError(str(err)) from err
         step = max(1, len(result.hours) // 600)
