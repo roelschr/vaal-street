@@ -172,8 +172,9 @@ def _ladder(args: argparse.Namespace) -> None:
 
     con = connect()
     desk = Desk.build(con, _league(con, args))
-    costs = Ledger(data_dir()).costs(desk.league)  # the same Gold fees the desk in the browser uses
-    out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share, costs=costs)
+    ledger = Ledger(data_dir())  # the same Gold fees, recipes and vendor prices the desk in the browser uses
+    out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share,
+                      costs=ledger.costs(desk.league), fixed=ledger.fixed_conversions())
     print(f"{desk.league} - Divine {desk.bridge:.1f}c\n")
     rows = []
     for r in out["ladder"]:

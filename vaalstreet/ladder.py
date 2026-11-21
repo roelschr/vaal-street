@@ -70,7 +70,8 @@ def _flip_option(p: dict) -> dict:
 
 
 def _conversion_option(c: dict) -> dict:
-    return {"key": f"conversion:{c['id']}:{c.get('reward_id')}:{c.get('need')}", "group": GROUP["conversion"],
+    key = c.get("recipe_key") or f"{c['id']}:{c.get('reward_id')}:{c.get('need')}"
+    return {"key": f"conversion:{key}", "group": GROUP["conversion"],
             "label": f"{c.get('need')} {c['name']} into {c.get('gives')} {c.get('reward')}", "lot_cost": c.get("cost")}
 
 
@@ -87,21 +88,24 @@ class Ladder:
     round trips, whether the purse can hold a Divine at all), so they are computed once.
     """
 
-    def __init__(self, desk: Desk, costs: Costs | None = None, share: float = 0.1, min_margin: float = 0.02):
+    def __init__(self, desk: Desk, costs: Costs | None = None, share: float = 0.1, min_margin: float = 0.02,
+                 fixed: list[dict] | None = None):
         self.desk, self.costs, self.share, self.min_margin = desk, costs or Costs(), share, min_margin
+        self.fixed = fixed  # your own recipes and vendor prices (`Ledger.fixed_conversions`), as on Arbitrage
         self._at: dict[float, dict] = {}
         self._conversions: list[dict] | None = None
         self._loops: dict[bool, list[dict]] = {}
 
     def conversions(self) -> list[dict]:
         if self._conversions is None:
-            self._conversions = [c for c in self.desk.conversions(share=self.share, costs=self.costs)
+            self._conversions = [c for c in self.desk.conversions(share=self.share, fixed=self.fixed, costs=self.costs)
                                  if (c.get("profit_per_hour") or 0) > 0]
         return self._conversions
 
     def loops(self, chaos_only: bool) -> list[dict]:
         if chaos_only not in self._loops:
-            self._loops[chaos_only] = self.desk.loops(chaos_only=chaos_only, share=self.share, costs=self.costs)
+            self._loops[chaos_only] = self.desk.loops(chaos_only=chaos_only, share=self.share, fixed=self.fixed,
+                                                     costs=self.costs)
         return self._loops[chaos_only]
 
     def at(self, purse: float) -> dict:
@@ -219,9 +223,10 @@ def compound(start: float, steps: list[float], rate_at: Callable[[float], tuple[
 
 
 def plan(desk: Desk, start: float, hours: float | None = None, target: float | None = None,
-         costs: Costs | None = None, share: float = 0.1, min_margin: float = 0.02) -> dict:
+         costs: Costs | None = None, share: float = 0.1, min_margin: float = 0.02,
+         fixed: list[dict] | None = None) -> dict:
     """The ladder plus a compounding schedule from `start` Chaos, as one dict for the API and CLI."""
-    runner = Ladder(desk, costs, share, min_margin)
+    runner = Ladder(desk, costs, share, min_margin, fixed)
     steps = rungs(desk.bridge)
 
     def rate_at(purse: float) -> tuple[float, list[dict]]:

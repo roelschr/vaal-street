@@ -310,7 +310,8 @@ class App:
         hours = float(q["hours"]) if q.get("hours") else None
         target = float(q["target"]) if q.get("target") else None
         out = ladder.plan(desk, max(start, 0.0), hours=hours, target=target, costs=self.costs(desk.league),
-                          share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)))
+                          share=float(q.get("share", 0.1)), min_margin=float(q.get("min_margin", 0.02)),
+                          fixed=self.ledger.fixed_conversions())
         return {"summary": desk.summary(), **out}
 
     def api_league(self, q: dict) -> dict:

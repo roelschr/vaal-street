@@ -114,3 +114,15 @@ def test_cli_ladder_uses_the_gold_fees_you_recorded(archive_root, tmp_path, monk
     cli.main(["ladder", "--league", NEW, "--from", "25"])
     row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("25 Chaos"))
     assert row.split()[-1] != "-" and float(row.split()[-1].replace(",", "")) > 0
+
+
+def test_ladder_counts_your_own_recipes(desk):
+    from conftest import CARD, ITEM, OTHER
+
+    # Made up, as in test_models: 2 cards and 1 shard make 1 orb, about 5 Chaos for an orb worth
+    # about 10. One set fits a 25 Chaos purse, so it opens at the first step, and only with `fixed`.
+    mine = [{"id": 7, "kind": "recipe", "inputs": [(CARD, 2), (OTHER, 1)], "output": ITEM, "gives": 1, "note": ""}]
+    plain = ladder.ladder(desk)[0]
+    yours = ladder.plan(desk, 25, fixed=mine)["ladder"][0]
+    assert yours["counts"]["conversions"] == plain["counts"]["conversions"] + 1
+    assert len(yours["opens"]) == len(plain["opens"]) + 1
