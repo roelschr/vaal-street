@@ -45,6 +45,16 @@ def test_fair_value_is_causal():
     assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
 
 
+def test_a_stake_turns_over_once_per_cycle_not_every_two_hours(desk):
+    """The test orb swings +-5% over 12 hours, so its levels are reached only some hours: a buy and a sell
+    take several hours, and a purse smaller than the flow earns its margin once per cycle."""
+    plans = desk.flips(min_margin=0.01)
+    assert plans and all(p["cycle_hours"] > 2 for p in plans)
+    for p in desk.flips(min_margin=0.01, bankroll=200):
+        expected = p["margin"] * min(p["flow_value"], 200 / p["cycle_hours"])
+        assert p["profit_per_hour"] == pytest.approx(expected, rel=1e-3)
+
+
 def test_fair_value_is_quiet_about_items_that_never_print():
     import warnings
 

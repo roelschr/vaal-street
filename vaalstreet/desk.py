@@ -261,7 +261,7 @@ def replayed_rate(replay: dict | None, stake: float, against_divine: bool = True
     hours = replay.get("hours") or REPLAY_DAYS * DAY
     measured = replay.get("stake") or REPLAY_STAKE
     profit = replay["return"] * measured
-    if abs(stake - measured) > 1e-6:
+    if not replay.get("at_stake"):
         used = replay.get("capital")
         profit *= min(1.0, stake / used) if used else min(stake, measured) / measured
     if not against_divine:
@@ -320,7 +320,7 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
     sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], quarter)]]
     # Judged at the stake it would get: a thin market's replay used only part of its 1,000 Chaos,
     # and the Divine's rise is charged on the whole stake, idle or not.
-    trailing = [r for r, s, _ in sized if (replayed_rate(r["replay"], s) or 0) <= 0]
+    trailing = [r for r, s, _ in sized if (r["replay"].get("return") or 0) > 0 and (replayed_rate(r["replay"], s) or 0) <= 0]
     sized = [x for x in sized if (replayed_rate(x[0]["replay"], x[1]) or 0) > 0]
     unknown: list[dict] = []
     if gold_budget is not None:
@@ -361,10 +361,15 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
                       "minutes": r.get("minutes"),
                       "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour,
                       "lot_share": _num(r["lot_cost"] / bankroll, 3) if r["lot_cost"] > quarter else None,
+                      # Last week's replay of this rule, scaled to the stake: in Chaos, and against Divines.
+                      "replayed_per_hour": _num(replayed_rate(r["replay"], stake, against_divine=False), 4),
+                      "replayed_vs_divine_per_hour": _num(replayed_rate(r["replay"], stake), 4),
                       "share_source": r.get("share_source")})
     return {
         "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
         "expected_per_hour": sum(p["est"] for p in picks), "deployed": bankroll - left,
+        "replayed_per_hour": sum(p["replayed_per_hour"] or 0 for p in picks),
+        "replayed_vs_divine_per_hour": sum(p["replayed_vs_divine_per_hour"] or 0 for p in picks),
         "gold_used": gold_budget - gold_left if gold_budget is not None else None,
         "minutes": sum(p["minutes"] or 0 for p in picks),
         "gold_unknown": [{"id": r["id"], "name": r["name"], "kind": r["kind"]} for r in unknown],
@@ -817,7 +822,8 @@ class Desk:
         `replay` measures every plan on 1,000 Chaos. A small purse differs in two ways that matter:
         it cannot buy a lot it cannot afford, and it can turn over much faster than 1,000 Chaos of
         inventory that the market takes only slowly. Picks with the same kind and patience share one
-        run, each item held to its own stake. Entries look like `replay`'s, with `return` measured on
+        run, each item's buying held to its own stake (valued at fair value, so stock bought cheap and
+        marked up can tie up more than the stake at cost). Entries look like `replay`'s, with `return` measured on
         the pick's `stake`. A pick that never filled gets a zero entry rather than None.
         """
         from vaalstreet import backtest
@@ -854,6 +860,7 @@ class Desk:
                     "realized": _num(sim.realized[i] / s, 3), "capital": _num(sim.peak_cost[i], 4),
                     "stake": _num(s, 4), "hours": hours, "divines": _num(divines, 3),
                     "vs_divine": _num((1 + profit[i] / s) / (1 + divines) - 1, 3), "whole_lots": True,
+                    "at_stake": True,  # measured at this pick's stake: never rescaled
                 } for _, i, s in members}
             for k, i, _ in members:
                 out[k] = self._replays[memo][i]

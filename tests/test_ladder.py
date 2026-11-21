@@ -191,3 +191,27 @@ def test_ladder_conversion_rate_grows_with_the_purse_up_to_the_full_flow(desk):
     assert rates == sorted(rates) and rates[-1] <= full + 1e-6
     assert rates[0] < full, "25 Chaos cannot take every conversion's full flow"
     assert all(r["counts_text"].count(",") == 1 for r in rows)
+
+
+def test_a_replay_at_the_stake_is_never_rescaled():
+    from vaalstreet.desk import replayed_rate
+
+    # Stored stakes are rounded; the replay tied up more than the stake (stock marked up). Neither rescales it.
+    at = {"return": 1.0, "stake": 528.2, "capital": 601.8, "hours": 100, "divines": 0.0, "at_stake": True}
+    assert replayed_rate(at, 528.25, against_divine=False) == pytest.approx(5.282)
+    # A 1,000 Chaos replay that only ever used 500 earns the same on 500, and half as much on 250.
+    fixed = {"return": 0.5, "capital": 500.0, "hours": 100, "divines": 0.0}
+    assert replayed_rate(fixed, 500, against_divine=False) == pytest.approx(5.0)
+    assert replayed_rate(fixed, 250, against_divine=False) == pytest.approx(2.5)
+    # Against Divines that rose 25%: (stake + profit) / 1.25 - stake.
+    assert replayed_rate(fixed | {"divines": 0.25}, 500) == pytest.approx(((500 + 500) / 1.25 - 500) / 100)
+
+
+def test_session_plan_carries_last_weeks_rates(flat_desk):
+    from vaalstreet.desk import session_plan
+
+    plan = session_plan(flat_desk.flips(bankroll=1000), 1000)
+    assert plan["flips"]
+    for p in plan["flips"]:
+        assert p["replayed_per_hour"] is not None and p["replayed_vs_divine_per_hour"] == pytest.approx(p["replayed_per_hour"])
+    assert plan["replayed_per_hour"] == pytest.approx(sum(p["replayed_per_hour"] for p in plan["flips"]))
