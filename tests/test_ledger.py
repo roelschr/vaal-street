@@ -236,3 +236,13 @@ def test_your_recipes_and_vendor_prices_are_kept_for_every_league(tmp_path):
                 ("vendor", [["a", 1], ["b", 1]], "c"), ("recipe", [["c", 1]], "c")):
         with pytest.raises(ValueError):
             ledger.add_fixed(*bad)
+
+
+def test_a_recipe_key_reads_as_words():
+    from vaalstreet.ledger import describe_key, fixed_key, recipe_key
+
+    name = {"a": "Some Card", "b": "Some Shard", "c": "Some Orb"}.get
+    assert describe_key(fixed_key("recipe", [("a", 3), ("b", 1)], "c", 2), name) == "3 Some Card + 1 Some Shard → 2 Some Orb"
+    assert describe_key(fixed_key("vendor", [("a", 5)], "c", 1), name) == "5 Some Card buys 1 Some Orb"
+    assert describe_key(recipe_key("loop", ["a", "b", "c"]), name) == "Some Card → Some Shard → Some Orb"
+    assert describe_key("recipe:garbled", name) == "a recipe you deleted"

@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, se
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert
+from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert, describe_key
 from vaalstreet.paths import data_dir, icons_dir
 from vaalstreet.rehearsal import PRACTICE_FILE, PracticeLedger, Rehearsal, league_hours
 
@@ -658,7 +658,9 @@ class App:
             recipes.setdefault(loop["recipe_key"], " → ".join(step["name"] for step in loop["path"]))
         checks = self.ledger.recipe_checks()
         return {"recipes": [{"key": k, "label": v, "check": checks.get(k)} for k, v in recipes.items()],
-                "recipe_checks": [dict(c, label=recipes.get(c["key"], c["key"])) for c in checks.values()]}
+                # A check outlives its recipe: name it from its key rather than show the key itself.
+                "recipe_checks": [dict(c, label=recipes.get(c["key"]) or describe_key(c["key"], desk._name))
+                                  for c in checks.values()]}
 
     def _item_ref(self, text) -> str:
         """An item id from an id or a name (any case) in the item export, which knows items that never traded."""

@@ -105,6 +105,28 @@ def fixed_key(kind: str, inputs: list[tuple[str, float]], output: str, gives: fl
     """
     left = "+".join(f"{float(n):g}*{item}" for item, n in inputs)
     return f"{kind}:{left}>{float(gives):g}*{output}"
+
+
+def describe_key(key: str, name: Callable[[str], str]) -> str:
+    """A recipe key in words, for a check whose recipe is no longer listed (you deleted it, or it stopped
+    trading): "3 Some Card + 1 Some Shard → 2 Some Orb", "5 Chaos Orb buys 1 Some Shard", "A → B → C".
+    `name` turns an item id into its name. A key that cannot be read is "a recipe you deleted"."""
+    kind, _, body = key.partition(":")
+    try:
+        if kind in ("recipe", "vendor"):
+            left, right = body.split(">")
+
+            def side(text: str) -> str:
+                return " + ".join(f"{float(n):g} {name(item)}" for n, item in (part.split("*", 1) for part in text.split("+")))
+
+            return f"{side(left)} {'buys' if kind == 'vendor' else '→'} {side(right)}"
+        if kind in ("set", "loop") and body:
+            return " → ".join(name(item) for item in body.split(">"))
+    except ValueError:
+        pass
+    return "a recipe you deleted"
+
+
 ALERT_FIELDS = {"price": "Price", "chaos": "Chaos-market price", "divine": "Divine-market price",
                 "premium": "Divine premium", "change_24h": "24h change", "z": "Surprise (z)"}
 

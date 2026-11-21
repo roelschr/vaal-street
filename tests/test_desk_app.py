@@ -194,6 +194,10 @@ def test_api_your_recipes_and_vendor_prices_with_their_checks(server):
     for f in arb["fixed"]:
         assert call(f"{server}/api/recipe", {"delete": f["id"]})[0] == 200
     assert call(f"{server}/api/arbitrage")[1]["fixed"] == []
+    # The checks outlive the recipes; they are named from their keys, never shown as raw keys.
+    checks = {c["key"]: c["label"] for c in call(f"{server}/api/ledger")[1]["recipe_checks"]}
+    assert checks[yours["recipe_key"]] == "2 Test Card + 1 Test Shard → 1 Test Orb"
+    assert all(":" not in label for label in checks.values())
 
 
 def test_api_recipe_takes_names_or_ids(server):
