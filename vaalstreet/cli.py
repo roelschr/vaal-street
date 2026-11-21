@@ -391,18 +391,34 @@ def _backtest(args: argparse.Namespace) -> None:
     con = connect()
     params = json.loads(args.params) if args.params else {}
     leagues = args.league or [_league(con, args)]
+    if len(args.strategy) > 1 and not args.portfolio:
+        sys.exit("Several strategies: add --portfolio to run them together on one bankroll.")
+    if args.portfolio and args.params:
+        sys.exit("With --portfolio, give each strategy its own settings, like 'reversion:{\"entry_z\": -2.5}'.")
+    if args.export and args.portfolio:
+        sys.exit("--export saves one strategy; run it without --portfolio.")
+    options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage,
+                   start_day=args.start_day, days=args.days, attention=args.attention, compound=args.compound,
+                   whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit, gold_budget=args.gold_budget,
+                   schedule=args.schedule, fill_model=args.fill_model, risk_hours=args.risk_hours)
     summaries = []
     for league in leagues:
         started = time.time()
-        result = backtest.run(
-            con, league, args.strategy, params=params, capital=args.capital, participation=args.participation,
-            slippage=args.slippage, start_day=args.start_day, days=args.days, attention=args.attention,
-            compound=args.compound, whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit,
-            gold_budget=args.gold_budget, schedule=args.schedule,
-        )
+        if args.portfolio:
+            result = backtest.run_portfolio(con, league, args.strategy, **options)
+        else:
+            spec, own = backtest.parse_spec(args.strategy[0])
+            result = backtest.run(con, league, spec, params={**own, **params}, **options)
         summary = result.summary()
         summary["seconds"] = round(time.time() - started, 1)
         summaries.append(summary)
+    if args.export:
+        from vaalstreet import sharing
+
+        spec, own = backtest.parse_spec(args.strategy[0])
+        sharing.export(args.export, spec, {**own, **params}, options, summaries)
+        print(f"Wrote {args.export}: the strategy, its settings and {len(summaries)} league result(s). Nothing was uploaded.",
+              file=sys.stderr)
     if args.json:
         print(json.dumps(summaries, indent=1))
         return
@@ -410,10 +426,47 @@ def _backtest(args: argparse.Namespace) -> None:
                        ("return", "Return", "+.1%"), ("divine_return", "Hold Divine", "+.1%"),
                        ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
                        ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
-                       ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f")])
+                       ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f"),
+                       ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),
+                       ("average_risk", "Avg drop", ",.0f")])
+    print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
+          f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
     for s in summaries:
         tops = ", ".join(f"{t['name']} {t['profit']:+,.0f}" for t in s["top_items"][:5])
         print(f"  {s['league']}: {tops}")
+        if s.get("strategies"):
+            _table(s["strategies"], [("strategy", "  Strategy", ""), ("profit", "Profit", "+,.0f"),
+                                     ("profit_share", "Share", ".0%"), ("gold_spent", "Gold", ","),
+                                     ("peak_capital", "Most capital", ",.0f"),
+                                     ("average_capital", "Avg capital", ",.0f"),
+                                     ("peak_risk", "Worst drop", ",.0f"), ("fills", "Fills", ",")])
+
+
+def _strategy_import(args: argparse.Namespace) -> None:
+    from vaalstreet import sharing
+    from vaalstreet.paths import strategies_dir
+
+    doc = sharing.read(args.file)
+    print(f"Strategy {doc.get('strategy')!r}, made with Vaal Street {doc.get('code_version', 'unknown')}.")
+    print(f"Parameters: {json.dumps(doc.get('params') or {})}")
+    for r in doc.get("results") or []:
+        if isinstance(r, dict):
+            print(f"  {r.get('league')}: return {r.get('return')}, {r.get('days')} days, fills {r.get('fills')}")
+    if "source" not in doc:
+        print("It is a built-in strategy, so there is no code to save. Run it with:")
+        print("  " + sharing.run_command(doc))
+        return
+    print("\nWARNING: this file contains Python code. If you save it and backtest it, it runs on your computer"
+          " with your permissions, and can do anything you can. Read it first, and only use code from people you trust.")
+    print("\n----- " + sharing.file_name(doc) + " -----")
+    print(doc["source"])
+    print("----- end -----\n")
+    if not args.yes:
+        print("Nothing was saved. Run the same command with --yes to save it.")
+        return
+    target = sharing.save(doc, strategies_dir(data_dir()))
+    print(f"Saved to {target}. Run it with:")
+    print("  " + sharing.run_command(doc, target))
 
 
 def _scorecard(args: argparse.Namespace) -> None:
@@ -587,7 +640,18 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(run=_playbook)
 
     p = commands.add_parser("backtest", help="replay a strategy over one or more leagues")
-    p.add_argument("strategy", help=f"{', '.join(backtest.STRATEGIES)} or path/to/file.py:ClassName")
+    p.add_argument("strategy", nargs="+",
+                   help=f"{', '.join(backtest.STRATEGIES)} or path/to/file.py:ClassName; add settings as "
+                   "'reversion:{\"entry_z\": -2.5}'. Give several with --portfolio")
+    p.add_argument("--portfolio", action="store_true",
+                   help="run the strategies together on one bankroll; the first one listed fills first")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
+                   help="share: a fill takes at most --participation of the hour's volume (default). "
+                   "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--risk-hours", type=float, default=24,
+                   help="how long you expect to hold items, for the Worst drop column (default 24)")
+    p.add_argument("--export", metavar="FILE.json",
+                   help="save the strategy, its settings and its results per league to a local file to share")
     p.add_argument("--league", action="append", help="repeat to compare leagues (default: the live one)")
     p.add_argument("--params", help='JSON strategy parameters, e.g. \'{"reach": 0.35}\'')
     p.add_argument("--capital", type=float, default=10000)
@@ -606,6 +670,13 @@ def main(argv: list[str] | None = None) -> None:
                    "(end hour not included); orders stand while you are away")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_backtest)
+
+    p = commands.add_parser("strategy", help="strategy files shared by other players")
+    sub = p.add_subparsers(dest="action", required=True)
+    q = sub.add_parser("import", help="show a shared strategy file and save its code to your strategies folder")
+    q.add_argument("file", help="a file written by backtest --export")
+    q.add_argument("--yes", action="store_true", help="save the code after you have read it")
+    q.set_defaults(run=_strategy_import)
 
     p = commands.add_parser("scorecard", help="how well fair value predicts upcoming prices, per league")
     p.add_argument("--league", action="append")

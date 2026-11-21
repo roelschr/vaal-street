@@ -84,10 +84,14 @@ Two more kinds of swap can join a path. One goes through Divine: sell A for Divi
 - A resting order fills at its limit only in an hour whose average price traded through it, and never at a better price.
 - A market order pays the hour's average plus slippage (default 3%).
 - A fill takes at most a set share of that hour's volume (default 10%).
-- No leverage and no shorting. Sizing is on a fixed bankroll unless you ask to compound.
+- The queue model (`--fill-model queue`) replaces that share with a waiting line. When you post an order, the stock already on offer on your side of that market is the queue ahead of you. For a sell, that is the items on offer. For a buy, it is the Chaos bid for the item, counted in items at your price. The exchange publishes the lowest and the highest stock of each hour, and the backtest takes the lowest, because it is what rested through the whole hour. Your order fills only after that much volume has traded through your price, counting from when you posted. Moving an order to a new price sends it to the back of the queue. Making it bigger keeps its place, which flatters it a little. Once the queue ahead of you has traded, your order can take all the volume that trades through your price, so a thin queue can fill faster than the 10% share. Market orders do not queue and keep the 10% share. The exchange does not explain the stock figures, so this is a guess: if they count orders at every price, the queue is too long for a sharp price; taking the hour's lowest, and treating unknown stock as none, can make it too short. Strategies that move their prices every visit, like `swing`, rejoin the back each time.
+- No leverage and no shorting. Sizing is on a fixed bankroll unless you ask to compound. A buy that finds no cash left does not count as a fill. Earlier versions counted it, so fill counts of runs that ran out of cash are lower now; their profit is the same.
 - `attention` is how many hours pass between your visits; orders stand in between.
 - A play schedule (`--schedule "mon-fri 19-22"`) limits your visits to the hours you actually play. Times are UTC, and the end hour is not included, so that example is three hours each weekday evening. A visit happens when an hour's prices come out, which is when that hour ends. Inside a session, `attention` still sets how often you come back. Your orders keep standing between sessions.
 - Whole lots (`--whole-lots`) make the backtest trade like a real purse, the same way the Flips page does when you enter a bankroll. Each order becomes a whole-number ratio, like "33 Chaos for 10", that your cash can pay for. The ratio is rounded in your favour, so a buy never states more than your limit and a sale never states less. It fills only in whole lots, at the price that ratio states. An order you cannot afford even one lot of is never posted. A Divine-market order states whole Divines, so what it costs in Chaos moves with the Divine price until it fills. Market orders fill whole items.
+- Several strategies can share one bankroll (`--portfolio`). Each one sees only its own items and orders, and sizes its orders as if the bankroll were its own. They compete for the same Chaos, the same Gold budget and the same share of each hour's volume. Conflicts are settled in the order you list them: every hour the first strategy's orders fill first, and the next ones fill from what is left. The result shows the total and each strategy's profit, its share of the profit, its Gold, and the most and average Chaos it had tied up in items.
+- Every run also measures the risk of what you hold. Each hour, it values your items at fair value and works out the **worst drop**: what your holdings would lose on a bad day for these items, about 1 day in 20. A bad day comes from how much each item's fair value moved hour to hour over the last 7 days, stretched to how long you expect to hold (`--risk-hours`, default 24). The result shows the most you held, the worst drop at any hour and the average one over the run. It assumes every item has its bad day at once, which overstates a calm market, and a crash can do worse than a 1-in-20 day. For an item's first half day of prices the drop counts as zero.
+- You can share a strategy (`--export file.json`). The file holds the strategy, its settings, the backtest options, the result for every league you ran, the desk version and, for your own strategy file, its code. Nothing is uploaded; passing the file on is up to you. `strategy import file.json` shows what a file holds. A file with code shows that code under a warning, because the code runs on your computer with your permissions when you backtest it. It is saved to the `strategies` folder only when you add `--yes`, and never over an existing file.
 - Gold (`--gold-per-unit`, `--gold-budget`) is charged for every unit you post. Moving an order to a new price or making it bigger is a new post and costs Gold again. Leaving it alone, or letting it shrink, costs nothing. We assume a cancelled order gives no Gold back, which is the cautious choice. Once the budget is spent, no new orders go up, but orders already standing can still fill. The result shows the Gold spent and the Chaos earned per 1,000 Gold.
 
 **Alerts.** Alerts are checked once an hour, when a new hour's prices arrive. A price alert fires when a value crosses your threshold. A flip-plan alert fires when a plan for your item, or for any item, reaches your margin and profit per hour. A round-trip alert fires when a round trip reaches your edge and the orders waiting at its thinnest swap are worth at least the Chaos you set, so there is something to take right now. An order alert fires when one of your recorded orders should be re-priced, cancelled or collected. A league alert fires when an item is cheaper or dearer than on the same day of past leagues by your percentage, or when past leagues moved it by at least your percentage over the next days. An alert rings once when its condition starts. It rings again only after the condition has gone away and come back, and never twice for the same thing within 6 hours, so a price hovering on your line does not ring every hour. Each alert writes a short title that can be read aloud, such as "Test Orb filled, post the sell".
@@ -97,7 +101,7 @@ Two more kinds of swap can join a path. One goes through Divine: sell A for Divi
 Read flip and backtest figures as a ceiling, not a forecast.
 
 - **Gold.** Every order costs Gold, and the fee schedule is not published. The desk does not guess it: it learns the Gold per item from the trades and orders you record in the Ledger (the middle value of your records), and shows the fee as unknown until you have recorded some, unless you enter an assumed fee yourself. Fees can differ by item and market in ways your records do not show, and what a swap between two items costs is assumed, not known. Backtests charge a Gold fee per unit that you choose, because the real fee for each item is not known to them. Gold is often the real limit on how much you can flip, which is why plans can be ranked by Chaos per 1,000 Gold.
-- **Queue position.** Orders at the same ratio fill in time order. The desk shows how many hours of volume already rest on each side, but cannot know where you would stand.
+- **Queue position.** Orders at the same ratio fill in time order. The desk shows how many hours of volume already rest on each side, but cannot know where you would stand. The backtest's queue model guesses your place from the published stock on your side, which may count orders at worse prices than yours.
 - **Hourly granularity.** A level is counted as reached only when the whole hour's average traded through it, which is conservative; the path inside the hour is unknown.
 - **Small samples.** There have only been a handful of leagues since the exchange launched. League-start patterns are precedents, not odds.
 
@@ -121,6 +125,11 @@ python -m vaalstreet recipe add --vendor --give "3 Chaos Orb" --get "Some Shard"
 python -m vaalstreet ladder --from 25 --hours 6  # what each purse size can run, and when to switch plans
 python -m vaalstreet playbook --horizon 14       # what past leagues did next from today's league day
 python -m vaalstreet backtest swing --league Mirage --league Allflame --attention 4
+python -m vaalstreet backtest swing --fill-model queue   # orders wait behind the stock already on offer
+python -m vaalstreet backtest swing 'reversion:{"entry_z": -2.5}' --portfolio
+                                                 # two strategies on one bankroll; the first listed fills first
+python -m vaalstreet backtest examples/cheap_vs_divine.py:CheapVsDivine --league Mirage --league Allflame --export mine.json
+python -m vaalstreet strategy import mine.json   # shows the code; add --yes to save it to your strategies folder
 python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
 python -m vaalstreet sql "SELECT league, kind, hours FROM leagues ORDER BY first_hour"
 ```
@@ -181,6 +190,7 @@ data/raw/poe1/<YYYY-MM>/<hour>.json.gz     the exchange's digests, bytes as serv
 data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
+data/strategies/                           strategy code you imported with `strategy import`
 data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash — the only file worth backing up
 ```
 
@@ -197,6 +207,7 @@ vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaal
 vaalstreet/check.py     trade check and stash valuation
 vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders
+vaalstreet/sharing.py   strategy files: export and import
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.
