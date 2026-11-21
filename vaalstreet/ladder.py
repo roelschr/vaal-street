@@ -33,6 +33,7 @@ from vaalstreet.desk import replayed_rate as desk_replayed_rate
 CHAOS_RUNGS = (25, 50, 100, 200, 400)
 DIVINE_RUNGS = (1, 2, 5, 10)
 MAX_SEGMENTS = 50
+CONVERSION_CYCLE = 2.0  # hours to buy a conversion's inputs and sell what they make, at the least
 
 FLIP_KIND = {
     "chaos": "flip in the Chaos market",
@@ -73,10 +74,45 @@ def _flip_option(p: dict) -> dict:
             "label": f"{p['name']} ({FLIP_KIND[p['kind']]})", "lot_cost": p.get("lot_cost")}
 
 
+def _count(x: Any) -> str:
+    """A count of items as players write it: 2, not 2.0; 2.5 stays 2.5."""
+    return f"{x:g}" if isinstance(x, (int, float)) else str(x)
+
+
 def _conversion_option(c: dict) -> dict:
     key = c.get("recipe_key") or f"{c['id']}:{c.get('reward_id')}:{c.get('need')}"
     return {"key": f"conversion:{key}", "group": GROUP["conversion"],
-            "label": f"{c.get('need')} {c['name']} into {c.get('gives')} {c.get('reward')}", "lot_cost": c.get("cost")}
+            "label": f"{_count(c.get('need'))} {c['name']} into {_count(c.get('gives'))} {c.get('reward')}",
+            "lot_cost": c.get("cost")}
+
+
+def counts_text(counts: dict) -> str:
+    """"1 flip, 3 conversions and 0 round trips", with each noun matching its count."""
+    words = [("flips", "flip", "flips"), ("conversions", "conversion", "conversions"),
+             ("round_trips", "round trip", "round trips")]
+    parts = [f"{counts.get(k, 0)} {one if counts.get(k, 0) == 1 else many}" for k, one, many in words]
+    return f"{parts[0]}, {parts[1]} and {parts[2]}"
+
+
+def conversion_rate(conversions: list[dict], purse: float, cycle: float = CONVERSION_CYCLE) -> float:
+    """Chaos an hour the conversions alone could make with `purse`.
+
+    Each conversion's own profit per hour assumes its full share of the market's flow, whatever it
+    costs to buy. A purse buys inputs worth at most itself once per `cycle` hours (buy the inputs,
+    then sell what they make), so the purse is spent on the best margins first and the rest get
+    what is left.
+    """
+    budget = purse / cycle
+    total = 0.0
+    ranked = sorted((c for c in conversions if (c.get("cost") or 0) > 0 and (c.get("sets_per_hour") or 0) > 0),
+                    key=lambda c: -(c["profit_per_hour"] / c["sets_per_hour"]) / c["cost"])
+    for c in ranked:
+        if budget <= 0:
+            break
+        sets = min(c["sets_per_hour"], budget / c["cost"])
+        total += sets * c["profit_per_hour"] / c["sets_per_hour"]
+        budget -= sets * c["cost"]
+    return total
 
 
 def _loop_option(row: dict) -> dict:
@@ -150,6 +186,7 @@ class Ladder:
             "purse": purse,
             "can_run": len(options),
             "counts": {"flips": len(flips), "conversions": len(conversions), "round_trips": len(loops)},
+            "counts_text": counts_text({"flips": len(flips), "conversions": len(conversions), "round_trips": len(loops)}),
             "options": options,
             "session": {"picks": picks, "expected_per_hour": round(promised, 4),
                         "replayed_per_hour": round(replayed, 4),
@@ -158,7 +195,7 @@ class Ladder:
                         "rate": round(max(cautious, 0.0), 4),
                         "gold_per_hour": None if gold is None or not picks else round(gold, 2),
                         "minutes": session["minutes"]},
-            "conversion_per_hour": round(sum(c["profit_per_hour"] for c in conversions), 4),
+            "conversion_per_hour": round(conversion_rate(conversions, purse), 4),
         }
         self._at[purse] = out
         return out
@@ -180,7 +217,7 @@ def ladder(desk: Desk, costs: Costs | None = None, share: float = 0.1, min_margi
         rate = info["session"]["rate"]
         nxt = steps[k + 1]["chaos"] if k + 1 < len(steps) else None
         rows.append({
-            **step, "can_run": info["can_run"], "counts": info["counts"],
+            **step, "can_run": info["can_run"], "counts": info["counts"], "counts_text": info["counts_text"],
             "opens": opens, "opens_groups": new_groups,
             "session": info["session"], "conversion_per_hour": info["conversion_per_hour"],
             "next": nxt,

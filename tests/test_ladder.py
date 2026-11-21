@@ -168,3 +168,26 @@ def test_ladder_counts_your_own_recipes(desk):
     yours = ladder.plan(desk, 25, fixed=mine)["ladder"][0]
     assert yours["counts"]["conversions"] == plain["counts"]["conversions"] + 1
     assert len(yours["opens"]) == len(plain["opens"]) + 1
+
+
+def test_conversions_are_capped_by_the_purse_and_labels_read_well():
+    # Known answer: a purse of 25 buys at most 12.5 Chaos of inputs an hour (once per two-hour cycle).
+    # The 50% conversion takes 2 sets an hour at 5 c (10 c), the 10% one gets the 2.5 c left: 0.25 sets.
+    rich = {"cost": 5.0, "sets_per_hour": 2.0, "profit_per_hour": 5.0}     # 2.5 c a set, 50%
+    poor = {"cost": 10.0, "sets_per_hour": 100.0, "profit_per_hour": 100.0}  # 1 c a set, 10%, huge flow
+    assert ladder.conversion_rate([poor, rich], 25) == pytest.approx(2 * 2.5 + 0.25 * 1.0)
+    assert ladder.conversion_rate([poor, rich], 10_000) == pytest.approx(105.0), "a big purse takes the whole flow"
+    assert ladder.counts_text({"flips": 1, "conversions": 2, "round_trips": 0}) == "1 flip, 2 conversions and 0 round trips"
+    label = ladder._conversion_option({"id": "x", "name": "Test Card", "need": 2.0, "gives": 1.0, "reward": "Test Orb",
+                                       "cost": 3})["label"]
+    assert label == "2 Test Card into 1 Test Orb"
+
+
+def test_ladder_conversion_rate_grows_with_the_purse_up_to_the_full_flow(desk):
+    runner = ladder.Ladder(desk)
+    full = sum(c["profit_per_hour"] for c in runner.conversions())
+    rows = ladder.ladder(desk, runner=runner)
+    rates = [r["conversion_per_hour"] for r in rows]
+    assert rates == sorted(rates) and rates[-1] <= full + 1e-6
+    assert rates[0] < full, "25 Chaos cannot take every conversion's full flow"
+    assert all(r["counts_text"].count(",") == 1 for r in rows)
