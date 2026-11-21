@@ -819,13 +819,15 @@ def queue_vs_share(con, leagues: list[str] | None = None, strategies: tuple[str,
     return r
 
 
-def ladder_rates(con, league: str) -> Result:
-    """The ladder's promised Chaos per hour against what the same picks made in last week's replay."""
+def ladder_rates(con, league: str, root=None) -> Result:
+    """The ladder's promised Chaos per hour against what the same picks made in last week's replay.
+
+    `root` is the data directory `con` was opened on; without it the item names come from the default one."""
     from vaalstreet import ladder
     from vaalstreet.desk import Desk
 
     t0 = time.perf_counter()
-    desk = Desk.build(con, league)
+    desk = Desk.build(con, league, root=root)
     rows = []
     for rung in ladder.ladder(desk):
         sess = rung["session"]

@@ -223,7 +223,7 @@ def test_research_ladder_rates_reads_the_ladders_fields(flat_root):
 
     con = connect(flat_root)
     try:
-        rows = research.ladder_rates(con, NEW).leagues
+        rows = research.ladder_rates(con, NEW, root=flat_root).leagues
     finally:
         con.close()
     assert rows and all("replayed vs Divines per hour" in r and r["Divines over those hours"] in (0.0, None) for r in rows)
