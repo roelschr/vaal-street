@@ -538,3 +538,20 @@ def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
     assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
     mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
     assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
+
+
+def test_rolling_in_column_chunks_matches_one_pass(monkeypatch):
+    """`rolling` works through columns a few at a time to bound memory on a full league with a
+    week-long window. Known answer: the same numbers as one pass over every column."""
+    import numpy as np
+
+    from vaalstreet import panel as panel_mod
+
+    rng = np.random.default_rng(7)
+    a = rng.normal(size=(200, 13))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    whole = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    monkeypatch.setattr(panel_mod, "ROLLING_CELLS", 24 * 200 * 2)  # two columns per chunk
+    chunked = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    np.testing.assert_array_equal(np.isnan(whole), np.isnan(chunked))
+    np.testing.assert_allclose(whole[~np.isnan(whole)], chunked[~np.isnan(chunked)])
