@@ -294,6 +294,10 @@ class App:
                 slippage=float(body.get("slippage", 0.03)), start_day=float(body.get("start_day", 0)),
                 days=float(body["days"]) if body.get("days") else None,
                 attention=int(body.get("attention", 1)), compound=bool(body.get("compound", False)),
+                whole_lots=bool(body.get("whole_lots", False)),
+                gold_per_unit=float(body.get("gold_per_unit") or 0),
+                gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
+                schedule=body.get("schedule") or None,
             )
         except (TypeError, ValueError, LookupError) as err:
             raise ApiError(str(err)) from err

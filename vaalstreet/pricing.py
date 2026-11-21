@@ -27,6 +27,8 @@ Three pieces turn prints into numbers a trader can act on.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -407,12 +409,18 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
     return best
 
 
-def fit_ratio(price: float, max_currency: float, max_items: float = 5000) -> tuple[int, int] | None:
+def fit_ratio(
+    price: float, max_currency: float, max_items: float = 5000, side: str | None = None
+) -> tuple[int, int] | None:
     """The whole-number (currency, items) order closest to `price` that a small purse can post.
 
     `max_currency` caps the currency side and `max_items` the item side. Returns None when even
-    the smallest order does not fit (one item costs more than the purse holds).
+    the smallest order does not fit (one item costs more than the purse holds). With `side`
+    "buy" the ratio never exceeds `price`, with "sell" it never falls below it, so a resting
+    order states no worse a price than its limit.
     """
+    if side is not None:
+        return _fit_ratio_side(price, max_currency, max_items, side == "buy")
     if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
         return None
     best, best_err = None, np.inf
@@ -429,6 +437,39 @@ def fit_ratio(price: float, max_currency: float, max_items: float = 5000) -> tup
     else:
         for currency in range(1, int(min(max_currency, 400)) + 1):
             items = max(1, round(currency / price))
+            if items > max_items:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    return best
+
+
+def _fit_ratio_side(price: float, max_currency: float, max_items: float, buy: bool) -> tuple[int, int] | None:
+    """fit_ratio, rounding only in the order's favour: down for a buy, up for a sell."""
+    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
+        return None
+    best, best_err = None, np.inf
+    eps = 1e-9  # keeps an exact ratio such as 3.3 * 10 from flooring to 32
+    if price >= 1:
+        for items in range(1, int(min(max_items, 400)) + 1):
+            currency = math.floor(price * items + eps) if buy else math.ceil(price * items - eps)
+            if currency < 1:
+                continue
+            if currency > max_currency:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    else:
+        for currency in range(1, int(min(max_currency, 400)) + 1):
+            items = math.ceil(currency / price - eps) if buy else math.floor(currency / price + eps)
+            if items < 1:
+                continue
             if items > max_items:
                 break
             err = abs(currency / items - price) / price

@@ -68,12 +68,15 @@ You can check the model on any league: `python -m vaalstreet scorecard --league 
 - A fill takes at most a set share of that hour's volume (default 10%).
 - No leverage and no shorting. Sizing is on a fixed bankroll unless you ask to compound.
 - `attention` is how many hours pass between your visits; orders stand in between.
+- A play schedule (`--schedule "mon-fri 19-22"`) limits your visits to the hours you actually play. Times are UTC, and the end hour is not included, so that example is three hours each weekday evening. A visit happens when an hour's prices come out, which is when that hour ends. Inside a session, `attention` still sets how often you come back. Your orders keep standing between sessions.
+- Whole lots (`--whole-lots`) make the backtest trade like a real purse, the same way the Flips page does when you enter a bankroll. Each order becomes a whole-number ratio, like "33 Chaos for 10", that your cash can pay for. The ratio is rounded in your favour, so a buy never states more than your limit and a sale never states less. It fills only in whole lots, at the price that ratio states. An order you cannot afford even one lot of is never posted. A Divine-market order states whole Divines, so what it costs in Chaos moves with the Divine price until it fills. Market orders fill whole items.
+- Gold (`--gold-per-unit`, `--gold-budget`) is charged for every unit you post. Moving an order to a new price or making it bigger is a new post and costs Gold again. Leaving it alone, or letting it shrink, costs nothing. We assume a cancelled order gives no Gold back, which is the cautious choice. Once the budget is spent, no new orders go up, but orders already standing can still fill. The result shows the Gold spent and the Chaos earned per 1,000 Gold.
 
 ### What the model cannot see
 
 Read flip and backtest figures as a ceiling, not a forecast.
 
-- **Gold.** Every order costs Gold, and the fee schedule is not published. The desk does not guess it: it learns the Gold per item from the trades and orders you record in the Ledger (the middle value of your records), and shows the fee as unknown until you have recorded some. Gold is often the real limit on how much you can flip.
+- **Gold.** Every order costs Gold, and the fee schedule is not published. The desk does not guess it: it learns the Gold per item from the trades and orders you record in the Ledger (the middle value of your records), and shows the fee as unknown until you have recorded some. Backtests charge a Gold fee per unit that you choose, because the real fee for each item is not known to them. Gold is often the real limit on how much you can flip.
 - **Queue position.** Orders at the same ratio fill in time order. The desk shows how many hours of volume already rest on each side, but cannot know where you would stand.
 - **Hourly granularity.** A level is counted as reached only when the whole hour's average traded through it, which is conservative; the path inside the hour is unknown.
 - **Small samples.** There have only been a handful of leagues since the exchange launched. League-start patterns are precedents, not odds.
