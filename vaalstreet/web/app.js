@@ -49,6 +49,8 @@ function money(v, unit = state.unit) {
 }
 const pct = (v, digits = 1) => v == null ? '<span class="dim">–</span>' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : 'muted'}">${v > 0 ? '+' : ''}${(v * 100).toFixed(digits)}%</span>`;
 const dur = h => h == null ? '–' : h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? h.toFixed(1) + ' h' : Math.round(h / 24) + ' d';
+// Minutes as people say them: "2 min", "1.5 min", never "2.000".
+const mins = v => v == null || !isFinite(v) ? '–' : `${+(+v).toFixed(v >= 10 ? 0 : 1)} min`;
 const plainPct = (v, digits = 0) => v == null ? '–' : (v * 100).toFixed(digits) + '%';
 function ago(t) {
   const s = Date.now() / 1000 - t;
@@ -263,7 +265,7 @@ const flipCols = () => [
   { h: 'Offer queue', f: r => dur(r.ask_queue_hours), s: r => r.ask_queue_hours, title: 'Items already on offer in the sell market, in hours of that market’s volume' },
   { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the orders cost. Each order costs Gold for every item it buys or sells' },
   { h: 'Gold / hour', f: r => goldCell(r, fmt(r.gold_per_hour)), s: r => r.gold_per_hour, title: 'Gold the orders cost at the units per hour this plan expects' },
-  { h: 'Minutes', f: r => `${fmt(r.minutes)} <span class="dim">· ${r.orders} orders</span>`, s: r => r.minutes, title: 'Your time to post this plan’s orders once, at the minutes per order you set' },
+  { h: 'Minutes', f: r => `${mins(r.minutes)} <span class="dim">· ${r.orders} order${r.orders === 1 ? '' : 's'}</span>`, s: r => r.minutes, title: 'Your time to post this plan’s orders once, at the minutes per order you set' },
   { h: 'Per hour of your time', f: r => money(r.profit_per_own_hour), s: r => r.profit_per_own_hour, title: 'Est. / hour × 60 ÷ minutes: if you post one buy and one sell order for each hour the market runs' },
 ];
 // Where a plan's share of the flow comes from: your recorded orders, or the share you set.
@@ -278,7 +280,7 @@ async function viewFlips(main) {
   const st = d.settings;
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
     <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue; check the in-game book before sizing up.</p>
-    <p class="note">Every order costs Gold, and the game does not publish how much. The desk uses the Gold per item from the trades you recorded in the Ledger; for other items it uses the fee you assume below, and otherwise says “Gold unknown”. Minutes assume ${fmt(st.minutes_per_order)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
+    <p class="note">Every order costs Gold, and the game does not publish how much. The desk uses the Gold per item from the trades you recorded in the Ledger; for other items it uses the fee you assume below, and otherwise says “Gold unknown”. Minutes assume ${+(+st.minutes_per_order).toFixed(2)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
     <div class="bar">
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
       <label class="f">Your share of the flow: <span id="shareL">${plainPct(state.share)}</span><input type="range" id="share" min="0.01" max="0.3" step="0.01" value="${state.share}"></label>
@@ -301,7 +303,7 @@ async function viewFlips(main) {
     const picks = sp.flips, total = sp.expected_per_hour;
     // Kept so the Ledger can start a session against this plan.
     state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
-    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${fmt(sp.minutes)} min to post</span>`);
+    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
       { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
@@ -312,7 +314,7 @@ async function viewFlips(main) {
       { h: 'Per 1,000 Gold', f: r => r.chaos_per_1000_gold == null ? '<span class="dim">Gold unknown</span>' : `${money(r.chaos_per_1000_gold)}<div class="muted small">${feeSource(r)}</div>` },
       { h: 'Gold to post', f: r => r.gold_to_post == null ? '–' : fmt(r.gold_to_post), title: 'Gold to post this plan’s buy and sell orders once, at the size of its stake' },
       { h: 'Gold / hour', f: r => r.gold_per_hour == null ? '–' : fmt(r.gold_per_hour), title: 'Gold an hour at the fills this stake expects, if you keep re-posting' },
-      { h: 'Minutes', f: r => fmt(r.minutes) },
+      { h: 'Minutes', f: r => mins(r.minutes) },
       { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
     ], picks, { onRow: r => openItem(r.id), empty: sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
     if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record a trade's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
