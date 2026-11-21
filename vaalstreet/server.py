@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, check, db, items
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, Ledger, recipe_key
+from vaalstreet.ledger import ALERT_FIELDS, Ledger
 from vaalstreet.paths import data_dir, icons_dir
 
 WEB = Path(__file__).parent / "web"
@@ -279,10 +279,31 @@ class App:
         bankroll = float(q["bankroll"]) if q.get("bankroll") else 0.0
         poor = 0 < bankroll < desk.bridge  # cannot hold a single Divine: stay in the Chaos markets
         costs = self.costs(desk.league)
-        return {"summary": desk.summary(),
-                "conversions": desk.conversions(share=float(q.get("share", 0.1)), costs=costs),
-                "loops": desk.loops(chaos_only=poor, share=float(q.get("share", 0.1)), costs=costs)[:80],
-                "chaos_only": poor, "settings": self.settings()}
+        share = float(q.get("share", 0.1))
+        fixed = self.ledger.fixed_conversions()
+        checks = self.ledger.recipe_checks()
+        # Three swaps answer in well under a second on a full league; four can take several.
+        swaps = max(1, min(int(q.get("swaps", 3)), 3))
+        conversions = desk.conversions(share=share, fixed=fixed, costs=costs)
+        loops = desk.loops(chaos_only=poor, share=share, swaps=swaps, fixed=fixed, costs=costs)[:80]
+        for row in conversions + loops:
+            _flag(row, checks)
+            if row.get("vendor_keys"):
+                row["vendor_checks"] = {k: _status(checks.get(k)) for k in row["vendor_keys"]}
+        return {"summary": desk.summary(), "conversions": conversions, "loops": loops, "chaos_only": poor,
+                "settings": self.settings(), "swaps": swaps, "fixed": self._fixed(desk, fixed, checks)}
+
+    @staticmethod
+    def _fixed(desk, fixed: list[dict], checks: dict) -> list[dict]:
+        """Your recipes and vendor prices as stored, with names and checks, priced or not in this league."""
+        out = []
+        for f in fixed:
+            row = dict(f, output_name=desk._name(f["output"]),
+                       inputs=[{"id": i, "name": desk._name(i), "units": n} for i, n in f["inputs"]])
+            row["recipe_key"] = f["key"]
+            _flag(row, checks)
+            out.append(row)
+        return out
 
     def api_league(self, q: dict) -> dict:
         book = self.book()
@@ -414,12 +435,16 @@ class App:
     def _recipes(self, desk) -> dict:
         """The recipes and round trips the desk knows today, and your checks of them (all leagues)."""
         recipes = {}
-        for c in desk.conversions():
-            key = recipe_key("set", [c["id"], c["reward_id"]])
-            recipes[key] = f"{c['need']} {c['name']} → {c['gives']} {c['reward']}"
-        for loop in desk.loops()[:80]:
-            key = recipe_key("loop", [step["id"] for step in loop["path"]])
-            recipes.setdefault(key, " → ".join(step["name"] for step in loop["path"]))
+        fixed = self.ledger.fixed_conversions()
+        for f in fixed:  # yours first, so they can be checked even where they do not trade
+            left = " + ".join(f"{n:g} {desk._name(i)}" for i, n in f["inputs"])
+            verb = "buys" if f["kind"] == "vendor" else "→"
+            recipes[f["key"]] = f"{left} {verb} {f['gives']:g} {desk._name(f['output'])}"
+        for c in desk.conversions(fixed=fixed):
+            if c["how"] != "yours":
+                recipes[c["recipe_key"]] = f"{c['need']} {c['name']} → {c['gives']} {c['reward']}"
+        for loop in desk.loops(fixed=fixed)[:80]:
+            recipes.setdefault(loop["recipe_key"], " → ".join(step["name"] for step in loop["path"]))
         checks = self.ledger.recipe_checks()
         return {"recipes": [{"key": k, "label": v, "check": checks.get(k)} for k, v in recipes.items()],
                 "recipe_checks": [dict(c, label=recipes.get(c["key"], c["key"])) for c in checks.values()]}
@@ -457,6 +482,12 @@ class App:
                     self.ledger.delete_recipe_check(body["delete"])
                 else:
                     self.ledger.check_recipe(body["key"], body["status"], body.get("note", ""))
+            elif path == "/api/recipe":
+                if body.get("delete"):
+                    self.ledger.delete_fixed(body["delete"])
+                else:
+                    self.ledger.add_fixed(body["kind"], body["inputs"], body["output"], body.get("gives", 1),
+                                          body.get("note", ""))
             elif path == "/api/watch":
                 self.ledger.watch(league, body["item"], bool(body.get("on", True)))
             elif path == "/api/alert":
@@ -508,6 +539,18 @@ class App:
 # Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
 # publish the schedule. Minutes per order is a rough guess at your clicking speed.
 SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+
+
+def _status(found: dict | None) -> str:
+    return found["status"] if found else "unchecked"
+
+
+def _flag(row: dict, checks: dict) -> None:
+    """Add the latest in-game check of a row's recipe: confirmed, failed or unchecked."""
+    found = checks.get(row["recipe_key"])
+    row["check"] = _status(found)
+    row["check_note"] = found["note"] if found else ""
+
 
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",

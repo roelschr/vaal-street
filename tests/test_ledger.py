@@ -166,3 +166,73 @@ def test_recipe_checks_are_shared_across_leagues_and_keep_the_latest(tmp_path):
     assert checks[key]["status"] == "confirmed" and checks[key]["note"] == "20 for 1"
     with pytest.raises(ValueError):
         ledger.check_recipe(key, "maybe")
+
+
+# The schema as it shipped with Gold, orders, sessions and recipe checks (wave 1), with the
+# columns `_migrate` added to trades; copied verbatim, before your own conversions existed.
+WAVE1_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trades(
+    id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, item TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('buy','sell')), units REAL NOT NULL CHECK(units > 0),
+    price REAL NOT NULL CHECK(price >= 0), note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS trades_league ON trades(league, t, id);
+CREATE TABLE IF NOT EXISTS watchlist(league TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY(league, item));
+CREATE TABLE IF NOT EXISTS alerts(
+    id INTEGER PRIMARY KEY, league TEXT NOT NULL, item TEXT NOT NULL,
+    field TEXT NOT NULL, op TEXT NOT NULL CHECK(op IN ('above','below')), threshold REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1, hot INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS events(
+    id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS orders(
+    id INTEGER PRIMARY KEY, league TEXT NOT NULL, item TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('buy','sell')), market TEXT NOT NULL CHECK(market IN ('chaos','divine')),
+    currency_units INTEGER NOT NULL CHECK(currency_units > 0), item_units INTEGER NOT NULL CHECK(item_units > 0),
+    units REAL NOT NULL CHECK(units > 0), filled REAL NOT NULL DEFAULT 0, gold REAL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','part-filled','filled','cancelled','closed')),
+    created INTEGER NOT NULL, updated INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS orders_league ON orders(league, status, id);
+CREATE TABLE IF NOT EXISTS sessions(
+    id INTEGER PRIMARY KEY, league TEXT NOT NULL, started INTEGER NOT NULL, stopped INTEGER,
+    expected_per_hour REAL, plan TEXT NOT NULL DEFAULT '{}', gold_earned REAL);
+CREATE TABLE IF NOT EXISTS recipe_checks(
+    id INTEGER PRIMARY KEY, key TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('confirmed','failed')),
+    note TEXT NOT NULL DEFAULT '', t INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS recipe_checks_key ON recipe_checks(key, t, id);
+ALTER TABLE trades ADD COLUMN gold REAL;
+ALTER TABLE trades ADD COLUMN order_id INTEGER;
+"""
+
+
+def test_wave1_ledger_file_keeps_its_rows_and_gains_your_conversions(tmp_path):
+    db = sqlite3.connect(ledger_file(tmp_path))
+    db.executescript(WAVE1_SCHEMA)
+    db.execute("INSERT INTO trades(t, league, item, side, units, price, gold) VALUES (1,'L','orb','buy',10,2,30)")
+    db.execute("INSERT INTO recipe_checks(key, status, note, t) VALUES ('set:a>b','confirmed','',1)")
+    db.commit()
+    db.close()
+
+    Ledger(tmp_path)
+    ledger = Ledger(tmp_path)
+    assert ledger.trades("L")[0]["gold"] == 30 and ledger.recipe_checks()["set:a>b"]["status"] == "confirmed"
+    assert ledger.fixed_conversions() == []
+    ledger.add_fixed("vendor", [["chaos", 5]], "orb", note="town vendor")
+    assert ledger.fixed_conversions()[0]["key"] == "vendor:5*chaos>1*orb"
+
+
+def test_your_recipes_and_vendor_prices_are_kept_for_every_league(tmp_path):
+    ledger = Ledger(tmp_path)
+    recipe = ledger.add_fixed("recipe", [["a", 3], ["b", 1]], "c", 2, "made up")
+    ledger.add_fixed("vendor", [["chaos", 5]], "orb")
+    rows = ledger.fixed_conversions()
+    assert [r["kind"] for r in rows] == ["recipe", "vendor"]
+    assert rows[0]["inputs"] == [("a", 3.0), ("b", 1.0)] and rows[0]["gives"] == 2 and rows[0]["note"] == "made up"
+    assert rows[0]["key"] == "recipe:3*a+1*b>2*c"
+    # Correcting a count gives a new key, so the corrected recipe starts unchecked.
+    assert rows[0]["key"] != recipe_key("set", ["a", "c"])
+    ledger.delete_fixed(recipe)
+    assert [r["kind"] for r in ledger.fixed_conversions()] == ["vendor"]
+    for bad in (("trade", [["a", 1]], "c"), ("recipe", [], "c"), ("recipe", [["a", 0]], "c"),
+                ("vendor", [["a", 1], ["b", 1]], "c"), ("recipe", [["c", 1]], "c")):
+        with pytest.raises(ValueError):
+            ledger.add_fixed(*bad)

@@ -100,3 +100,30 @@ def test_free_orders_rank_first_not_as_unknown():
     free = plan("f", 0.05, 10, 1000, None, gold=0)
     out = session_plan([plan("a", 0.10, 10, 1000, 5), free], 100, gold_budget=10)
     assert [p["id"] for p in out["flips"]] == ["f"] and out["gold_unknown"] == [] and out["gold_used"] == 0
+
+
+def test_gold_for_vendor_swaps_divine_stops_and_your_recipes(desk):
+    from conftest import CARD, EMBER, OTHER
+    from vaalstreet.ingest import CHAOS, DIVINE
+
+    fees = {item: {"gold_per_unit": g, "trades": 1} for item, g in
+            ((ITEM, 10.0), (OTHER, 2.0), (CARD, 1.0), (EMBER, 3.0), (DIVINE, 50.0))}
+    costs = Costs(fees)
+    # A made-up vendor sells an orb for 5 Chaos: no order to buy the Chaos, none for the vendor,
+    # one to sell the orb. Gold is per unit of the first item: 1 Chaos buys 1/5 orb, so 10 / 5 = 2.
+    vendor = [{"kind": "vendor", "inputs": [(CHAOS, 5)], "output": ITEM, "gives": 1}]
+    row = next(r for r in desk.loops(min_value=10, chaos_only=True, fixed=vendor, costs=costs) if r["via"] == ["vendor"])
+    assert row["gold"] == 2 and row["orders"] == 1 and [s["id"] for s in row["gold_sources"]] == [ITEM]
+
+    # Orb -> Divine -> ember, per orb: buy the orb (10), give it for Divines (10), give the Divines
+    # for embers (50 x Divines per orb), sell the embers (3 x embers per orb). Four orders.
+    row = next(r for r in desk.loops(min_value=10, costs=costs) if "divine" in r["via"])
+    divines, embers = row["rates"][0], row["rates"][0] * row["rates"][1]
+    assert row["gold"] == pytest.approx(10 + 10 + 50 * divines + 3 * embers, rel=1e-3)
+    assert row["orders"] == 4 and row["gold_per_day"] is not None
+
+    # Your recipe: 2 cards + 1 shard + 4 Chaos make 1 orb. Gold = 2 x 1 + 1 x 2 (no order for Chaos) + 10 to sell.
+    mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2), (OTHER, 1), (CHAOS, 4)], "output": ITEM, "gives": 1}]
+    row = next(r for r in desk.conversions(fixed=mine, costs=costs) if r["how"] == "yours")
+    assert row["gold"] == 14 and row["orders"] == 3
+    assert {s["id"] for s in row["gold_sources"]} == {CARD, OTHER, ITEM}

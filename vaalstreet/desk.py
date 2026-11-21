@@ -15,6 +15,10 @@ patient orders fill - check the in-game book before committing size.
 
 from __future__ import annotations
 
+import dataclasses
+import functools
+import inspect
+import json
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -27,6 +31,7 @@ import numpy as np
 from vaalstreet import items as item_meta
 from vaalstreet import pricing
 from vaalstreet.ingest import ANCHORS
+from vaalstreet.ledger import fixed_key, recipe_key
 from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, weighted_quantile
 from vaalstreet.paths import data_dir
 
@@ -40,6 +45,7 @@ MAX_SWING = math.log(1.5)  # keep in step with backtest.MAX_SWING
 PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
+MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
 
 
 def _num(x: Any, digits: int = 6) -> float | None:
@@ -81,6 +87,35 @@ class Leg:
 def kind_currency(plan: dict, side: str) -> bool:
     """Whether a plan's buy or sell order is denominated in the bridge currency (Divine)."""
     return plan[f"{side}_order"]["currency"] != "Chaos"
+
+
+def _key_part(value: Any) -> Any:
+    if dataclasses.is_dataclass(value):
+        return dataclasses.asdict(value)
+    return repr(value)
+
+
+def _memo(method):
+    """Remember a list-of-rows answer on the Desk, keyed by every argument.
+
+    A Desk is built once per published hour and then asked the same questions by several pages,
+    so the walk is done once. Arguments such as your conversions and your Gold fees are part of
+    the key, so changing them computes afresh. Each call gets its own copy of the rows, so a
+    caller that adds fields to them does not change what the next caller sees.
+    """
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        named = {k: v for k, v in bound.arguments.items() if k != "self"}
+        key = (method.__name__, json.dumps(named, sort_keys=True, default=_key_part))
+        if key not in self._cache:
+            self._cache[key] = method(self, *args, **kwargs)
+        return [dict(row) for row in self._cache[key]]
+
+    return wrapper
 
 
 @dataclass
@@ -141,10 +176,19 @@ class Costs:
                                    plan["profit_per_hour"], [{"id": plan["id"], **source}])
 
     def conversion(self, row: dict, chaos_id: str) -> dict:
-        """Buy `need` inputs, sell `gives` results; a result that is Chaos needs no sell order."""
-        fee_in, src_in = self.fee(row["id"])
-        sources, orders = [{"id": row["id"], **src_in}], 1
-        gold = None if fee_in is None else row["need"] * fee_in
+        """Buy `need` inputs, sell `gives` results; Chaos needs no order on either side.
+
+        A recipe you entered may take several inputs (`inputs`): each is bought with its own order.
+        """
+        inputs = [(x["id"], x["units"]) for x in row["inputs"]] if row.get("inputs") else [(row["id"], row["need"])]
+        sources, orders, gold = [], 0, 0.0
+        for item_id, units in inputs:
+            if item_id == chaos_id:
+                continue
+            fee_in, src_in = self.fee(item_id)
+            sources.append({"id": item_id, **src_in})
+            orders += 1
+            gold = None if gold is None or fee_in is None else gold + units * fee_in
         if row["reward_id"] != chaos_id:
             fee_out, src_out = self.fee(row["reward_id"])
             sources.append({"id": row["reward_id"], **src_out})
@@ -153,23 +197,33 @@ class Costs:
         profit = (row["proceeds"] or 0) - (row["cost"] or 0)
         return row | self._fields(gold, profit, row["sets_per_hour"], orders, row["profit_per_hour"], sources)
 
-    def loop(self, row: dict) -> dict:
-        """Per unit of the first item: buy it, give each item along the path, sell the last."""
-        units, gold, sources = 1.0, 0.0, []
+    def loop(self, row: dict, chaos_id: str | None = None) -> dict:
+        """Per unit of the first item: buy it, give each item along the path, sell the last.
+
+        A Divine stop is an order like any other. A swap with a vendor (a price you entered) is not an
+        exchange order and costs no Gold, and Chaos handed to a vendor never had to be bought.
+        """
+        units, gold, sources, orders = 1.0, 0.0, [], 0
+        via = row.get("via") or ["swap"] * len(row["rates"])
         for k, step in enumerate(row["path"]):
-            fee, source = self.fee(step["id"])
-            sources.append({"id": step["id"], **source})
-            if fee is None:
-                gold = None
-            elif gold is not None:
-                # Buying the first item, then giving each item up (a swap, or the final sale).
-                gold += (1.0 if k == 0 else 0.0) * fee + units * fee
-            if k < len(row["rates"]):
+            last = k == len(row["path"]) - 1
+            bought = k == 0 and step["id"] != chaos_id  # the first item is bought on the exchange
+            given = last or via[k] != "vendor"  # given up in a swap order, or sold at the end
+            charged = (1.0 if bought else 0.0) + (units if given else 0.0)
+            orders += int(bought) + int(given)
+            if charged:
+                fee, source = self.fee(step["id"])
+                sources.append({"id": step["id"], **source})
+                if fee is None:
+                    gold = None
+                elif gold is not None:
+                    gold += charged * fee
+            if not last:
                 units *= row["rates"][k] or 0
         profit = (row["buy"] or 0) * (row["edge"] or 0)  # per unit of the first item
         per_day = row.get("profit_per_day")
         passes = per_day / profit / DAY if profit > 0 and per_day is not None else None
-        out = self._fields(gold, profit, passes, len(row["path"]) + 1,
+        out = self._fields(gold, profit, passes, orders,
                            per_day / DAY if per_day is not None else None, sources)
         out["gold_per_day"] = _num(out["gold_per_hour"] * DAY, 4) if out["gold_per_hour"] is not None else None
         return row | out
@@ -269,6 +323,7 @@ class Desk:
     meta: dict[str, dict] = field(default_factory=dict)
     cross: list[dict] = field(default_factory=list)  # item-vs-item markets, trailing day
     _replays: dict = field(default_factory=dict, repr=False)
+    _cache: dict = field(default_factory=dict, repr=False)  # see `_memo`
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -490,6 +545,7 @@ class Desk:
             "profit_per_hour": _num(margin * min(flow_value, bankroll / 2), 4),
         }
 
+    @_memo
     def flips(self, share: float = 0.1, min_margin: float = 0.02, min_active: float = 0.5,
               bankroll: float | None = None, costs: Costs | None = None) -> list[dict]:
         """Ranked maker plans. `share` is the fraction of a market's flow you expect to capture.
@@ -621,10 +677,15 @@ class Desk:
             current = self.panel.items[j]
         return chain
 
-    def conversions(self, share: float = 0.1, costs: Costs | None = None) -> list[dict]:
+    @_memo
+    def conversions(self, share: float = 0.1, fixed: list[dict] | None = None,
+                    costs: Costs | None = None) -> list[dict]:
         """Fixed conversions against what they produce: divination card sets, shards and splinters
         that combine into their item, and three-to-one vendor upgrades of essences and oils -
-        including chains of them (nine of one tier for one of the tier two above)."""
+        including chains of them (nine of one tier for one of the tier two above).
+
+        `fixed` is the conversions you entered (`Ledger.fixed_conversions`); its recipes are priced
+        the same way. Vendor prices among them are swaps for `loops`, not conversions."""
         p = self.panel
         by_name = {name: i for i, name in enumerate(p.names)}
         r, quick = self.legs["r"], self.legs["b"]
@@ -662,55 +723,179 @@ class Desk:
                     "profit_per_hour": _num(sets * (out_fair - cost), 4),
                     "value_24h": _num(value_24h[i]),
                     "reward_value_24h": _num(value_24h[j]) if j >= 0 else None,
+                    "recipe_key": recipe_key("set", [item_id, p.items[j] if j >= 0 else ANCHORS[self.realm][0]]),
                 })
+        for recipe in fixed or []:
+            if recipe["kind"] == "recipe":
+                row = self._your_recipe(recipe, share, value_24h)
+                if row:
+                    out.append(row)
         out = [(costs or Costs()).conversion(row, ANCHORS[self.realm][0]) for row in out]
         out.sort(key=lambda row: -(row["profit_per_hour"] or 0))
         return out
 
-    def loops(self, min_edge: float = 0.03, min_value: float = 200.0, chaos_only: bool = False,
-              share: float = 0.1, costs: Costs | None = None) -> list[dict]:
-        """Round trips through item-for-item markets: buy A, swap A for B (and B for C), sell.
+    def _price(self, item_id: str) -> dict | None:
+        """One unit's fair value, its quick buy and sell price, and its trade, in reference currency."""
+        if item_id == ANCHORS[self.realm][0]:
+            return {"fair": 1.0, "buy": 1.0, "sell": 1.0, "flow": math.inf}
+        i = self.panel._by_id.get(item_id)
+        if i is None:
+            return None
+        fair = float(self.fv.fair[-1, i])
+        if not math.isfinite(fair) or self._age()[i] >= DAY:
+            return None
+        r, quick = self.legs["r"], self.legs["b"]
+        # As for the built-in recipes: buy through the Divine market, sell into the Chaos market,
+        # and never assume better than fair value.
+        buy = float(quick.fair[-1, i]) if self._quotable(quick, i) else fair
+        sell = float(r.fair[-1, i]) if self._quotable(r, i) else fair
+        return {"fair": fair, "buy": max(buy, fair), "sell": min(sell, fair),
+                "flow": float(r.flow[i] + quick.flow[i])}
 
-        Each hop uses that market's typical traded rate over the last day; entry is the cheaper of
+    def _your_recipe(self, recipe: dict, share: float, value_24h: np.ndarray) -> dict | None:
+        """A recipe you entered, priced like a built-in one. None while any of its items has no price."""
+        inputs = [(item_id, float(units), self._price(item_id)) for item_id, units in recipe["inputs"]]
+        reward = self._price(recipe["output"])
+        if not reward or any(q is None for _, _, q in inputs):
+            return None
+        gives = float(recipe["gives"])
+        cost = sum(units * q["fair"] for _, units, q in inputs)
+        cost_now = sum(units * q["buy"] for _, units, q in inputs)
+        out_fair = gives * reward["fair"]
+        # The thinnest input sets the pace, as for the built-in recipes; a recipe of Chaos alone is
+        # paced by its reward instead.
+        sets = share * min(q["flow"] / units for _, units, q in inputs)
+        if not math.isfinite(sets):
+            sets = share * reward["flow"] / gives
+        if not math.isfinite(sets):
+            sets = 0.0
+        first = inputs[0][0]
+        i, j = self.panel._by_id.get(first), self.panel._by_id.get(recipe["output"])
+        return {
+            "id": first, "name": self._name(first), "need": _num(inputs[0][1]), "gives": _num(gives), "steps": 1,
+            "how": "yours", "reward": self._name(recipe["output"]), "reward_id": recipe["output"],
+            "cost": _num(cost), "proceeds": _num(out_fair), "margin": _num(out_fair / cost - 1, 4),
+            "margin_now": _num(gives * reward["sell"] / cost_now - 1, 4),
+            "sets_per_hour": _num(sets, 4), "profit_per_hour": _num(sets * (out_fair - cost), 4),
+            "value_24h": _num(value_24h[i]) if i is not None else None,
+            "reward_value_24h": _num(value_24h[j]) if j is not None else None,
+            "recipe_key": fixed_key("recipe", recipe["inputs"], recipe["output"], gives),
+            "inputs": [{"id": item_id, "name": self._name(item_id), "units": _num(units)} for item_id, units, _ in inputs],
+            "fixed_id": recipe.get("id"), "note": recipe.get("note", ""),
+        }
+
+    @_memo
+    def loops(self, min_edge: float = 0.03, min_value: float = 200.0, chaos_only: bool = False,
+              share: float = 0.1, swaps: int = 3, fixed: list[dict] | None = None,
+              costs: Costs | None = None) -> list[dict]:
+        """Round trips through item-for-item markets: buy A, swap A for B (then B for C, ...), sell.
+
+        Each swap uses that market's typical traded rate over the last day; entry is the cheaper of
         an item's own markets and exit the dearer (with `chaos_only`, both are the Chaos market,
         for purses too small to deal in Divines). `edge` is what comes back per unit put in.
-        Side markets are thin, so `value_24h` - what actually went through the thinnest hop - matters
+        Side markets are thin, so `value_24h` - what actually went through the thinnest swap - matters
         as much as the edge, and `resting_value` says whether orders are waiting there to be taken now.
+
+        Paths have up to `swaps` swaps (at most MAX_SWAPS). Two more kinds of swap join them:
+
+        - Through Divine: sell A in its Divine market and buy C in C's. Divine is only ever a stop in
+          the middle, and an item next to it is bought or sold in its Chaos market, because its Divine
+          market is already in use. Choosing the dearer market at each end is what the cross flip
+          does already, so a path through Divine is kept only when it beats stopping before Divine.
+        - Vendor prices you entered (`fixed`, kind "vendor"): a vendor sells X for N of Y, one way and
+          at any volume. They add no depth limit; a path of vendor swaps alone is as deep as the
+          markets it buys and sells in.
+
+        A path never visits an item twice and always ends somewhere other than where it started, so
+        every row is a different trade (A to B and B to A are both listed: they are different trades).
+        Paths through Divine are cut down to the best one per item you start with and per item you buy
+        with the Divines, after sorting.
         """
+        swaps = max(1, min(int(swaps), MAX_SWAPS))
         r, b = self.legs["r"], self.legs["b"]
         index = self.panel._by_id
+        ref, divine = ANCHORS[self.realm]
+        value_24h = np.nansum(self.panel["value"][-DAY:], axis=0)
+        quotes: dict[tuple[str, bool], tuple[float, float] | None] = {}
 
-        def quote(item_id: str) -> tuple[float, float] | None:
+        def quote(item_id: str, chaos_here: bool = False) -> tuple[float, float] | None:
             """(entry cost, exit proceeds) for one unit, in reference currency."""
+            if item_id == ref:
+                return (1.0, 1.0)
+            key = (item_id, chaos_here)
+            if key not in quotes:
+                i = index.get(item_id)
+                legs = (r,) if chaos_only or chaos_here else (r, b)
+                options = [float(leg.fair[-1, i]) for leg in legs if i is not None and self._quotable(leg, i)]
+                quotes[key] = (min(options), max(options)) if options else None
+            return quotes[key]
+
+        def depth(item_id: str) -> float:
             i = index.get(item_id)
-            if i is None:
-                return None
-            options = [float(leg.fair[-1, i]) for leg in ((r,) if chaos_only else (r, b)) if self._quotable(leg, i)]
-            return (min(options), max(options)) if options else None
+            return math.inf if item_id == ref or i is None else float(value_24h[i])
 
         # An edge is (item received, units received per unit given, value traded in a day, hours active,
-        # value of the received item resting on offer in the latest hour - what a swap could take at once).
-        edges: dict[str, list[tuple[str, float, float, int, float]]] = {}
+        # value of the received item resting on offer in the latest hour - what a swap could take at once,
+        # what kind of swap it is, and the recipe key of a vendor price). A swap thinner than `min_value`
+        # cannot carry a path, so it is left out before the walk.
+        edges: dict[str, list[tuple]] = {}
         for m in self.cross:  # both directions of every side market
             pa, pb = self.fair(m["item"]), self.fair(m["quote"])
             if not pa or not pb:
                 continue
             value = m["volume"] * pa
+            if value < min_value:
+                continue
             edges.setdefault(m["item"], []).append(
-                (m["quote"], m["rate"], value, m["hours"], float(m.get("quote_resting") or 0) * pb))
+                (m["quote"], m["rate"], value, m["hours"], float(m.get("quote_resting") or 0) * pb, "swap", None))
             edges.setdefault(m["quote"], []).append(
-                (m["item"], 1 / m["rate"], value, m["hours"], float(m.get("item_resting") or 0) * pa))
+                (m["item"], 1 / m["rate"], value, m["hours"], float(m.get("item_resting") or 0) * pa, "swap", None))
+        if not chaos_only:
+            for i, item_id in enumerate(self.panel.items):
+                if item_id in (ref, divine) or not (self._quotable(b, i) and self._quotable(r, i)):
+                    continue
+                price = float(b.fair[-1, i])  # Chaos per unit through the Divine market
+                value = float(b.flow[i]) * DAY * price
+                if value < min_value:
+                    continue
+                hours = int(round(float(b.active[i]) * DAY))
+                # Rates are in Divines, so a pair of Divine swaps comes to the ratio of the two Divine
+                # markets and the Divine price itself cancels.
+                edges.setdefault(item_id, []).append(
+                    (divine, price / self.bridge, value, hours, float(np.nan_to_num(b.bid_value[i])), "divine", None))
+                edges.setdefault(divine, []).append(
+                    (item_id, self.bridge / price, value, hours, float(np.nan_to_num(b.ask_units[i])) * price, "divine", None))
+        for v in fixed or []:
+            if v["kind"] == "vendor" and len(v["inputs"]) == 1:
+                pay, units = v["inputs"][0]
+                edges.setdefault(pay, []).append(
+                    (v["output"], float(v["gives"]) / float(units), math.inf, DAY, math.inf, "vendor",
+                     fixed_key("vendor", v["inputs"], v["output"], v["gives"])))
 
         out = []
 
-        def emit(path: list[str], rates: list[float], value: float, hours: int, resting: float) -> None:
-            start, end = quote(path[0]), quote(path[-1])
-            if not start or not end or value < min_value:
+        def emit(path: list[str], rates: list[float], hows: list[str], keys: list[str],
+                 value: float, hours: int, resting: float) -> None:
+            start, end = quote(path[0], hows[0] == "divine"), quote(path[-1], hows[-1] == "divine")
+            if not start or not end:
                 return
-            units = math.prod(rates)
-            edge = units * end[1] / start[0] - 1
+            if not math.isfinite(value):  # vendor swaps alone: as deep as the markets at either end
+                value, hours = min(depth(path[0]), depth(path[-1])), DAY
+            if value < min_value:
+                return
+            edge = math.prod(rates) * end[1] / start[0] - 1
             if edge < min_edge:
                 return
+            if "divine" in hows:
+                # Stop at the item before Divine and sell it in its dearer market instead: the Divine
+                # stop has to earn more than that, or it is only the cross flip in disguise.
+                k = path.index(divine)
+                before, first = quote(path[k - 1]), quote(path[0])
+                if not before or not first:
+                    return
+                cut = math.prod(rates[: k - 1]) * before[1] / first[0] - 1
+                if edge <= cut + 1e-9:
+                    return
             give, get = pricing.nice_ratio(1 / rates[0], max_units=200)  # first swap: `give` of A for `get` of B
             out.append({
                 "path": [{"id": item_id, "name": self._name(item_id)} for item_id in path],
@@ -721,20 +906,40 @@ class Desk:
                 "value_24h": _num(value), "hours": int(hours),
                 # Orders already waiting on the other side of the thinnest swap, at the latest hour's low point.
                 "resting_value": _num(resting, 4),
-                # If you took `share` of what went through the thinnest hop at these rates.
+                # If you took `share` of what went through the thinnest swap at these rates.
                 "profit_per_day": _num(share * value * edge, 4),
+                "swaps": len(rates), "via": list(hows),
+                "recipe_key": recipe_key("loop", path), "vendor_keys": [k for k in keys if k],
             })
 
-        for a, firsts in edges.items():
-            for b_id, rate_ab, value_ab, hours_ab, rest_ab in firsts:
-                emit([a, b_id], [rate_ab], value_ab, hours_ab, rest_ab)
-                for c, rate_bc, value_bc, hours_bc, rest_bc in edges.get(b_id, []):
-                    if c != a:
-                        emit([a, b_id, c], [rate_ab, rate_bc], min(value_ab, value_bc), min(hours_ab, hours_bc),
-                             min(rest_ab, rest_bc))
-        out = [(costs or Costs()).loop(row) for row in out]
+        def walk(path, rates, hows, keys, value, hours, resting) -> None:
+            for to, rate, v, h, rest, how, key in edges.get(path[-1], ()):
+                if to in path or (how == "divine" and path[0] == divine):
+                    continue
+                step = (path + [to], rates + [rate], hows + [how], keys + [key],
+                        min(value, v), min(hours, h), min(resting, rest))
+                if not (how == "divine" and to == divine):  # Divine is never where a path ends
+                    emit(*step)
+                if len(rates) + 1 < swaps:
+                    walk(*step)
+
+        for start in list(edges):
+            walk([start], [], [], [], math.inf, DAY, math.inf)
         out.sort(key=lambda row: -(row["profit_per_day"] or 0))
-        return out
+        # Divine markets are deep, and one item that is cheap through Divines pairs with every item
+        # that is dear through them, so Divine paths would crowd out everything else. Keep the best
+        # one per item you start with and per item you buy with the Divines.
+        seen: set[tuple[str, str]] = set()
+        kept = []
+        for row in out:
+            if "divine" in row["via"]:
+                ids = [x["id"] for x in row["path"]]
+                start, bought = ("start", ids[0]), ("bought", ids[ids.index(divine) + 1])
+                if start in seen or bought in seen:
+                    continue
+                seen.update((start, bought))
+            kept.append(row)
+        return [(costs or Costs()).loop(row, ref) for row in kept]
 
     def triangles(self, min_value: float = 500.0) -> list[dict]:
         """Item-vs-item markets whose traded rate disagrees with the two items' own prices."""
