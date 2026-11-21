@@ -312,7 +312,7 @@ class LeagueBook:
                 "traded_now": r["price_now"] is not None,
                 "score": _num(r["median"] * (2 * agreement - 1) * math.sqrt(r["n"]), 4),
             })
-        items.sort(key=lambda row: -(row["score"] or 0))
+        items.sort(key=lambda row: (-(row["score"] or 0), row["id"]))  # ties by id: a stable order
         return {"league": current, "day": day, "horizon": horizon, "unit": unit, "precedents": past, "items": items}
 
     def divine_outlook(self, current: str, horizons: tuple[int, ...] = (3, 7, 14, 30)) -> list[dict]:
@@ -359,7 +359,7 @@ class LeagueBook:
              "vs_typical": _num(r["price_now"] / r["typical"] - 1, 4), "value_now": _num(r["value_now"])}
             for r in rows if not (r["item"] == self.bridge and unit == "divine")
         ]
-        items.sort(key=lambda row: row["vs_typical"] or 0)
+        items.sort(key=lambda row: (row["vs_typical"] or 0, row["id"]))
         return {"league": current, "day": day, "unit": unit, "precedents": past, "items": items}
 
     # --------------------------------------------------------------- launch
@@ -459,7 +459,7 @@ class LeagueBook:
                                "moves": {k: _num(v, 4) for k, v in r["moves"].items()}} for r in runs],
                 "day0_value": _num(median([r["day0_value"] for r in runs])),
             })
-        out["items"].sort(key=lambda r: (-r["n"], -(r["day0_value"] or 0)))
+        out["items"].sort(key=lambda r: (-r["n"], -(r["day0_value"] or 0), r["id"]))
         out["items"] = out["items"][:limit]
         return out
 
@@ -593,7 +593,7 @@ class LeagueBook:
                     "past_high": _num(then[-1], 3), "vs_past_high": _num(mine / then[-1], 3) if then[-1] > 0 else None,
                     "by_league": [{"league": k, "growth": _num(v, 3)} for k, v in sorted(by.items())],
                 })
-        out["items"].sort(key=lambda r: -(r["vs_past_high"] or math.inf))
+        out["items"].sort(key=lambda r: (-(r["vs_past_high"] or math.inf), r["id"]))
         out["items"] = out["items"][:limit]
         return out
 
@@ -678,5 +678,6 @@ class LeagueBook:
                    "verdict": "structural" if structural else "none" if quiet else "noise"}
             (out["divine"] if r["item"] == self.bridge else out["items"]).append(row)
         out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]),
-                                         -abs(math.log1p(x["gap"] or 0))))
+                                         -abs(math.log1p(x["gap"] or 0)), x["id"], x["market"], x["other"]))
+        out["divine"].sort(key=lambda x: (x["market"], x["other"]))
         return out
