@@ -268,3 +268,18 @@ def test_spread_recovers_a_planted_bounce():
     chaos = next(r for r in result.leagues if r["market"] == "Chaos")
     assert chaos["median spread"] == pytest.approx(0.04, rel=0.25)
     assert result.verdict == research.REPORT
+
+
+def test_cli_runs_every_measurement_on_the_test_archive(archive_root, monkeypatch, capsys):
+    """The synthetic archive has two short leagues: far too little for a verdict, but every
+    measurement must run end to end and say so plainly."""
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["research", "all"])
+    out = capsys.readouterr().out
+    for name in research.MEASUREMENTS:
+        assert f"{name}: " in out
+    for name in ("two-market", "premium", "orderbook", "relationships", "recipes"):
+        assert f"{name}: {THIN}" in out
+    assert "pass" not in [line.split(": ")[-1] for line in out.splitlines() if line and not line.startswith(" ")]

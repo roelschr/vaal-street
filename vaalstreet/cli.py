@@ -601,6 +601,16 @@ def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
     print()
 
 
+def _research(args: argparse.Namespace) -> None:
+    from vaalstreet import research
+
+    con = connect()
+    names = research.MEASUREMENTS if args.name == "all" else (args.name,)
+    for name in names:
+        print("\n".join(research.run(con, name, args.league).lines()))
+        print()
+
+
 def _sql(args: argparse.Namespace) -> None:
     connect(realm=args.realm).sql(args.query).show(max_rows=200, max_width=220)
 
@@ -827,6 +837,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--two-market", action="store_true",
                    help="also try the experimental model: one value per item plus a Divine-market premium")
     p.set_defaults(run=_scorecard)
+
+    p = commands.add_parser(
+        "research", help="experiments: test a claim about the market against pass rules fixed in advance",
+        description="Each measurement prints pass, fail or not enough data, its numbers, and how many settings "
+                    "were tried. The rules are in docs/ideas.md under 'How a measurement passes'.")
+    from vaalstreet.research import MEASUREMENTS
+    p.add_argument("name", choices=MEASUREMENTS + ("all",))
+    p.add_argument("--league", action="append",
+                   help="leagues to use (repeat); default: every challenge league, or the live one where only one is used")
+    p.set_defaults(run=_research)
 
     p = commands.add_parser("sql", help="run a query against the views")
     p.add_argument("query")

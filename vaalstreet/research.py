@@ -858,7 +858,16 @@ MEASUREMENTS = ("two-market", "premium", "orderbook", "spread", "regime", "relat
 
 
 def run(con, name: str, leagues: list[str] | None = None) -> Result:
-    """Run one measurement against the archive."""
+    """Run one measurement against the archive. Items with empty columns make numpy warn about
+    all-NaN slices inside the models; those cells are NaN by design, so the warnings are muted."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return _run(con, name, leagues)
+
+
+def _run(con, name: str, leagues: list[str] | None) -> Result:
     from vaalstreet import backtest
 
     if name == "ladder-rates":

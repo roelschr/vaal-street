@@ -149,10 +149,13 @@ python -m vaalstreet search swing --grid 'reach=0.2,0.3;attention=1,4' --leagues
                                                  # each league tested with the setting that won on leagues that ended before it
 python -m vaalstreet strategy import mine.json   # shows the code; add --yes to save it to your strategies folder
 python -m vaalstreet scorecard --league Mirage   # is fair value better than the last print?
+python -m vaalstreet research orderbook          # experiment: does resting stock predict the price? (or: research all)
 python -m vaalstreet sql "SELECT league, family, hours FROM leagues ORDER BY first_hour"
 ```
 
 `--league` defaults to the live challenge league. Run any command with `-h` for its options.
+
+**Experiments.** `research` tests claims about the market that the desk does not act on yet. Examples are "changes in resting stock predict the price", "the Divine market's premium follows the league day" and "this detector catches crashes early". Each claim must meet rules that were written down before any real run, in `docs/ideas.md` under "How a measurement passes". In short, a forecast is tuned on earlier leagues and must beat both fair value and the last print on later ones, in most leagues and pooled, by a margin that chance cannot explain even after counting every setting tried. Each result prints "pass", "fail" or "not enough data", with its numbers and the number of settings tried. Until the archive holds several full leagues with a known start, most results say "not enough data". The `relationships` and `recipes` measurements list candidates to check in game, never trades. `spread`, `queue-vs-share` and `ladder-rates` only describe the data and the desk's own models.
 
 ### Your own strategy
 
@@ -227,6 +230,7 @@ vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders
 vaalstreet/sharing.py   strategy files: export and import
 vaalstreet/search.py    strategy search, judged walk-forward on later leagues
+vaalstreet/research.py  experiments with pass rules fixed in advance
 ```
 
 Run the tests with `pip install -e .[dev] && pytest`. They build a small synthetic exchange archive with known structure and check every layer against it; none touch the network.
