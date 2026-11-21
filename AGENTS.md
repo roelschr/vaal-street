@@ -19,11 +19,13 @@ PoE 1 is the target. The data layer also mirrors PoE 2, but the desk and the mod
 ```sh
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'     # keep the quotes: zsh treats an unquoted .[dev] as a glob
-pytest -q                   # runs in a few seconds and uses no network
+pytest -q                   # runs in about a minute and uses no network
 python -m vaalstreet -h     # the CLI; every subcommand also takes -h
 ```
 
 pytest comes with the `dev` extras. There is no linter or formatter configured.
+
+You can run the suite several times at once, for example from different worktrees. Either leave `--basetemp` unset, or give every run its own directory. pytest empties the `--basetemp` directory when a run starts, so two runs that share one delete each other's synthetic archive and fail with errors such as `No poe1 data under .../data0`.
 
 To try the CLI or the server without touching the user's archive, set `VAAL_DATA_DIR` to a temporary directory. Note that `serve` and `sync` download any missing hours from the live exchange. With an empty data directory, `serve` starts by downloading the last two weeks, which takes a couple of minutes. For most checks, the pytest suite is enough.
 
