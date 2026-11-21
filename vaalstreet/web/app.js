@@ -102,11 +102,18 @@ const ICONS = {
   ledger: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6"/>', ladder: '<path d="M7 3v18M17 3v18M7 7h10M7 12h10M7 17h10"/>',
 };
 const PAGES = [['desk', 'Desk'], ['markets', 'Markets'], ['flips', 'Flips'], ['arbitrage', 'Arbitrage'], ['ladder', 'Ladder'], ['league', 'League start'], ['lab', 'Backtest lab'], ['ledger', 'Ledger']];
+// poe.ninja, quietly: on or off, and when its prices were last fetched.
+function ninjaLine() {
+  const n = state.status?.ninja;
+  if (!n) return '';
+  const what = !n.on ? 'off' : n.last_run ? `fetched ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
+  return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
+}
 function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>Not affiliated with Grinding Gear Games.</div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
@@ -394,6 +401,21 @@ async function viewArbitrage(main) {
   ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
   { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
   onCheck(sets);
+  // Card sets whose reward the exchange does not trade: the reward's price is a poe.ninja listing, kept apart.
+  const nj = panel('Card sets for items not on the exchange', 'c12', `<span class="muted small">Reward ${esc(d.ninja_credit || 'prices from poe.ninja')} (stash listings, not the exchange)</span>`);
+  nj.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">These cards turn into a unique, a gem or a base type. The cards are priced from the exchange; the reward from poe.ninja’s listings, which are weaker evidence than trades, so there is no “in a hurry” figure and these prices never enter fair value, round trips or alerts. Check what the reward really sells for before buying a set.</p></div>`);
+  nj.append(table([
+    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
+    { h: 'Cost', f: r => money(r.cost), s: r => r.cost, title: 'Fair value of the cards for one set, from the exchange' },
+    { h: 'Reward listed at', f: r => money(r.proceeds), s: r => r.proceeds, title: 'poe.ninja’s listing price for the reward' },
+    { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
+    { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour, title: `At ${plainPct(state.share)} of the cards' traded volume` },
+    { h: 'Listings', f: r => r.reward_listings ?? '–', s: r => r.reward_listings, title: 'How many listings back the reward’s price' },
+    { h: 'Price age', l: 1, f: r => `${r.reward_age_minutes == null ? '–' : dur(r.reward_age_minutes / 60)}${r.reward_stale ? ' <span class="gold" title="poe.ninja could not be reached; this is the last answer">stale</span>' : ''}`, s: r => r.reward_age_minutes },
+    { h: 'Note', l: 1, f: r => r.reward_variant ? `<span class="muted small">${esc(r.reward_variant)}</span>` : '' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check },
+  ], (d.ninja_conversions || []).filter(r => fits(r.cost)), { sort: 4, limit: 15, onRow: r => openItem(r.id), empty: state.status?.ninja?.on === false ? 'poe.ninja prices are turned off (python -m vaalstreet ninja on turns them back on).' : 'No card set for an item off the exchange is priced yet. The desk asks poe.ninja at most once an hour, from the background sync.' }));
+  onCheck(nj);
   const loops = panel('Round trips through item-for-item markets', 'c12');
   loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, move it along the path, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. A plain arrow is a swap in the small markets where items trade directly for each other; <span class="tag">Divine</span> means selling for Divines and buying with them; <span class="tag">vendor</span> means buying from a vendor at a price you entered below. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
   loops.append(table([
@@ -448,7 +470,7 @@ async function viewArbitrage(main) {
   });
   onCheck(ft);
   mine.append(form, ft);
-  $('#g', main).append(sets, loops, mine);
+  $('#g', main).append(sets, nj, loops, mine);
   $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
   $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
