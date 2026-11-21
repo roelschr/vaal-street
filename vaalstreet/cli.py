@@ -374,6 +374,9 @@ def _playbook(args: argparse.Namespace) -> None:
     con = connect()
     book = LeagueBook(con)
     league = _league(con, args)
+    if args.launch:
+        _launch(book, league, args)
+        return
     pb = book.playbook(league, args.horizon, unit=args.unit, day=args.day, min_leagues=args.min_leagues)
     print(f"{league} day {pb['day']}: what the next {args.horizon} days did in {', '.join(pb['precedents']) or 'no earlier leagues'}"
           f" (prices in {args.unit})")
@@ -385,6 +388,21 @@ def _playbook(args: argparse.Namespace) -> None:
     _table(rows, columns, half)
     print("\nHistorically fell from here:")
     _table(rows[::-1], columns, half)
+
+
+def _launch(book, league: str, args: argparse.Namespace) -> None:
+    out = book.launch(league, unit=args.unit, limit=10_000)
+    print(f"The first {out['hours']} hours of past {out['family'].replace('_', ' ')} leagues: "
+          f"{', '.join(out['precedents']) or 'none on disk'} (prices in {args.unit}, against each item's first-day value)")
+    if out["shortfall"]:
+        print(out["shortfall"])
+    rows = [{**r, **{f"m{k}": v for k, v in r["moves"].items()}} for r in out["items"] if r["n"] >= args.min_leagues]
+    if not rows:
+        return
+    print("\nWakes up = the league hour of its first trade. First = what it did first. Agree = leagues that did the same.")
+    _table(rows, [("name", "Item", ""), ("n", "Leagues", ""), ("wake", "Wakes up", ".0f"), ("first", "First", ""),
+                  ("agree", "Agree", ".0%"), ("m6", "Hour 6", "+.0%"), ("m24", "Hour 24", "+.0%"),
+                  ("m72", "Hour 72", "+.0%")], args.rows)
 
 
 def _cross_league(args: argparse.Namespace) -> None:
@@ -659,6 +677,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--unit", choices=["divine", "chaos"], default="divine")
     p.add_argument("--min-leagues", type=int, default=2)
     p.add_argument("--rows", type=int, default=30)
+    p.add_argument("--launch", action="store_true",
+                   help="instead: the first 72 hours of past leagues, when each item first traded and where it went")
     p.set_defaults(run=_playbook)
 
     p = commands.add_parser("cross-league", help="the same items in this league's Hardcore, Ruthless and Standard: "

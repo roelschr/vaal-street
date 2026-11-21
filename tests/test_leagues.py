@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import BLITZ, EMBER, FLASH, HC_NEW, ITEM, NEW, OLD, STANDARD, call
+from conftest import BLITZ, EMBER, FLASH, HC_NEW, ITEM, LURE, NEW, OLD, STANDARD, call
 
 from vaalstreet.leagues import DAY, LeagueBook, classify
 
@@ -73,3 +73,36 @@ def test_cross_league_endpoint_and_command(server, archive_root, monkeypatch, ca
     cli.main(["cross-league", "--league", NEW])
     out = capsys.readouterr().out
     assert "Structural gaps" in out and "Test Orb" in out and "+20%" in out and "Test Ember" not in out
+
+
+def test_launch_playbook_on_the_events(con):
+    book = LeagueBook(con)
+    out = book.launch(family="event")
+    assert out["precedents"] == [BLITZ, FLASH] and out["shortfall"] is None
+    lure = next(r for r in out["items"] if r["id"] == LURE)
+    # Wakes at hour 5 and climbs 3 * (1 + h/72). Its first-day value is 3 * (1 + 14/72), the average of hours 5-23.
+    assert lure["n"] == 2 and lure["wake"] == 5 and lure["first"] == "rise" and lure["agree"] == 1
+    day0 = 3 * (1 + 14 / 72)
+    assert abs(lure["moves"]["72"] - (3 * (1 + 71 / 72) / day0 - 1)) < 0.002  # hours 70-72 average 71
+    assert abs(lure["moves"]["24"] - (3 * (1 + 23 / 72) / day0 - 1)) < 0.002  # hours 22-24 average 23
+    assert lure["path"][4] is None and len(lure["path"]) == 73
+
+
+def test_launch_playbook_names_the_shortfall(con):
+    book = LeagueBook(con)
+    assert book.launch(NEW)["shortfall"].startswith("Only 1 past challenge league has its first 72 hours")
+    out = book.launch(BLITZ)
+    assert out["precedents"] == [FLASH] and "Only 1 past event league" in out["shortfall"]
+    assert book.launch(FLASH)["items"] == [] and "Only 0 past event leagues have" in book.launch(FLASH)["shortfall"]
+
+
+def test_launch_in_the_api_and_cli(server, archive_root, monkeypatch, capsys):
+    league = call(f"{server}/api/league?league={NEW}")[1]
+    assert league["family"] == "challenge" and league["launch"]["precedents"] == [OLD]
+
+    from vaalstreet import cli
+
+    monkeypatch.setenv("VAAL_DATA_DIR", str(archive_root))
+    cli.main(["playbook", "--launch", "--league", BLITZ, "--min-leagues", "1"])
+    out = capsys.readouterr().out
+    assert "Only 1 past event league" in out and "Test Lure" in out and "rise" in out

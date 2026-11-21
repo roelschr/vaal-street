@@ -51,6 +51,10 @@ STRUCTURAL_SIGN = 0.8
 STRUCTURAL_SIZE = 0.03
 STRUCTURAL_HOURS = 12  # ...on at least this many hours that both leagues traded
 
+LAUNCH_HOURS = 72
+LAUNCH_CHECKS = (6, 24, 72)  # league hours at which the launch playbook reports a move
+FIRST_MOVE = 0.05  # a launch price "moves first" when it leaves its opening price by this much
+
 
 def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, str]]:
     """League name -> (family, base league), from the names and the dates each league traded.
@@ -351,6 +355,112 @@ class LeagueBook:
         ]
         items.sort(key=lambda row: row["vs_typical"] or 0)
         return {"league": current, "day": day, "unit": unit, "precedents": past, "items": items}
+
+    # --------------------------------------------------------------- launch
+    def launch(self, current: str | None = None, *, family: str | None = None, unit: str = "chaos",
+               min_leagues: int = 1, limit: int = 300) -> dict:
+        """The first 72 hours of each past league in the family, item by item.
+
+        Per league and item:
+            wake       the league hour of its first trade
+            moves      its price at hours 6, 24 and 72 (the volume-weighted average of the three hours up to
+                       each) against its first-day value (the volume-weighted average of league day 0)
+            first      what it did first: "rise" or "fall" once it left its opening price (its first three
+                       traded hours) by FIRST_MOVE, or "flat" if it never did within 72 hours
+            path       its price every hour against its first-day value
+        Across leagues: the median wake-up hour, the median move at each check, the median hourly path,
+        and the share of leagues whose first move agrees with the most common one.
+
+        Precedents are those of `current` (same family, started earlier, ended), or with no `current`
+        every ended league of `family`. Leagues whose start is not on disk are never used. With fewer than
+        two, `shortfall` says so in words.
+        """
+        if current is not None:
+            past = self.precedents(current)
+            family = self.family_of(current)
+        else:
+            family = family or "challenge"
+            past = [r["league"] for r in self.leagues() if r["family"] == family and r["main"] and r["ended"]]
+        out = {"league": current, "family": family, "unit": unit, "hours": LAUNCH_HOURS, "checks": list(LAUNCH_CHECKS),
+               "precedents": past, "shortfall": None, "items": []}
+        if len(past) < 2:
+            out["shortfall"] = (
+                f"Only {len(past)} past {family.replace('_', ' ')} league{'' if len(past) == 1 else 's'} "
+                f"{'has its' if len(past) == 1 else 'have their'} first {LAUNCH_HOURS} hours on disk; at least 2 are needed "
+                "to say what usually happens at a league start. Download the full history to add more."
+            )
+        if not past:
+            return out
+        column = "p.price / d.price" if unit == "divine" else "p.price"
+        rows = self._rows(
+            f"""
+            SELECT p.league, p.item, date_diff('hour', l.first_hour, p.hour) AS h, {column} AS price, p.volume
+            FROM prices p JOIN leagues l USING (league)
+            LEFT JOIN prices d ON d.league = p.league AND d.hour = p.hour AND d.item = $bridge
+            WHERE p.league IN $past AND p.hour <= l.first_hour + INTERVAL {LAUNCH_HOURS} HOUR
+              AND p.volume > 0 AND p.price > 0
+            ORDER BY p.league, p.item, h
+            """,
+            {"past": past, "bridge": self.bridge},
+        )
+        series: dict[tuple[str, str], list[tuple[int, float, float]]] = {}
+        for r in rows:
+            if r["price"] and r["price"] > 0:
+                series.setdefault((r["item"], r["league"]), []).append((int(r["h"]), float(r["price"]), float(r["volume"])))
+        names = {r["item"]: r for r in self._rows("SELECT item, name, category FROM items")}
+
+        def vwap(points):
+            vol = sum(v for _, _, v in points)
+            return sum(p * v for _, p, v in points) / vol if vol else None
+
+        per_item: dict[str, list[dict]] = {}
+        for (item, league), points in series.items():
+            day0 = vwap([x for x in points if x[0] < 24])
+            if not day0:
+                continue
+            opening = vwap(points[:3])
+            first = "flat"
+            for _, price, _ in points[3:]:
+                if abs(price / opening - 1) >= FIRST_MOVE:
+                    first = "rise" if price > opening else "fall"
+                    break
+            moves = {}
+            for check in LAUNCH_CHECKS:
+                at = vwap([x for x in points if check - 2 <= x[0] <= check])
+                moves[str(check)] = None if at is None else at / day0 - 1
+            path = [None] * (LAUNCH_HOURS + 1)
+            for h, price, _ in points:
+                path[h] = price / day0 - 1
+            per_item.setdefault(item, []).append({
+                "league": league, "wake": points[0][0], "first": first, "moves": moves, "path": path,
+                "day0_value": sum(p * v for h, p, v in points if h < 24)})
+
+        def median(xs):
+            xs = sorted(x for x in xs if x is not None)
+            if not xs:
+                return None
+            m = len(xs) // 2
+            return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+        for item, runs in per_item.items():
+            if len(runs) < min_leagues:
+                continue
+            firsts = [r["first"] for r in runs]
+            common = max(("rise", "fall", "flat"), key=firsts.count)
+            meta = names.get(item, {})
+            out["items"].append({
+                "id": item, "name": meta.get("name", item), "category": meta.get("category"), "n": len(runs),
+                "wake": median([r["wake"] for r in runs]), "first": common,
+                "agree": _num(firsts.count(common) / len(runs), 3),
+                "moves": {k: _num(median([r["moves"][k] for r in runs]), 4) for k in map(str, LAUNCH_CHECKS)},
+                "path": [_num(median([r["path"][h] for r in runs]), 4) for h in range(LAUNCH_HOURS + 1)],
+                "by_league": [{"league": r["league"], "wake": r["wake"], "first": r["first"],
+                               "moves": {k: _num(v, 4) for k, v in r["moves"].items()}} for r in runs],
+                "day0_value": _num(median([r["day0_value"] for r in runs])),
+            })
+        out["items"].sort(key=lambda r: (-r["n"], -(r["day0_value"] or 0)))
+        out["items"] = out["items"][:limit]
+        return out
 
     # --------------------------------------------------------- cross-league
     def cross_league(self, current: str, *, days: int = 7, min_value: float = 50.0) -> dict:
