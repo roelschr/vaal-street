@@ -131,7 +131,7 @@ def test_weighted_quantile_ignores_volume_free_outliers():
 
 def test_panel_is_a_dense_hourly_grid(con):
     panel = Panel.load(con, NEW, CORE + LEGS)
-    assert panel.shape == (8 * 24, 6)  # five items plus the Test Lure
+    assert panel.shape == (8 * 24, 7)  # five items plus the Test Lure and the Test Blade card
     assert np.all(np.diff(panel.hours) == 3600)
     i = panel.index("test orb")
     assert panel["r_price"][5, i] == pytest.approx(item_price(NEW, 5), rel=1e-3)

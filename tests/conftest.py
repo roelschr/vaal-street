@@ -20,6 +20,10 @@ HOUR = 3600
 H0 = FIRST_HOUR["poe1"]
 ITEM = "Metadata/Items/Currency/CurrencyTestOrb"
 CARD = "Metadata/Items/DivinationCards/DivinationCardTestCard"
+# A card whose reward, the unique "Test Blade", does not trade on the exchange. Known answer: the card
+# costs 5 Chaos (400 for 2000), four make one blade, and the poe.ninja fixture in tests/test_ninja.py
+# lists the blade at 30 Chaos, so a set costs 20 and is worth 30: a 50% margin.
+BLADE_CARD = "Metadata/Items/DivinationCards/DivinationCardTestBlade"
 OTHER = "Metadata/Items/Currency/CurrencyTestShard"
 EMBER = "Metadata/Items/Currency/CurrencyTestEmber"
 EMBER_PREMIUM = 0.95  # unlike the orb, the ember's Divine market is 5% cheaper than its Chaos market
@@ -119,6 +123,7 @@ def digest(hour: int) -> dict:
             market(league, ITEM, CHAOS, 1000, round(1000 * p)),
             market(league, ITEM, DIVINE, 4000, round(4000 * p * PREMIUM / div)),
             market(league, CARD, CHAOS, 600, 900),  # 1.5 Chaos each; five make one test orb
+            market(league, BLADE_CARD, CHAOS, 400, 2000),  # 5 Chaos each; four make one Test Blade
             market(league, ITEM, OTHER, 100, 300),  # side market: 3 shards per orb
             market(league, OTHER, CHAOS, 3000, 6000),  # ...but a shard is worth 2 Chaos
             # 4 Chaos each, 5% cheaper through Divines. Selling an orb for Divines (10% dear) and buying
@@ -156,6 +161,8 @@ def archive_root(tmp_path_factory):
         EMBER: {"name": "Test Ember", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         CARD: {"name": "Test Card", "item_class": "DivinationCard", "tags": ["divination_card"],
                "properties": {"stack_size": 5, "description": "<currencyitem>{Test Orb}"}},
+        BLADE_CARD: {"name": "The Test Blade", "item_class": "DivinationCard", "tags": ["divination_card"],
+                     "properties": {"stack_size": 4, "description": "<uniqueitem>{Test Blade}"}},
     })
     target = root / "items" / "poe1.json"
     target.parent.mkdir(parents=True)

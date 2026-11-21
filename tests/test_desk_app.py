@@ -54,7 +54,7 @@ def test_api_serves_every_desk_page(server):
     status, body = call(f"{server}/api/status")
     assert status == 200 and body["ready"] and body["league"] == NEW, "the live challenge league is the default"
     status, desk = call(f"{server}/api/desk")
-    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 6  # the Test Lure is the sixth
+    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 7  # with the Test Lure and the Test Blade card
     assert call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
     arb = call(f"{server}/api/arbitrage")[1]
     assert arb["conversions"][0]["reward"] == "Test Orb" and arb["loops"] and not arb["chaos_only"]
@@ -136,7 +136,7 @@ def test_api_orders_sessions_and_recipe_checks(server):
 
 def test_api_gold_fields_settings_and_session_plan(server):
     flips = call(f"{server}/api/flips?min_margin=0.01")[1]
-    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
     assert all(p["gold"] is None and p["minutes"] == 2 for p in flips["flips"]), "no fee until you give one"
     assert "session" not in flips, "no bankroll, no session plan"
 
