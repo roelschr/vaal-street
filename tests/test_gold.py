@@ -81,6 +81,19 @@ def test_session_plan_without_budget_matches_the_old_rule():
     assert out["gold_unknown"] == [] and out["gold_used"] is None
 
 
+def test_a_lot_bigger_than_a_quarter_must_fill_within_the_session():
+    # Like Omen of Fortune on Covens: one unit costs 84% of a 3,000 c purse and trades 0.05 an hour,
+    # a lot every 20 hours. A lot of the same size that fills in 2 hours stays, flagged.
+    slow = plan("slow", 0.50, 2521, 10_000, None) | {"units_per_hour": 0.05, "buy_order": {"item_units": 1}}
+    fast = plan("fast", 0.20, 1200, 10_000, None) | {"units_per_hour": 0.5, "buy_order": {"item_units": 1}}
+    small = plan("small", 0.10, 50, 10_000, None) | {"units_per_hour": 0.01}
+    out = session_plan([slow, fast, small], 3000)
+    picks = {p["id"]: p for p in out["flips"]}
+    assert set(picks) == {"fast", "small"}
+    assert picks["fast"]["stake"] == 1200 and picks["fast"]["lot_share"] == 0.4, "one lot is 40% of your purse"
+    assert picks["small"]["stake"] == 750 and picks["small"]["lot_share"] is None, "a quarter, as before"
+
+
 def test_session_plan_under_a_gold_budget_for_the_session():
     plans = [plan("a", 0.10, 10, 1000, 5), plan("b", 0.20, 10, 1000, 1), plan("d", 0.10, 10, 1000, 20),
              plan("u", 0.50, 10, 1000, None)]
@@ -100,3 +113,30 @@ def test_free_orders_rank_first_not_as_unknown():
     free = plan("f", 0.05, 10, 1000, None, gold=0)
     out = session_plan([plan("a", 0.10, 10, 1000, 5), free], 100, gold_budget=10)
     assert [p["id"] for p in out["flips"]] == ["f"] and out["gold_unknown"] == [] and out["gold_used"] == 0
+
+
+def test_gold_for_vendor_swaps_divine_stops_and_your_recipes(desk):
+    from conftest import CARD, EMBER, OTHER
+    from vaalstreet.ingest import CHAOS, DIVINE
+
+    fees = {item: {"gold_per_unit": g, "trades": 1} for item, g in
+            ((ITEM, 10.0), (OTHER, 2.0), (CARD, 1.0), (EMBER, 3.0), (DIVINE, 50.0))}
+    costs = Costs(fees)
+    # A made-up vendor sells an orb for 5 Chaos: no order to buy the Chaos, none for the vendor,
+    # one to sell the orb. Gold is per unit of the first item: 1 Chaos buys 1/5 orb, so 10 / 5 = 2.
+    vendor = [{"kind": "vendor", "inputs": [(CHAOS, 5)], "output": ITEM, "gives": 1}]
+    row = next(r for r in desk.loops(min_value=10, chaos_only=True, fixed=vendor, costs=costs) if r["via"] == ["vendor"])
+    assert row["gold"] == 2 and row["orders"] == 1 and [s["id"] for s in row["gold_sources"]] == [ITEM]
+
+    # Orb -> Divine -> ember, per orb: buy the orb (10), give it for Divines (10), give the Divines
+    # for embers (50 x Divines per orb), sell the embers (3 x embers per orb). Four orders.
+    row = next(r for r in desk.loops(min_value=10, costs=costs) if "divine" in r["via"])
+    divines, embers = row["rates"][0], row["rates"][0] * row["rates"][1]
+    assert row["gold"] == pytest.approx(10 + 10 + 50 * divines + 3 * embers, rel=1e-3)
+    assert row["orders"] == 4 and row["gold_per_day"] is not None
+
+    # Your recipe: 2 cards + 1 shard + 4 Chaos make 1 orb. Gold = 2 x 1 + 1 x 2 (no order for Chaos) + 10 to sell.
+    mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2), (OTHER, 1), (CHAOS, 4)], "output": ITEM, "gives": 1}]
+    row = next(r for r in desk.conversions(fixed=mine, costs=costs) if r["how"] == "yours")
+    assert row["gold"] == 14 and row["orders"] == 3
+    assert {s["id"] for s in row["gold_sources"]} == {CARD, OTHER, ITEM}

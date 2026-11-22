@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 
-from conftest import CARD, ITEM, NEW, OLD, OTHER, PREMIUM, item_price
+from conftest import CARD, EMBER, EMBER_PREMIUM, ITEM, NEW, OLD, OTHER, PREMIUM, item_price
 from vaalstreet import pricing
 from vaalstreet.desk import Desk
 from vaalstreet.leagues import LeagueBook
@@ -37,6 +37,34 @@ def test_fair_value_is_causal():
     a, b = pricing.fair_value(seen), pricing.fair_value(changed)
     assert np.array_equal(a.fair[:400], b.fair[:400]), "the future must not move the past"
     assert np.array_equal(a.z[:400], b.z[:400], equal_nan=True)
+    # With traded value, as the desk runs it: typical units and the reprice check stay causal too.
+    units = np.full(seen.shape, 100.0)
+    later = units.copy()
+    later[400:] *= 9
+    a, b = pricing.fair_value(seen, seen * units), pricing.fair_value(changed, changed * later)
+    assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
+
+
+def test_a_stake_turns_over_once_per_cycle_not_every_two_hours(desk):
+    """The test orb swings +-5% over 12 hours, so its levels are reached only some hours: a buy and a sell
+    take several hours, and a purse smaller than the flow earns its margin once per cycle."""
+    plans = desk.flips(min_margin=0.01)
+    assert plans and all(p["cycle_hours"] > 2 for p in plans)
+    for p in desk.flips(min_margin=0.01, bankroll=200):
+        expected = p["margin"] * min(p["flow_value"], 200 / p["cycle_hours"])
+        assert p["profit_per_hour"] == pytest.approx(expected, rel=1e-3)
+
+
+def test_fair_value_is_quiet_about_items_that_never_print():
+    import warnings
+
+    _, seen = noisy_walk()
+    seen = seen.copy()
+    seen[:, 0] = np.nan  # an item with no prints at all, as many have on a young league
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=RuntimeWarning)
+        fv = pricing.fair_value(seen, seen * 100.0)
+    assert np.isnan(fv.fair[:, 0]).all() and np.isfinite(fv.fair[-1, 1:]).all()
 
 
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
@@ -59,6 +87,21 @@ def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
     assert fv.fair[300, 0] == fv.fair[299, 0], "not believed on the first print"
     assert fv.fair[301, 0] == pytest.approx(crashed[301, 0]), "believed on the second"
     assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
+
+
+def test_two_thin_joke_prints_in_a_row_do_not_reprice_an_item():
+    # As seen live on Tainted Armourer's Scrap's Divine market: ~100 units an hour at about 6.5,
+    # then 2 and 12 units at half a Divine (~107), then 260 units back at 8. Known answer: the
+    # value never leaves the old level, while a real crash (full volume) is still believed.
+    _, seen = noisy_walk(noise=0.02, N=2)
+    units = np.full(seen.shape, 100.0)
+    seen[300:302] *= 16
+    units[300:302] = [[2, 2], [12, 12]]
+    seen[302:, 1] *= 16  # column 1: the move is real and keeps trading at full volume
+    fv = pricing.fair_value(seen, seen * units)
+    assert abs(math.log(fv.fair[301, 0] / fv.fair[299, 0])) < 0.1, "thin prints confirm nothing"
+    assert abs(math.log(fv.fair[310, 0] / seen[310, 0])) < 0.1
+    assert fv.fair[302, 1] == pytest.approx(seen[302, 1]), "a full-volume print confirms the move"
 
 
 def test_scorecard_measures_fair_value_against_the_last_print():
@@ -110,7 +153,7 @@ def test_weighted_quantile_ignores_volume_free_outliers():
 
 def test_panel_is_a_dense_hourly_grid(con):
     panel = Panel.load(con, NEW, CORE + LEGS)
-    assert panel.shape == (8 * 24, 4)
+    assert panel.shape == (8 * 24, 7)  # five items plus the Test Lure and the Test Blade card
     assert np.all(np.diff(panel.hours) == 3600)
     i = panel.index("test orb")
     assert panel["r_price"][5, i] == pytest.approx(item_price(NEW, 5), rel=1e-3)
@@ -209,7 +252,7 @@ def test_recipes_chain_through_tiers_and_loops_use_side_markets(desk, archive_ro
     assert loop["first_swap"] == {"give": 3, "get": 1} and loop["lot_cost"] == pytest.approx(6, rel=0.02)
     # The fixture leaves 500 orbs resting in that market: they are there to be taken.
     assert loop["resting_value"] == pytest.approx(500 * desk.fair(ITEM), rel=0.01)
-    richer = desk.loops(chaos_only=False)[0]
+    richer = next(row for row in desk.loops(chaos_only=False) if row["path"] == loop["path"])
     assert richer["edge"] > loop["edge"], "with Divines in hand the orb sells in the dearer market"
 
 
@@ -352,3 +395,163 @@ def test_desk_carries_the_fair_value_range(desk):
     s = desk.series(ITEM)
     assert len(s["fair_low"]) == len(s["fair"]) == len(s["fair_high"])
     json.dumps(s)
+
+
+def test_round_trips_through_divine_only_when_they_beat_the_cross_flip(desk):
+    from vaalstreet.ingest import DIVINE
+
+    rows = [row for row in desk.loops(min_value=10) if "divine" in row["via"]]
+    # Sell orbs for Divines where they are 10% dear and buy embers where they are 5% cheap. The reverse
+    # path, and every path that only sells in the dearer market, is the cross flip and is left out.
+    # Shards -> orb -> Divine -> embers pays too, but only the best Divine path per item bought with the
+    # Divines is kept, and selling orbs straight for Divines is far deeper than the shard market.
+    by_path = {tuple(x["id"] for x in row["path"]): row for row in rows}
+    assert set(by_path) == {(ITEM, DIVINE, EMBER)}
+    pair = by_path[(ITEM, DIVINE, EMBER)]
+    assert pair["edge"] == pytest.approx(PREMIUM / EMBER_PREMIUM - 1, rel=0.05)
+    assert pair["swaps"] == 2 and pair["via"] == ["divine", "divine"]
+    # The shard loop itself still shows.
+    assert any([x["id"] for x in r["path"]] == [OTHER, ITEM] for r in desk.loops(min_value=10))
+    assert not [r for r in desk.loops(min_value=10, swaps=2) if len(r["path"]) > 3]
+    rows = [pair]
+    # Both ends are priced in their Chaos markets, since the Divine markets are the swaps.
+    i, j = desk.panel.index(ITEM), desk.panel.index(EMBER)
+    assert rows[0]["buy"] == pytest.approx(desk.legs["r"].fair[-1, i], rel=1e-4)
+    assert rows[0]["sell"] == pytest.approx(desk.legs["r"].fair[-1, j], rel=1e-4)
+    assert not [row for row in desk.loops(min_value=10, chaos_only=True) if "divine" in row["via"]]
+
+
+def test_longer_round_trips_and_vendor_prices_you_enter(desk):
+    from vaalstreet.ingest import CHAOS
+
+    # Made-up markets: one card fetches one shard, and three shards one orb (the fixture's own rate).
+    desk.cross = [
+        {"item": CARD, "quote": OTHER, "volume": 1000, "rate": 1.0, "hours": 24, "item_resting": 50, "quote_resting": 70},
+        {"item": ITEM, "quote": OTHER, "volume": 100, "rate": 3.0, "hours": 20, "item_resting": 500, "quote_resting": 900},
+    ]
+    paths = lambda rows: {tuple(x["id"] for x in row["path"]): row for row in rows}
+    two = paths(desk.loops(min_edge=-1, min_value=10, chaos_only=True, swaps=2))
+    assert (CARD, OTHER, ITEM) in two and all(len(p) <= 3 for p in two)
+    assert len(paths(desk.loops(min_edge=-1, min_value=10, chaos_only=True, swaps=1))) < len(two)
+
+    # A made-up vendor sells a card for 1 Chaos. Chaos -> card -> shard -> orb is three swaps:
+    # 1 Chaos buys 1 card = 1 shard = 1/3 orb, so the edge is the orb's Chaos price / 3 - 1.
+    vendor = [{"kind": "vendor", "inputs": [(CHAOS, 1)], "output": CARD, "gives": 1}]
+    orb = desk.legs["r"].fair[-1, desk.panel.index(ITEM)]
+    assert (CHAOS, CARD, OTHER, ITEM) not in paths(desk.loops(min_value=10, chaos_only=True, swaps=2, fixed=vendor))
+    three = paths(desk.loops(min_value=10, chaos_only=True, swaps=3, fixed=vendor))[(CHAOS, CARD, OTHER, ITEM)]
+    assert three["edge"] == pytest.approx(orb / 3 - 1, rel=1e-3)
+    assert three["via"] == ["vendor", "swap", "swap"] and three["vendor_keys"] == [f"vendor:1*{CHAOS}>1*{CARD}"]
+    # The vendor has no limit, so the thinnest exchange swap sets the depth: 100 orbs a day.
+    assert three["value_24h"] == pytest.approx(100 * desk.fair(ITEM), rel=1e-4)
+    assert three["resting_value"] == pytest.approx(min(70 * desk.fair(OTHER), 500 * desk.fair(ITEM)), rel=1e-4)
+    assert three["recipe_key"] == f"loop:{CHAOS}>{CARD}>{OTHER}>{ITEM}"
+
+    # Buying an orb from a vendor for 5 Chaos and selling it: as deep as the orb's own markets.
+    vendor = [{"kind": "vendor", "inputs": [(CHAOS, 5)], "output": ITEM, "gives": 1}]
+    only = paths(desk.loops(min_value=10, chaos_only=True, fixed=vendor))[(CHAOS, ITEM)]
+    assert only["edge"] == pytest.approx(orb / 5 - 1, rel=1e-3)
+    assert only["value_24h"] > 0 and only["resting_value"] is None
+    json.dumps(only, allow_nan=False)
+
+
+def test_round_trips_skip_swap_markets_far_out_of_line(desk):
+    # Live data had 1 Vaal Orb fetching 5 Scours every hour, items worth about the same. A side
+    # market whose rate is more than 3x off the two items' own prices is joke trades: here 1 card
+    # (1.5 Chaos) "fetches" 5 shards (10 Chaos), while 3 shards per orb (implied ~5.3) stays.
+    desk.cross = [
+        {"item": CARD, "quote": OTHER, "volume": 1000, "rate": 5.0, "hours": 24, "item_resting": 50, "quote_resting": 70},
+        {"item": ITEM, "quote": OTHER, "volume": 100, "rate": 3.0, "hours": 20, "item_resting": 500, "quote_resting": 900},
+    ]
+    paths = {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_edge=-1, min_value=10, chaos_only=True)}
+    assert (OTHER, ITEM) in paths
+    assert not [p for p in paths if CARD in p]
+
+
+def test_a_round_trip_is_as_deep_as_the_market_it_buys_in(desk):
+    """Known answer: shards -> orb is limited by its swap market, 100 orbs an hour (about 25,000 Chaos a day).
+    When the shard's Chaos market trades one shard an hour (2 Chaos), the trip is 48 Chaos a day deep."""
+    trip = lambda: next(row for row in desk.loops(min_value=10, chaos_only=True)  # noqa: E731
+                        if [x["id"] for x in row["path"]] == [OTHER, ITEM])
+    swap_value = 100 * 24 * desk.fair(ITEM)
+    assert trip()["value_24h"] == pytest.approx(swap_value, rel=0.05)
+    desk.legs["r"].flow[desk.panel.index(OTHER)] = 1.0
+    desk._cache.clear()
+    thin = trip()
+    assert thin["value_24h"] == pytest.approx(24 * 2.0, rel=0.02)
+    assert thin["profit_per_day"] == pytest.approx(0.1 * 48 * thin["edge"], rel=0.02)
+
+
+def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
+    from vaalstreet.ingest import DIVINE
+
+    path = (ITEM, DIVINE, EMBER)
+    trips = lambda: {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_value=10)}
+    assert path in trips()
+    # The orb's Divine market now "pays" 4x its Chaos market, as thin joke hours do: no Divine stop.
+    desk.legs["b"].fair[-1, desk.panel.index(ITEM)] *= 4
+    desk._cache.clear()  # loops() remembers its answer for the desk's hour
+    assert not [p for p in trips() if p[0] == ITEM and DIVINE in p]
+
+
+def test_your_recipes_are_priced_like_the_built_in_ones(desk):
+    from vaalstreet.ingest import CHAOS
+
+    # Made up: 2 cards and 1 shard make 1 orb. Cost 2 * 1.5 + 2 = 5 Chaos for an orb worth about 10.6.
+    mine = [{"id": 7, "kind": "recipe", "inputs": [(CARD, 2), (OTHER, 1)], "output": ITEM, "gives": 1, "note": "test"},
+            {"id": 8, "kind": "recipe", "inputs": [(CHAOS, 3)], "output": OTHER, "gives": 2, "note": ""},
+            {"id": 9, "kind": "vendor", "inputs": [(CHAOS, 5)], "output": ITEM, "gives": 1, "note": ""}]
+    rows = desk.conversions(fixed=mine)
+    built_in = next(r for r in rows if r["how"] != "yours")
+    assert built_in["recipe_key"] == f"set:{CARD}>{ITEM}", "keys of checks already in your ledger stay the same"
+    yours = [r for r in rows if r["how"] == "yours"]
+    assert len(yours) == 2, "vendor prices are round-trip swaps, not conversions"
+    row = next(r for r in yours if r["fixed_id"] == 7)
+    assert (row["id"], row["need"], row["reward_id"]) == (CARD, 2, ITEM)
+    assert [x["units"] for x in row["inputs"]] == [2, 1]
+    assert row["cost"] == pytest.approx(2 * desk.fair(CARD) + desk.fair(OTHER), rel=1e-4)
+    assert row["margin"] == pytest.approx(desk.fair(ITEM) / row["cost"] - 1, rel=1e-3)
+    assert row["margin_now"] <= row["margin"]
+    assert row["recipe_key"] == f"recipe:2*{CARD}+1*{OTHER}>1*{ITEM}"
+    chaos = next(r for r in yours if r["fixed_id"] == 8)  # 3 Chaos for 2 shards worth 2 each
+    assert chaos["margin"] == pytest.approx(2 * desk.fair(OTHER) / 3 - 1, rel=1e-3)
+    json.dumps(rows, allow_nan=False)
+
+
+def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
+    from vaalstreet.desk import Costs
+
+    first = desk.loops(min_value=10)
+    size = len(desk._cache)
+    desk.cross = []  # a fresh walk would now find no side-market round trips
+    again = desk.loops(min_value=10)
+    assert again == first and len(desk._cache) == size, "the second call is the remembered answer"
+    again[0]["check"] = "confirmed"
+    assert "check" not in desk.loops(min_value=10)[0], "a caller's added fields do not leak into the cache"
+    # Positional and keyword forms of the same question share one entry.
+    assert desk.loops(0.03, 10) == first and len(desk._cache) == size
+
+    desk.loops(min_value=10, swaps=2)
+    assert len(desk._cache) == size + 1, "a different argument is a different question"
+    priced = desk.loops(min_value=10, costs=Costs(assumed=2.0))
+    assert len(desk._cache) == size + 2 and priced[0]["gold"] is not None and first[0]["gold"] is None
+    assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
+    mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
+    assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
+
+
+def test_rolling_in_column_chunks_matches_one_pass(monkeypatch):
+    """`rolling` works through columns a few at a time to bound memory on a full league with a
+    week-long window. Known answer: the same numbers as one pass over every column."""
+    import numpy as np
+
+    from vaalstreet import panel as panel_mod
+
+    rng = np.random.default_rng(7)
+    a = rng.normal(size=(200, 13))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    whole = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    monkeypatch.setattr(panel_mod, "ROLLING_CELLS", 24 * 200 * 2)  # two columns per chunk
+    chunked = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    np.testing.assert_array_equal(np.isnan(whole), np.isnan(chunked))
+    np.testing.assert_allclose(whole[~np.isnan(whole)], chunked[~np.isnan(chunked)])
