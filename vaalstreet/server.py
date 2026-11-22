@@ -623,9 +623,12 @@ class App:
         trades = self.ledger.trades(desk.league)
         for tr in trades:
             tr["name"] = desk._name(tr["item"])
+        made = [dict(m, inputs=[{"id": item, "name": desk._name(item), "units": units} for item, units in m["inputs"]],
+                     name=desk._name(m["output"])) for m in self.ledger.made(desk.league)]
         fees = self.ledger.gold_fees(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
+            "made": made[::-1][:200],
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
@@ -728,6 +731,14 @@ class App:
                 else:
                     self.ledger.add_trade(league, body["item"], body["side"], body["units"], body["price"],
                                           body.get("note", ""), gold=body.get("gold"))
+            elif path == "/api/made":
+                if body.get("delete"):
+                    self.ledger.delete_made(body["delete"])
+                else:
+                    # Names or ids, as the recipe form sends them.
+                    inputs = [[self._item_ref(item), units] for item, units in body["inputs"]]
+                    self.ledger.add_made(league, inputs, self._item_ref(body["output"]), body.get("gives", 1),
+                                         body.get("note", ""), name=self.desk(league)._name)
             elif path == "/api/order":
                 if body.get("delete"):
                     self.ledger.delete_order(body["delete"])

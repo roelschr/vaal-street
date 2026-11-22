@@ -987,6 +987,13 @@ async function viewLedger(main) {
       <label class="f">Gold paid<input type="number" id="tg" min="0" step="any" placeholder="optional" title="The Gold this trade cost. The desk learns each item's fee from these."></label>
       <label class="f">Note<input type="text" id="tn" style="width:160px"></label>
       <button class="btn primary" id="add">Add</button><button class="btn" id="tcancel" hidden>Cancel</button></div></section>
+    <section class="panel" style="margin-bottom:14px"><header><h2>Record items you made</h2></header><form class="body" id="mform" autocomplete="off">
+      <p class="muted small" style="margin:0 0 8px">Merged items into another one, such as 3 essences into 1 of the next tier, or a card set into its reward? Record it here. What you paid for the items you used becomes the cost of the item you made, and you can then record its sale.</p>
+      <div class="muted small" style="margin-bottom:4px">You used</div><div id="mins"></div>
+      <button type="button" class="btn ghost" id="mmore" style="margin-bottom:8px">+ another item</button>
+      <div class="bar" style="margin:0"><label class="f">You got<span style="display:flex;gap:6px"><input type="number" id="mg" min="0" step="any" value="1" style="width:70px"><input type="text" id="mo" list="items" placeholder="Start typing…" style="width:240px"></span></label>
+      <label class="f">Note<input type="text" id="mn" placeholder="optional" style="width:160px"></label>
+      <button class="btn primary">Add</button></div></form></section>
     <section class="panel" style="margin-bottom:14px"><header><h2>Record an order you posted</h2></header><div class="body bar" style="margin:0">
       <label class="f">Item<input type="text" id="oi" list="items" placeholder="Start typing…" style="width:240px"></label>
       <div class="seg" id="oside"><button data-s="buy" class="on">Buying</button><button data-s="sell">Selling</button></div>
@@ -1022,6 +1029,16 @@ async function viewLedger(main) {
     const fields = { price: +$('#tp', main).value, note: $('#tn', main).value };
     if (!editing || editing.order_id == null) Object.assign(fields, { item, side, units: +$('#tu', main).value, gold: optional($('#tg', main).value) });
     try { await api('/api/trade', { league: state.league, ...(editing ? { edit: editing.id } : {}), ...fields }); if (editing) toast('Trade updated.'); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  const usedRow = () => `<div class="bar" style="margin:0 0 6px" data-in><label class="f">Count<input type="number" class="n" min="0" step="any" style="width:70px"></label><label class="f">Item<input type="text" class="it" list="items" placeholder="Start typing…" style="width:240px"></label></div>`;
+  $('#mins', main).innerHTML = usedRow();
+  $('#mmore', main).onclick = () => $('#mins', main).insertAdjacentHTML('beforeend', usedRow());
+  $('#mform', main).onsubmit = async e => {
+    e.preventDefault();
+    const form = e.target, inputs = [...form.querySelectorAll('[data-in]')].map(r => [$('.it', r).value.trim(), +$('.n', r).value]).filter(([item]) => item);
+    if (!inputs.length || !$('#mo', form).value.trim()) return toast('Name what you used and what you got.', true);
+    try { await api('/api/made', { league: state.league, inputs, output: $('#mo', form).value.trim(), gives: +$('#mg', form).value, note: $('#mn', form).value }); route(); }
     catch (err) { toast(err.message, true); }
   };
   let oside = 'buy', omkt = 'chaos';
@@ -1109,6 +1126,16 @@ async function viewLedger(main) {
     try { await api('/api/trade', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
   };
   tr.append(tt);
+  const mk = panel('Items you made', 'c12', '<span class="muted small">Merges and turn-ins you recorded. The item made carries what the items used cost you.</span>');
+  const mt = table([
+    { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() },
+    { h: 'Used', l: 1, f: r => r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') },
+    { h: 'Got', l: 1, f: r => `${+r.gives} ${esc(r.name)}` },
+    { h: 'Note', l: 1, f: r => esc(r.note) },
+    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this entry">✕</button>` },
+  ], d.made, { empty: 'Nothing recorded. Use "Record items you made" above when you merge or turn in items.' });
+  mt.onclick = e => { const b = e.target.closest('[data-del]'); if (b) post('/api/made', { delete: +b.dataset.del }); };
+  mk.append(mt);
   const al = alertsPanel(d, names);
   const cal = panel('How much of the flow your orders got', 'c12', '<span class="muted small">From the orders you recorded and their fills, against the volume that traded through your price. Flips use these shares where they exist.</span>');
   cal.append(table([
@@ -1119,7 +1146,7 @@ async function viewLedger(main) {
     { h: 'What it means', l: 1, f: r => esc(r.reading) },
   ], d.fill_calibration || [], { empty: 'Record orders you post and their fills; the desk then measures how much of the flow you really get.' }));
   const stash = await stashPanel(names);
-  $('#g', main).append(ses, ord, cal, pos, stash, tr, fee, rc, al);
+  $('#g', main).append(ses, ord, cal, pos, stash, tr, mk, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ ladder
