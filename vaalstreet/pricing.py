@@ -27,6 +27,8 @@ Three pieces turn prints into numbers a trader can act on.
 
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,6 +36,10 @@ import numpy as np
 from vaalstreet.panel import rolling, rolling_quantile
 
 _EPS = 1e-12
+# A far print confirms a reprice only if it traded at least this share of a typical hour's units.
+CONFIRM_UNITS = 0.5
+# Never place a flip level more than about 1.5x from its market's fair value: beyond that the print was an empty book.
+MAX_SWING = math.log(1.5)
 
 
 @dataclass
@@ -71,8 +77,10 @@ class FairValue:
 
 def _noise_split(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Split the variance of hourly log returns d[T, N] into signal q and noise r per item."""
-    med = np.nanmedian(d, axis=0)
-    mad = 1.4826 * np.nanmedian(np.abs(d - med), axis=0)
+    with warnings.catch_warnings():  # an item that never printed in the window is all NaN, and stays NaN
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        med = np.nanmedian(d, axis=0)
+        mad = 1.4826 * np.nanmedian(np.abs(d - med), axis=0)
     limit = np.where(mad > 0, 4 * mad, np.inf)
     c = np.clip(d - med, -limit, limit)
     n = np.sum(~np.isnan(c), axis=0)
@@ -118,6 +126,8 @@ def fair_value(
     q = np.full(N, 0.02**2)
     r = np.full(N, 0.05**2)
     typical = np.ones(N)
+    typical_units = np.ones(N)
+    units = value / np.where(price > 0, price, np.nan) if value is not None else None
     pending = np.full(N, np.nan)  # log price of an unconfirmed far-out print
 
     for t in range(T):
@@ -125,8 +135,11 @@ def fair_value(
             lo = max(0, t - lookback)
             q, r = _noise_split(d[lo:t])
             if value is not None:
-                med = np.nanmedian(value[lo:t], axis=0)
-                typical = np.where(np.isfinite(med) & (med > 0), med, 1.0)
+                with warnings.catch_warnings():  # all-NaN columns fall back to 1 just below
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    med_value, med_units = np.nanmedian(value[lo:t], axis=0), np.nanmedian(units[lo:t], axis=0)
+                typical = np.where(np.isfinite(med_value) & (med_value > 0), med_value, 1.0)
+                typical_units = np.where(np.isfinite(med_units) & (med_units > 0), med_units, 1.0)
         obs = ~np.isnan(y[t])
         fresh = obs & np.isnan(x)
         P_pred = P + q
@@ -143,8 +156,13 @@ def fair_value(
         K = P_pred / (P_pred + R_eff + _EPS)
         seen = obs & ~fresh
         far = seen & (np.abs(score) > reject_z)
-        # Confirmed when this print is closer to the one set aside than to the old value.
+        # Confirmed when this print is closer to the one set aside than to the old value, and is not
+        # a thin hour. Counted in units, because a joke price inflates the traded value: two joke
+        # trades in a row (a few units at half a Divine each) must not reprice an item whose next
+        # real hour trades hundreds at the old level.
         confirmed = far & np.isfinite(pending) & (np.abs(y[t] - pending) < 0.5 * np.abs(pending - x))
+        if units is not None:
+            confirmed &= units[t] >= CONFIRM_UNITS * typical_units
         update = seen & ~far
         z[t] = np.where(seen, score, np.nan)
         x = np.where(update, x + K * innovation, x)
@@ -366,6 +384,29 @@ def leg_premium(r_price: np.ndarray, b_price: np.ndarray, window: int = 24, min_
     return rolling(np.where(np.isfinite(gap), gap, np.nan), window, np.nanmedian, min_count)
 
 
+def prior(a: np.ndarray) -> np.ndarray:
+    """[T, N] each row replaced by the row before it (the first row by itself): what was known before hour t."""
+    return np.vstack([a[:1], a[:-1]])
+
+
+def leg_deviation(price: np.ndarray, fair: np.ndarray, leg_fair: np.ndarray, max_swing: float = MAX_SWING) -> np.ndarray:
+    """[T, N] log(one market's hourly price / the item's fair value known before that hour).
+
+    This is what flip levels are drawn from (`Desk.flips`, `Simulation.swing`). A print far out of line
+    was an empty book, not a level, so each deviation is clipped to within `max_swing` of *that market's
+    own* fair value, also as known before the hour. The two markets of an item are different prices: a
+    cheap item's Divine market can trade at three times its Chaos market, and clipping around the
+    blended value would cap a Divine-market level far below where that market really trades.
+    Where the market has no fair value yet, the clip is around the blended value.
+    """
+    before, leg_before = prior(fair), prior(leg_fair)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dev = np.log(price / before)
+        centre = np.log(leg_before / before)
+    centre = np.where(np.isfinite(centre), centre, 0.0)
+    return np.where(np.isfinite(dev), np.clip(dev, centre - max_swing, centre + max_swing), np.nan)
+
+
 def activity(price: np.ndarray, window: int = 24) -> np.ndarray:
     """Share of the trailing `window` hours in which the item printed: [T, N] in 0..1."""
     printed = (~np.isnan(price)).astype(np.float64)
@@ -407,12 +448,18 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
     return best
 
 
-def fit_ratio(price: float, max_currency: float, max_items: float = 5000) -> tuple[int, int] | None:
+def fit_ratio(
+    price: float, max_currency: float, max_items: float = 5000, side: str | None = None
+) -> tuple[int, int] | None:
     """The whole-number (currency, items) order closest to `price` that a small purse can post.
 
     `max_currency` caps the currency side and `max_items` the item side. Returns None when even
-    the smallest order does not fit (one item costs more than the purse holds).
+    the smallest order does not fit (one item costs more than the purse holds). With `side`
+    "buy" the ratio never exceeds `price`, with "sell" it never falls below it, so a resting
+    order states no worse a price than its limit.
     """
+    if side is not None:
+        return _fit_ratio_side(price, max_currency, max_items, side == "buy")
     if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
         return None
     best, best_err = None, np.inf
@@ -429,6 +476,39 @@ def fit_ratio(price: float, max_currency: float, max_items: float = 5000) -> tup
     else:
         for currency in range(1, int(min(max_currency, 400)) + 1):
             items = max(1, round(currency / price))
+            if items > max_items:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    return best
+
+
+def _fit_ratio_side(price: float, max_currency: float, max_items: float, buy: bool) -> tuple[int, int] | None:
+    """fit_ratio, rounding only in the order's favour: down for a buy, up for a sell."""
+    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
+        return None
+    best, best_err = None, np.inf
+    eps = 1e-9  # keeps an exact ratio such as 3.3 * 10 from flooring to 32
+    if price >= 1:
+        for items in range(1, int(min(max_items, 400)) + 1):
+            currency = math.floor(price * items + eps) if buy else math.ceil(price * items - eps)
+            if currency < 1:
+                continue
+            if currency > max_currency:
+                break
+            err = abs(currency / items - price) / price
+            if err < best_err - 1e-12:
+                best, best_err = (currency, items), err
+            if err <= 0.004:
+                break
+    else:
+        for currency in range(1, int(min(max_currency, 400)) + 1):
+            items = math.ceil(currency / price - eps) if buy else math.floor(currency / price + eps)
+            if items < 1:
+                continue
             if items > max_items:
                 break
             err = abs(currency / items - price) / price
