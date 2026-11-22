@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -20,9 +21,18 @@ HOUR = 3600
 H0 = FIRST_HOUR["poe1"]
 ITEM = "Metadata/Items/Currency/CurrencyTestOrb"
 CARD = "Metadata/Items/DivinationCards/DivinationCardTestCard"
+# A card whose reward, the unique "Test Blade", does not trade on the exchange. Known answer: the card
+# costs 5 Chaos (400 for 2000), four make one blade, and the poe.ninja fixture in tests/test_ninja.py
+# lists the blade at 30 Chaos, so a set costs 20 and is worth 30: a 50% margin.
+BLADE_CARD = "Metadata/Items/DivinationCards/DivinationCardTestBlade"
 OTHER = "Metadata/Items/Currency/CurrencyTestShard"
 EMBER = "Metadata/Items/Currency/CurrencyTestEmber"
 EMBER_PREMIUM = 0.95  # unlike the orb, the ember's Divine market is 5% cheaper than its Chaos market
+SCRAP = "Metadata/Items/Currency/CurrencyTestScrap"
+# A cheap item whose Divine market trades at 2.8 times its Chaos market, as cheap items do on live data
+# (Tainted Armourer's Scrap: about 6.4 c through Divines against 2.1 c for Chaos). Flip levels in its
+# Divine market must sit near 2.8 x 2 = 5.6 Chaos, not be capped at 1.5x the blended value.
+SCRAP_PREMIUM = 2.8
 OLD, NEW = "Old", "New"
 OLD_HOURS, NEW_START, NEW_HOURS = 20 * 24, 30 * 24, 8 * 24
 PREMIUM = 1.10  # the Divine market pays 10% more than the Chaos market
@@ -54,8 +64,8 @@ def item_price(league: str, h: int) -> float:
     return 10 * trend * swing
 
 
-def divine_price(h: int) -> float:
-    return 100 + 0.25 * h
+def divine_price(h: int, slope: float = 0.25) -> float:
+    return 100 + slope * h
 
 
 def market(league, a, b, vol_a, vol_b, stock_a=500, stock_b=500):
@@ -107,18 +117,19 @@ def side_markets(hour: int) -> list[dict]:
     return markets
 
 
-def digest(hour: int) -> dict:
+def digest(hour: int, scrap: bool = False, divine_slope: float = 0.25) -> dict:
     markets = side_markets(hour)
     for league, start, length in ((OLD, 0, OLD_HOURS), (NEW, NEW_START, NEW_HOURS)):
         h = (hour - H0) // HOUR - start
         if not 0 <= h < length:
             continue
-        div, p = divine_price(h), item_price(league, h)
+        div, p = divine_price(h, divine_slope), item_price(league, h)
         markets += [
             market(league, CHAOS, DIVINE, round(div * 40), 40),
             market(league, ITEM, CHAOS, 1000, round(1000 * p)),
             market(league, ITEM, DIVINE, 4000, round(4000 * p * PREMIUM / div)),
             market(league, CARD, CHAOS, 600, 900),  # 1.5 Chaos each; five make one test orb
+            market(league, BLADE_CARD, CHAOS, 400, 2000),  # 5 Chaos each; four make one Test Blade
             market(league, ITEM, OTHER, 100, 300),  # side market: 3 shards per orb
             market(league, OTHER, CHAOS, 3000, 6000),  # ...but a shard is worth 2 Chaos
             # 4 Chaos each, 5% cheaper through Divines. Selling an orb for Divines (10% dear) and buying
@@ -128,6 +139,9 @@ def digest(hour: int) -> dict:
             market(league, LURE, CHAOS, lure_units(league, h), 3 * lure_units(league, h)),
             market("Dead (PL1)", ITEM, CHAOS, 0, 0),
         ]
+        if scrap:  # 2 Chaos each (+-5% every 12 hours, like the orb), and 2.8 times that through Divines
+            markets += [market(league, SCRAP, CHAOS, 3000, round(3000 * 2 * p / item_price(league, 0))),
+                        market(league, SCRAP, DIVINE, 300, round(300 * 2 * SCRAP_PREMIUM * p / item_price(league, 0) / div))]
     return {"next_change_id": hour + HOUR, "markets": markets}
 
 
@@ -136,26 +150,27 @@ def all_hours() -> list[int]:
     return [H0 + h * HOUR for h in list(range(OLD_HOURS)) + list(range(NEW_START, NEW_START + NEW_HOURS))]
 
 
-def write_raw(root, hours) -> None:
+def write_raw(root, hours, scrap: bool = False, divine_slope: float = 0.25) -> None:
     for hour in hours:
         path = hour_path(root, "poe1", hour)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(gzip.compress(json.dumps(digest(hour)).encode()))
+        path.write_bytes(gzip.compress(json.dumps(digest(hour, scrap, divine_slope)).encode()))
 
 
-@pytest.fixture(scope="session")
-def archive_root(tmp_path_factory):
-    root = tmp_path_factory.mktemp("data")
-    write_raw(root, all_hours())
+def build_archive(root, hours, scrap: bool = False, divine_slope: float = 0.25):
+    write_raw(root, hours, scrap, divine_slope)
     meta = items.build({
         CHAOS: {"name": "Chaos Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         DIVINE: {"name": "Divine Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         ITEM: {"name": "Test Orb", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {"stack_size": 20}},
         OTHER: {"name": "Test Shard", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
+        SCRAP: {"name": "Test Scrap", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         LURE: {"name": "Test Lure", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         EMBER: {"name": "Test Ember", "item_class": "StackableCurrency", "tags": ["currency"], "properties": {}},
         CARD: {"name": "Test Card", "item_class": "DivinationCard", "tags": ["divination_card"],
                "properties": {"stack_size": 5, "description": "<currencyitem>{Test Orb}"}},
+        BLADE_CARD: {"name": "The Test Blade", "item_class": "DivinationCard", "tags": ["divination_card"],
+                     "properties": {"stack_size": 4, "description": "<uniqueitem>{Test Blade}"}},
     })
     target = root / "items" / "poe1.json"
     target.parent.mkdir(parents=True)
@@ -163,6 +178,46 @@ def archive_root(tmp_path_factory):
     items.load.cache_clear()
     ingest(root, log=None)
     return root
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_default_data_dir(tmp_path_factory):
+    """Point VAAL_DATA_DIR at an empty directory for the whole session.
+
+    Without it, code that falls back to `data_dir()` reads `data/` in the checkout: the user's live
+    archive, possibly mid-sync. Tests that need data set VAAL_DATA_DIR themselves or pass a root."""
+    previous = os.environ.get("VAAL_DATA_DIR")
+    os.environ["VAAL_DATA_DIR"] = str(tmp_path_factory.mktemp("no-data"))
+    yield
+    if previous is None:
+        os.environ.pop("VAAL_DATA_DIR", None)
+    else:
+        os.environ["VAAL_DATA_DIR"] = previous
+
+
+@pytest.fixture(scope="session")
+def archive_root(tmp_path_factory):
+    return build_archive(tmp_path_factory.mktemp("data"), all_hours())
+
+
+@pytest.fixture(scope="session")
+def scrap_root(tmp_path_factory):
+    """The New league alone, plus Test Scrap, whose Divine market is 2.8 times its Chaos market."""
+    return build_archive(tmp_path_factory.mktemp("scrap"), NEW_ONLY, scrap=True)
+
+
+NEW_ONLY = [H0 + h * HOUR for h in range(NEW_START, NEW_START + NEW_HOURS)]
+
+
+@pytest.fixture(scope="session")
+def flat_root(tmp_path_factory):
+    """The New league alone with the Divine steady at 100 Chaos.
+
+    In `archive_root` the Divine rises from 112 to 148 Chaos over the hours a flip replay trades
+    (+32%), more than any test-orb flip makes (+15% to +25%), so no flip beats holding Divines and
+    session plans are empty. Here holding Divines makes nothing, so the test orb's flips qualify.
+    """
+    return build_archive(tmp_path_factory.mktemp("flat"), NEW_ONLY, divine_slope=0.0)
 
 
 @pytest.fixture()
@@ -174,18 +229,27 @@ def con(archive_root):
     connection.close()
 
 
-@pytest.fixture()
-def server(archive_root, tmp_path, monkeypatch):
+def serve(root, tmp_path, monkeypatch):
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     from vaalstreet.ledger import Ledger
     from vaalstreet.server import App, make_handler
 
-    app = App(archive_root, sync=False)
+    app = App(root, sync=False)
     app.ledger = Ledger(tmp_path)  # keep the shared fixture clean
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_port}"
     httpd.shutdown()
+
+
+@pytest.fixture()
+def server(archive_root, tmp_path, monkeypatch):
+    yield from serve(archive_root, tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def flat_server(flat_root, tmp_path, monkeypatch):
+    yield from serve(flat_root, tmp_path, monkeypatch)
 
 
 def call(url, body=None, headers=None):
