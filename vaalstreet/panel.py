@@ -144,13 +144,23 @@ def rolling(a: np.ndarray, window: int, fn, min_count: int = 1) -> np.ndarray:
     """Trailing-window NaN-aware reduction (e.g. np.nanmedian) down each column.
 
     Row t summarises rows (t-window, t]. Rows with fewer than `min_count` observations are NaN.
+    Columns are done a few at a time: reductions such as nanmedian copy the whole hours x columns x
+    window view, which for a full league and a week-long window is several gigabytes.
     """
+    if a.ndim == 2 and a.shape[1] > 1:
+        step = max(1, ROLLING_CELLS // max(1, a.shape[0] * window))
+        if step < a.shape[1]:
+            return np.hstack([rolling(a[:, j:j + step], window, fn, min_count)
+                              for j in range(0, a.shape[1], step)])
     view = _windows(a, window)
     counts = np.sum(~np.isnan(view), axis=-1)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         out = fn(view, axis=-1)
     return np.where(counts >= min_count, out, np.nan)
+
+
+ROLLING_CELLS = 20_000_000  # window cells per chunk in `rolling`: about 160 MB of float64
 
 
 def rolling_quantile(a: np.ndarray, window: int, q: float, min_count: int = 1) -> np.ndarray:

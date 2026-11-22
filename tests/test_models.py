@@ -37,6 +37,34 @@ def test_fair_value_is_causal():
     a, b = pricing.fair_value(seen), pricing.fair_value(changed)
     assert np.array_equal(a.fair[:400], b.fair[:400]), "the future must not move the past"
     assert np.array_equal(a.z[:400], b.z[:400], equal_nan=True)
+    # With traded value, as the desk runs it: typical units and the reprice check stay causal too.
+    units = np.full(seen.shape, 100.0)
+    later = units.copy()
+    later[400:] *= 9
+    a, b = pricing.fair_value(seen, seen * units), pricing.fair_value(changed, changed * later)
+    assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
+
+
+def test_a_stake_turns_over_once_per_cycle_not_every_two_hours(desk):
+    """The test orb swings +-5% over 12 hours, so its levels are reached only some hours: a buy and a sell
+    take several hours, and a purse smaller than the flow earns its margin once per cycle."""
+    plans = desk.flips(min_margin=0.01)
+    assert plans and all(p["cycle_hours"] > 2 for p in plans)
+    for p in desk.flips(min_margin=0.01, bankroll=200):
+        expected = p["margin"] * min(p["flow_value"], 200 / p["cycle_hours"])
+        assert p["profit_per_hour"] == pytest.approx(expected, rel=1e-3)
+
+
+def test_fair_value_is_quiet_about_items_that_never_print():
+    import warnings
+
+    _, seen = noisy_walk()
+    seen = seen.copy()
+    seen[:, 0] = np.nan  # an item with no prints at all, as many have on a young league
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=RuntimeWarning)
+        fv = pricing.fair_value(seen, seen * 100.0)
+    assert np.isnan(fv.fair[:, 0]).all() and np.isfinite(fv.fair[-1, 1:]).all()
 
 
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
@@ -59,6 +87,21 @@ def test_fair_value_accepts_a_repricing_once_a_second_print_confirms_it():
     assert fv.fair[300, 0] == fv.fair[299, 0], "not believed on the first print"
     assert fv.fair[301, 0] == pytest.approx(crashed[301, 0]), "believed on the second"
     assert abs(math.log(fv.fair[330, 0] / crashed[330, 0])) < 0.1
+
+
+def test_two_thin_joke_prints_in_a_row_do_not_reprice_an_item():
+    # As seen live on Tainted Armourer's Scrap's Divine market: ~100 units an hour at about 6.5,
+    # then 2 and 12 units at half a Divine (~107), then 260 units back at 8. Known answer: the
+    # value never leaves the old level, while a real crash (full volume) is still believed.
+    _, seen = noisy_walk(noise=0.02, N=2)
+    units = np.full(seen.shape, 100.0)
+    seen[300:302] *= 16
+    units[300:302] = [[2, 2], [12, 12]]
+    seen[302:, 1] *= 16  # column 1: the move is real and keeps trading at full volume
+    fv = pricing.fair_value(seen, seen * units)
+    assert abs(math.log(fv.fair[301, 0] / fv.fair[299, 0])) < 0.1, "thin prints confirm nothing"
+    assert abs(math.log(fv.fair[310, 0] / seen[310, 0])) < 0.1
+    assert fv.fair[302, 1] == pytest.approx(seen[302, 1]), "a full-volume print confirms the move"
 
 
 def test_scorecard_measures_fair_value_against_the_last_print():
@@ -110,7 +153,7 @@ def test_weighted_quantile_ignores_volume_free_outliers():
 
 def test_panel_is_a_dense_hourly_grid(con):
     panel = Panel.load(con, NEW, CORE + LEGS)
-    assert panel.shape == (8 * 24, 5)
+    assert panel.shape == (8 * 24, 7)  # five items plus the Test Lure and the Test Blade card
     assert np.all(np.diff(panel.hours) == 3600)
     i = panel.index("test orb")
     assert panel["r_price"][5, i] == pytest.approx(item_price(NEW, 5), rel=1e-3)
@@ -412,6 +455,45 @@ def test_longer_round_trips_and_vendor_prices_you_enter(desk):
     json.dumps(only, allow_nan=False)
 
 
+def test_round_trips_skip_swap_markets_far_out_of_line(desk):
+    # Live data had 1 Vaal Orb fetching 5 Scours every hour, items worth about the same. A side
+    # market whose rate is more than 3x off the two items' own prices is joke trades: here 1 card
+    # (1.5 Chaos) "fetches" 5 shards (10 Chaos), while 3 shards per orb (implied ~5.3) stays.
+    desk.cross = [
+        {"item": CARD, "quote": OTHER, "volume": 1000, "rate": 5.0, "hours": 24, "item_resting": 50, "quote_resting": 70},
+        {"item": ITEM, "quote": OTHER, "volume": 100, "rate": 3.0, "hours": 20, "item_resting": 500, "quote_resting": 900},
+    ]
+    paths = {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_edge=-1, min_value=10, chaos_only=True)}
+    assert (OTHER, ITEM) in paths
+    assert not [p for p in paths if CARD in p]
+
+
+def test_a_round_trip_is_as_deep_as_the_market_it_buys_in(desk):
+    """Known answer: shards -> orb is limited by its swap market, 100 orbs an hour (about 25,000 Chaos a day).
+    When the shard's Chaos market trades one shard an hour (2 Chaos), the trip is 48 Chaos a day deep."""
+    trip = lambda: next(row for row in desk.loops(min_value=10, chaos_only=True)  # noqa: E731
+                        if [x["id"] for x in row["path"]] == [OTHER, ITEM])
+    swap_value = 100 * 24 * desk.fair(ITEM)
+    assert trip()["value_24h"] == pytest.approx(swap_value, rel=0.05)
+    desk.legs["r"].flow[desk.panel.index(OTHER)] = 1.0
+    desk._cache.clear()
+    thin = trip()
+    assert thin["value_24h"] == pytest.approx(24 * 2.0, rel=0.02)
+    assert thin["profit_per_day"] == pytest.approx(0.1 * 48 * thin["edge"], rel=0.02)
+
+
+def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
+    from vaalstreet.ingest import DIVINE
+
+    path = (ITEM, DIVINE, EMBER)
+    trips = lambda: {tuple(x["id"] for x in row["path"]) for row in desk.loops(min_value=10)}
+    assert path in trips()
+    # The orb's Divine market now "pays" 4x its Chaos market, as thin joke hours do: no Divine stop.
+    desk.legs["b"].fair[-1, desk.panel.index(ITEM)] *= 4
+    desk._cache.clear()  # loops() remembers its answer for the desk's hour
+    assert not [p for p in trips() if p[0] == ITEM and DIVINE in p]
+
+
 def test_your_recipes_are_priced_like_the_built_in_ones(desk):
     from vaalstreet.ingest import CHAOS
 
@@ -456,3 +538,20 @@ def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
     assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
     mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
     assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
+
+
+def test_rolling_in_column_chunks_matches_one_pass(monkeypatch):
+    """`rolling` works through columns a few at a time to bound memory on a full league with a
+    week-long window. Known answer: the same numbers as one pass over every column."""
+    import numpy as np
+
+    from vaalstreet import panel as panel_mod
+
+    rng = np.random.default_rng(7)
+    a = rng.normal(size=(200, 13))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    whole = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    monkeypatch.setattr(panel_mod, "ROLLING_CELLS", 24 * 200 * 2)  # two columns per chunk
+    chunked = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    np.testing.assert_array_equal(np.isnan(whole), np.isnan(chunked))
+    np.testing.assert_allclose(whole[~np.isnan(whole)], chunked[~np.isnan(chunked)])

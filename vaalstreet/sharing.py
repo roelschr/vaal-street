@@ -31,8 +31,17 @@ def code_version() -> str:
         return found.group(1) if found else "unknown"
 
 
-def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
-    """Write a strategy file and return what was written."""
+def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict],
+           extra: dict | None = None) -> dict:
+    """Write a strategy file and return what was written. `extra` adds keys, such as a search's
+    walk-forward table."""
+    doc = document(spec, params, options, summaries, extra)
+    Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
+    return doc
+
+
+def document(spec: str, params: dict, options: dict, summaries: list[dict], extra: dict | None = None) -> dict:
+    """The strategy file's contents, as `export` writes them; the desk hands this to the browser to save."""
     from vaalstreet.backtest import STRATEGIES
 
     doc: dict = {
@@ -43,6 +52,7 @@ def export(path: Path, spec: str, params: dict, options: dict, summaries: list[d
         "params": params,
         "options": options,
         "results": summaries,
+        **(extra or {}),
     }
     if spec not in STRATEGIES:
         file, _, cls = spec.partition(":")
@@ -53,7 +63,6 @@ def export(path: Path, spec: str, params: dict, options: dict, summaries: list[d
         doc["file"] = source.name
         doc["strategy"] = f"{source.name}:{doc['class']}"  # not the folder: it would name your home directory
         doc["source"] = source.read_text(encoding="utf-8")
-    Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     return doc
 
 

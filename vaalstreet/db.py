@@ -4,8 +4,10 @@
     legs           every market seen from both sides: the price of `item` in `quote`
     prices         one reference-currency price per item, league and hour (see ingest.py)
     items          item id -> name, category, stack size
-    leagues        first/last hour, traded value and kind per league (a table, computed when
-                   the connection opens: reconnect after an ingest to see new leagues)
+    leagues        first/last hour, traded value, kind, family and base league per league (a table,
+                   computed when the connection opens: reconnect after an ingest to see new leagues).
+                   `family` groups leagues that make fair precedents for each other; see
+                   `leagues.classify` for the rules.
     league_prices  prices plus name, category and hours/days since the league's first trade
 
 Reference currency: Chaos Orb in PoE1, Exalted Orb in PoE2. Every process opens
@@ -28,12 +30,12 @@ PERMANENT_LEAGUES = ("Standard", "Hardcore", "Ruthless", "Hardcore Ruthless")
 
 _VIEWS = r"""
 CREATE VIEW markets AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE VIEW legs AS {legs};
 
 CREATE VIEW prices AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE TABLE leagues AS
 SELECT league,
@@ -61,8 +63,13 @@ def has_data(root: Path | None = None, realm: str = "poe1") -> bool:
     return any((prices_dir(root) / f"realm={realm}").glob("month=*/data.parquet"))
 
 
-def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyConnection:
-    """Open an in-memory DuckDB with the views above. Run `vaal sync` first."""
+def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None = None) -> duckdb.DuckDBPyConnection:
+    """Open an in-memory DuckDB with the views above. Run `vaal sync` first.
+
+    `until` (unix seconds) hides every hour after it, so the archive looks exactly as it did then:
+    league ends, families, precedents and fair value all follow. The league report uses it to keep
+    a past day's page free of anything published later.
+    """
     root = root or data_dir()
     if not has_data(root, realm):
         raise FileNotFoundError(f"No {realm} data under {root}. Run `python -m vaalstreet sync` first.")
@@ -80,6 +87,8 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
     known = pa.Table.from_pylist(rows, schema=schema)  # noqa: F841 (read by DuckDB)
     con.execute("CREATE TABLE known_items AS SELECT * FROM known")
 
+    # The items table is cut too, so a bounded connection does not even name items first traded later.
+    bound = "" if until is None else f" AND hour <= to_timestamp({int(until)})"
     markets = (markets_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     prices = (prices_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     # Names for every traded item, falling back to one derived from the ID.
@@ -90,7 +99,7 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
                coalesce(k.name, regexp_replace(regexp_replace(split_part(t.item, '/', -1),
                         '^(Currency|DivinationCard)', ''), '([a-z0-9])([A-Z])', '\\1 \\2', 'g')) AS name,
                coalesce(k.category, 'Currency') AS category, k.stack
-        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'
+        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{bound}
               UNION SELECT '{ref}') t
         LEFT JOIN known_items k USING (item)
         """
@@ -99,6 +108,25 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
         _VIEWS.format(
             markets=markets, prices=prices, realm=realm, permanent=PERMANENT_LEAGUES,
             legs=LEGS_SQL.format(markets="markets"),
+            until=bound,
         )
     )
+    _add_families(con)
     return con
+
+
+def _add_families(con: duckdb.DuckDBPyConnection) -> None:
+    from vaalstreet.leagues import classify
+
+    rows = con.execute(
+        "SELECT league, epoch(first_hour)::BIGINT, epoch(last_hour)::BIGINT FROM leagues"
+    ).fetchall()
+    end = max((r[2] for r in rows), default=0)
+    found = classify([{"league": r[0], "first_hour": r[1], "last_hour": r[2]} for r in rows], end)
+    found_families = pa.Table.from_pylist(  # noqa: F841 (read by DuckDB)
+        [{"league": k, "family": f, "base": b} for k, (f, b) in found.items()],
+        schema=pa.schema([("league", pa.string()), ("family", pa.string()), ("base", pa.string())]),
+    )
+    con.execute("ALTER TABLE leagues ADD COLUMN family VARCHAR")
+    con.execute("ALTER TABLE leagues ADD COLUMN base VARCHAR")
+    con.execute("UPDATE leagues SET family = t.family, base = t.base FROM found_families t WHERE leagues.league = t.league")
