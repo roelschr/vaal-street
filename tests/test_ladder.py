@@ -228,3 +228,28 @@ def test_research_ladder_rates_reads_the_ladders_fields(flat_root):
         con.close()
     assert rows and all("replayed vs Divines per hour" in r and r["Divines over those hours"] in (0.0, None) for r in rows)
     assert any(r["picks"] for r in rows)
+
+
+def test_plan_without_a_divine_price_is_valid_json():
+    """In the first hour of a league nobody has traded a Divine yet, and some leagues never do. The plan
+    then gives None for the Divine price, not NaN: NaN is not JSON, so the browser would refuse the whole
+    answer and the Ladder page would not load. A desk in that state has no Divine-market plans either,
+    so a bare stand-in desk with nothing to run is the realistic case."""
+    import json
+    import math
+
+    class NoDivineYet:
+        bridge = math.nan
+
+        def flips(self, **_):
+            return []
+
+        conversions = loops = flips
+
+        def replay_at(self, picks, share=0.1):
+            return []
+
+    out = ladder.plan(NoDivineYet(), 25, hours=6)
+    assert out["bridge"] is None
+    assert [r["label"] for r in out["ladder"]] == ["25 Chaos", "50 Chaos", "100 Chaos", "200 Chaos", "400 Chaos"]
+    json.dumps(out, allow_nan=False)  # raises on any NaN left in the answer

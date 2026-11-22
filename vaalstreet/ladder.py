@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
-from vaalstreet.desk import Costs, Desk, session_plan
+from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.desk import replayed_rate as desk_replayed_rate
 
 CHAOS_RUNGS = (25, 50, 100, 200, 400)
@@ -284,7 +284,9 @@ def plan(desk: Desk, start: float, hours: float | None = None, target: float | N
                               for p in info["picks"]]
 
     schedule = compound(start, [s["chaos"] for s in steps], rate_at, hours=hours, target=target)
-    return {"bridge": desk.bridge, "start": start, "hours": hours, "target": target,
+    # No Divine price yet (the first hour of a league, or a league that never trades Divines) is
+    # None, not NaN: NaN is not JSON, and the browser would refuse the whole answer.
+    return {"bridge": _num(desk.bridge), "start": start, "hours": hours, "target": target,
             "ladder": ladder(desk, costs, share, min_margin, steps, runner),
             "schedule": schedule, "schedule_text": describe(schedule),
             "note": ("A projection, not a promise. The purse grows at the lower of what each plan promises now "

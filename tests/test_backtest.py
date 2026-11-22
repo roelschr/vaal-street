@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from conftest import ITEM, NEW, OLD
+from conftest import ITEM, LURE, NEW, OLD
 from vaalstreet import backtest
 from vaalstreet.panel import CORE, LEGS, Panel
 
@@ -281,6 +281,59 @@ def test_new_options_stay_causal_when_the_league_is_cut_short(con):
                 backtest.Swing(per_item=0.5, warmup=24))
             for series in ("equity", "cash", "gold", "holdings", "risk"):
                 np.testing.assert_allclose(getattr(part, series), getattr(ref, series)[:cut], err_msg=f"{model} {series}")
+
+
+def test_the_item_universe_is_chosen_from_the_past_only(con):
+    """A backtest trades its `universe` most traded items, ranked by value traded *so far*.
+
+    Known answer on New, by value traded since league start: Ember, Orb, Shard, Divine Orb and the Test
+    Blade lead for the first days, and the Test Lure, whose volume grows every day, passes the Blade
+    between hours 96 and 150. With a universe of 5, a basket bought at hour 24 must hold the Blade, not
+    the Lure, whether the run ends on day 4 or day 8. Ranked over the whole run, the 8-day run would
+    already hold the Lure at hour 24.
+    """
+    short = backtest.run(con, NEW, "hold", days=4, universe=5, fill_model="share")
+    whole = backtest.run(con, NEW, "hold", days=8, universe=5, fill_model="share")
+    assert short.fills > 0
+    shared = len(short.equity)
+    for series in ("equity", "cash", "holdings"):
+        np.testing.assert_allclose(getattr(whole, series)[:shared], getattr(short, series), err_msg=series)
+
+    panel, _ = backtest._load(con, NEW, 0.0, 8, 5)
+    lure, blade = panel.index(LURE), panel.index("The Test Blade")
+    listed = panel["listed"]
+    assert not listed[24, lure] and listed[-1, lure], "the Lure joins only once it has out-traded the Blade"
+    assert listed[:, blade].all(), "an item that falls out of the top stays tradable: you may hold it"
+    assert listed[-1].sum() == 6 and listed[0].sum() == 5
+
+
+def test_listed_ranks_by_value_so_far_and_never_drops_an_item():
+    so_far = np.array([[5.0, 3, 0, 1], [6, 4, 5, 1], [7, 5, 9, 9]])
+    # Hour 0: items 0 and 1 lead. Hour 1: item 2 (5) passes item 1 (4) and joins; item 1 stays.
+    # Hour 2: items 2 and 3 lead with 9 each, so item 3 joins; items 0 and 1 stay.
+    assert backtest.listed(so_far, 2).tolist() == [
+        [True, True, False, False], [True, True, True, False], [True, True, True, True]]
+    assert backtest.listed(np.array([[0.0, 2]]), 5).tolist() == [[False, True]], "nothing traded, not listed"
+
+
+def test_a_strategy_cannot_see_or_trade_an_item_before_it_joins():
+    """With a "listed" column, an item not yet in the universe reads NaN to the strategy and its
+    orders are dropped before they could fill or cost Gold; once it joins, its whole past shows."""
+    panel = tiny_panel([10, 10, 10, 10, 10])
+    panel.data["listed"] = np.array([[False], [False], [True], [True], [True]])
+    seen = []
+
+    class Greedy:
+        def step(self, ctx):
+            seen.append(ctx.history("price").copy())
+            ctx.buy(0, 1, float("inf"))
+
+    sim = backtest.Simulation(panel, capital=1000, participation=1.0, slippage=0.0, gold_per_unit=1.0)
+    sim.run(Greedy())
+    assert np.isnan(seen[0]).all() and np.isnan(seen[1]).all()
+    assert seen[2].ravel().tolist() == [10, 10, 10], "once listed, the item's past shows in full"
+    assert sim.gold_spent == 3.0, "Gold for the posts at hours 2, 3 and 4 only, after the item joined"
+    assert sim.position[0] == 2, "bought at hours 3 and 4, from the orders posted at hours 2 and 3"
 
 
 def test_a_stake_per_item_stays_causal_and_holds_each_item_to_its_stake(con):
