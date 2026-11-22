@@ -39,3 +39,13 @@ def icons_dir(root: Path) -> Path:
 
 def ledger_file(root: Path) -> Path:
     return root / "desk.sqlite"
+
+
+def strategies_dir(root: Path) -> Path:
+    """Strategy code you imported with `vaalstreet strategy import`."""
+    return root / "strategies"
+
+
+def ninja_file(root: Path) -> Path:
+    """poe.ninja responses, cached. Rebuildable: deleting it only costs one fetch per category."""
+    return root / "ninja.sqlite"

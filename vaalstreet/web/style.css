@@ -52,7 +52,7 @@ select,input[type=text],input[type=number],input[type=search]{background:var(--p
 select:focus,input:focus{border-color:var(--accent)}
 input[type=number]{width:92px;font-family:var(--mono)}
 input[type=range]{accent-color:var(--accent);width:120px}
-label.f{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+label.f,div.f.ctl{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
 .btn{background:var(--panel2);border:1px solid var(--line2);border-radius:7px;padding:5px 11px;cursor:pointer;font-weight:500}
 .btn:hover{border-color:var(--muted)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#10150b;font-weight:600}
@@ -122,6 +122,18 @@ svg.spark{width:84px;height:22px;vertical-align:middle}
 .order{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
 .order .big{font:500 14px var(--mono);margin:5px 0 2px}
 
+/* trade check: a floating panel that survives page refreshes under it */
+#tc{position:fixed;top:60px;right:20px;width:min(400px,calc(100vw - 20px));max-height:calc(100vh - 80px);overflow:auto;background:var(--side);border:1px solid var(--line2);border-radius:10px;box-shadow:0 18px 50px #0009;z-index:30}
+#tc[hidden]{display:none}
+#tc form{display:grid;gap:10px;padding:0 14px 14px}
+#tc header{display:flex;align-items:center;gap:8px;margin:0 -14px;padding:10px 14px;border-bottom:1px solid var(--line)}
+#tc header .grow{flex:1}
+#tc .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+#tc input[type=number]{width:90px}
+#tc ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.5}
+.verdict{font:600 20px var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+body.hideout #tc{top:6px;right:6px;left:6px;width:auto}
+
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50}
 .toast{background:var(--panel2);border:1px solid var(--line2);border-left:3px solid var(--accent);border-radius:8px;padding:9px 13px;max-width:340px}
 .toast.err{border-left-color:var(--down)}
@@ -133,3 +145,21 @@ body.hideout #main{padding:10px}
 body.hideout .panel{margin-bottom:10px}
 body.hideout th,body.hideout td{padding:5px 8px}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid var(--bg)}
+.member{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+
+/* rehearsal: practice must never pass for the live market */
+#practice{position:fixed;top:0;left:0;right:0;z-index:40;padding:6px 16px;color:#120d1f;font-weight:500;
+  background:repeating-linear-gradient(135deg,#b9a3ee 0 18px,#a990e6 18px 36px);border-bottom:2px solid #6d55b8}
+#practice .pline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#practice .pline+.pline{margin-top:3px}
+#practice .grow{flex:1}
+#practice .muted{color:#2f2550}
+#practice .up{color:#0d5c3a}#practice .down{color:#8c1d26}#practice .gold{color:#5a3d00}
+#practice .ptag{background:#120d1f;color:#b9a3ee;padding:1px 8px;border-radius:5px;letter-spacing:.08em}
+#practice .ptime{font:600 15px var(--mono)}
+#practice .btn,#practice select{background:#efe9ff;color:#120d1f;border-color:#6d55b8;padding:3px 9px}
+body.practice{padding-top:64px;box-shadow:inset 0 0 0 3px #b9a3ee}
+body.practice.hideout{padding-top:0}
+body.hideout #practice{position:sticky}
+.violet{color:var(--violet)}
+.pend{position:fixed;left:50%;top:90px;transform:translateX(-50%);width:min(720px,94vw);z-index:45;box-shadow:0 18px 60px #000a}
