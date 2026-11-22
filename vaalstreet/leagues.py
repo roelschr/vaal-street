@@ -135,6 +135,17 @@ def _num(x, digits: int = 5):
     return round(x, digits - 1 - int(math.floor(math.log10(abs(x)))))
 
 
+def gap_size(gap: float | None) -> float:
+    """How big a cross-league gap is, in log terms, so that half price and double rank alike.
+
+    A gap is stored rounded, so an item thousands of times cheaper in the other league reads exactly
+    -100%, which has no logarithm. That is the biggest gap there is, not an error: on live data a
+    past league against Standard has such items, and ranking them must not fail.
+    """
+    gap = gap or 0.0
+    return abs(math.log1p(gap)) if gap > -1 else math.inf
+
+
 class LeagueBook:
     def __init__(self, con: duckdb.DuckDBPyConnection, realm: str = "poe1") -> None:
         self.con = con
@@ -680,6 +691,6 @@ class LeagueBook:
                    "verdict": "structural" if structural else "none" if quiet else "noise"}
             (out["divine"] if r["item"] == self.bridge else out["items"]).append(row)
         out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]),
-                                         -abs(math.log1p(x["gap"] or 0)), x["id"], x["market"], x["other"]))
+                                         -gap_size(x["gap"]), x["id"], x["market"], x["other"]))
         out["divine"].sort(key=lambda x: (x["market"], x["other"]))
         return out

@@ -3,8 +3,8 @@
 Several ideas for the desk are claims about the market rather than features: "resting stock
 predicts the price", "the Divine premium follows the league day". With seven or more such
 claims and only a handful of leagues, one of them is likely to look good by chance. So the
-rules a claim must meet were written down first, in `docs/ideas.md` under "How a measurement
-passes", and this module applies them as written. Every constant below that decides a verdict
+rules a claim must meet were written down first, in `docs/measurements.md`, and this
+module applies them as written. Every constant below that decides a verdict
 comes from that page. Changing one is a new setting tried and belongs on that page too.
 
 Three kinds of measurement:
@@ -37,7 +37,7 @@ import numpy as np
 from vaalstreet import pricing
 from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling
 
-# ---- The rules, as written in docs/ideas.md ("How a measurement passes"). -------------------
+# ---- The rules, as written in docs/measurements.md. -----------------------------------------
 HORIZON = 6  # hours ahead: the scorecard's target
 WARMUP = 48  # hours skipped at the start of each league
 MIN_DAYS = 14  # a league needs this much history to count

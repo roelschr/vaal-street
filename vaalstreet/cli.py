@@ -1054,7 +1054,7 @@ def main(argv: list[str] | None = None) -> None:
     p = commands.add_parser(
         "research", help="experiments: test a claim about the market against pass rules fixed in advance",
         description="Each measurement prints pass, fail or not enough data, its numbers, and how many settings "
-                    "were tried. The rules are in docs/ideas.md under 'How a measurement passes'.")
+                    "were tried. The rules are in docs/measurements.md.")
     from vaalstreet.research import MEASUREMENTS
     p.add_argument("name", choices=MEASUREMENTS + ("all",))
     p.add_argument("--league", action="append",
