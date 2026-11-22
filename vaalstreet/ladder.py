@@ -8,13 +8,16 @@ hundred Chaos buy them, not just that bigger purses earn more.
 
 Promised against replayed
 -------------------------
-A session plan's expected rate is what the current order levels promise. Next to it we put what the
-same rule actually made over the last week (`Desk.replay`). Replay returns are measured on a fixed
-stake of `REPLAY_STAKE` Chaos per item, so a pick's replayed rate is that weekly return times its
-stake (capped at the replay stake, since a bigger stake was never tested) spread over the week.
-Scaling a return measured on 1,000 Chaos down to a 25 Chaos stake is an approximation: small lots
-round worse. The compounding plan grows the purse at the lower of the two rates for each pick, so it
-leans toward what worked rather than what is promised. It is still a projection from recent rates.
+A session plan's promised rate is what the current order levels would earn if the last two days
+repeat: each pick's margin on the flow it can take, or on its stake turned over once per buy and
+sell, whichever is smaller. Next to it we put what the same rule actually made over the last week
+at the pick's own stake (`Desk.replay_at`: the backtest simulator, whole lots, a visit every four
+hours), and what that is worth against simply holding Divines over the same hours. On a live
+league the promise runs far ahead of the replay: levels drawn from two volatile days are wider than
+the market keeps offering, and at a league start the Divine rises fast, so Chaos-denominated gains
+shrink when measured in Divines. The replayed figure against Divines is the one plans are judged
+by: the compounding plan grows the purse at the lower of the promise and that figure for each pick.
+It is still a projection from recent rates.
 
 Causality: everything here reads the desk as of its latest hour; nothing looks ahead.
 """
@@ -24,11 +27,13 @@ from __future__ import annotations
 import math
 from typing import Any, Callable
 
-from vaalstreet.desk import DAY, REPLAY_DAYS, REPLAY_STAKE, Costs, Desk, session_plan
+from vaalstreet.desk import Costs, Desk, _num, session_plan
+from vaalstreet.desk import replayed_rate as desk_replayed_rate
 
 CHAOS_RUNGS = (25, 50, 100, 200, 400)
 DIVINE_RUNGS = (1, 2, 5, 10)
 MAX_SEGMENTS = 50
+CONVERSION_CYCLE = 2.0  # hours to buy a conversion's inputs and sell what they make, at the least
 
 FLIP_KIND = {
     "chaos": "flip in the Chaos market",
@@ -56,12 +61,12 @@ def rungs(bridge: float, chaos: tuple = CHAOS_RUNGS, divines: tuple = DIVINE_RUN
     return merged
 
 
-def replayed_rate(pick: dict) -> float | None:
-    """Chaos an hour this pick's rule made over the last week, at its stake. None if never replayed."""
-    rep = pick.get("replay") or {}
-    if rep.get("return") is None:
-        return None
-    return rep["return"] * min(pick["stake"], REPLAY_STAKE) / (REPLAY_DAYS * DAY)
+def replayed_rate(pick: dict, against_divine: bool = True) -> float | None:
+    """Chaos an hour this pick's rule made over the last week, at its stake. None if never replayed.
+
+    Uses the replay at the pick's own stake when there is one (`replay_at_stake`), else the fixed
+    1,000 Chaos replay scaled to the stake."""
+    return desk_replayed_rate(pick.get("replay_at_stake") or pick.get("replay"), pick["stake"], against_divine)
 
 
 def _flip_option(p: dict) -> dict:
@@ -69,10 +74,45 @@ def _flip_option(p: dict) -> dict:
             "label": f"{p['name']} ({FLIP_KIND[p['kind']]})", "lot_cost": p.get("lot_cost")}
 
 
+def _count(x: Any) -> str:
+    """A count of items as players write it: 2, not 2.0; 2.5 stays 2.5."""
+    return f"{x:g}" if isinstance(x, (int, float)) else str(x)
+
+
 def _conversion_option(c: dict) -> dict:
     key = c.get("recipe_key") or f"{c['id']}:{c.get('reward_id')}:{c.get('need')}"
     return {"key": f"conversion:{key}", "group": GROUP["conversion"],
-            "label": f"{c.get('need')} {c['name']} into {c.get('gives')} {c.get('reward')}", "lot_cost": c.get("cost")}
+            "label": f"{_count(c.get('need'))} {c['name']} into {_count(c.get('gives'))} {c.get('reward')}",
+            "lot_cost": c.get("cost")}
+
+
+def counts_text(counts: dict) -> str:
+    """"1 flip, 3 conversions and 0 round trips", with each noun matching its count."""
+    words = [("flips", "flip", "flips"), ("conversions", "conversion", "conversions"),
+             ("round_trips", "round trip", "round trips")]
+    parts = [f"{counts.get(k, 0)} {one if counts.get(k, 0) == 1 else many}" for k, one, many in words]
+    return f"{parts[0]}, {parts[1]} and {parts[2]}"
+
+
+def conversion_rate(conversions: list[dict], purse: float, cycle: float = CONVERSION_CYCLE) -> float:
+    """Chaos an hour the conversions alone could make with `purse`.
+
+    Each conversion's own profit per hour assumes its full share of the market's flow, whatever it
+    costs to buy. A purse buys inputs worth at most itself once per `cycle` hours (buy the inputs,
+    then sell what they make), so the purse is spent on the best margins first and the rest get
+    what is left.
+    """
+    budget = purse / cycle
+    total = 0.0
+    ranked = sorted((c for c in conversions if (c.get("cost") or 0) > 0 and (c.get("sets_per_hour") or 0) > 0),
+                    key=lambda c: -(c["profit_per_hour"] / c["sets_per_hour"]) / c["cost"])
+    for c in ranked:
+        if budget <= 0:
+            break
+        sets = min(c["sets_per_hour"], budget / c["cost"])
+        total += sets * c["profit_per_hour"] / c["sets_per_hour"]
+        budget -= sets * c["cost"]
+    return total
 
 
 def _loop_option(row: dict) -> dict:
@@ -119,34 +159,43 @@ class Ladder:
         conversions = [c for c in self.conversions() if fits(c.get("cost"))]
         # Like the Arbitrage page: a purse that cannot hold one Divine stays in the Chaos markets.
         loops = [row for row in self.loops(purse < self.desk.bridge) if fits(row.get("lot_cost"))]
-        picks, promised, replayed, cautious = [], 0.0, 0.0, 0.0
+        picks, promised, replayed, against, cautious = [], 0.0, 0.0, 0.0, 0.0
+        divines = None
         gold: float | None = 0.0
-        for p in session["flips"]:
-            rep = replayed_rate(p)
-            low = min(p["est"], rep) if rep is not None else 0.0
+        for p, at_stake in zip(session["flips"], self.desk.replay_at(session["flips"], self.share)):
+            p = p | {"replay_at_stake": at_stake}
+            rep, vs = replayed_rate(p, against_divine=False), replayed_rate(p)
             promised += p["est"]
             replayed += rep or 0.0
-            cautious += low
+            against += vs or 0.0
+            # What the compounding plan grows the purse at: the promise, unless last week did worse
+            # than holding Divines would have.
+            cautious += min(p["est"], vs) if vs is not None else 0.0
+            if at_stake and at_stake.get("divines") is not None:
+                divines = at_stake["divines"]
             gold = None if gold is None or p.get("gold_per_hour") is None else gold + p["gold_per_hour"]
             picks.append({"id": p["id"], "name": p["name"], "kind": p["kind"],
                           "label": f"{p['name']} ({FLIP_KIND[p['kind']]})", "stake": round(p["stake"], 2),
                           "expected_per_hour": round(p["est"], 4),
                           "replayed_per_hour": None if rep is None else round(rep, 4),
-                          "replay": p.get("replay")})
+                          "replayed_vs_divine_per_hour": None if vs is None else round(vs, 4),
+                          "replay": p.get("replay"), "replay_at_stake": at_stake})
         options = ([_flip_option(p) for p in flips] + [_conversion_option(c) for c in conversions]
                    + [_loop_option(row) for row in loops])
         out = {
             "purse": purse,
             "can_run": len(options),
             "counts": {"flips": len(flips), "conversions": len(conversions), "round_trips": len(loops)},
+            "counts_text": counts_text({"flips": len(flips), "conversions": len(conversions), "round_trips": len(loops)}),
             "options": options,
             "session": {"picks": picks, "expected_per_hour": round(promised, 4),
                         "replayed_per_hour": round(replayed, 4),
-                        # What the compounding plan grows the purse at: per pick, the lower of the two.
+                        "replayed_vs_divine_per_hour": round(against, 4),
+                        "divines": divines,  # what holding Divines made over the replayed hours
                         "rate": round(max(cautious, 0.0), 4),
                         "gold_per_hour": None if gold is None or not picks else round(gold, 2),
                         "minutes": session["minutes"]},
-            "conversion_per_hour": round(sum(c["profit_per_hour"] for c in conversions), 4),
+            "conversion_per_hour": round(conversion_rate(conversions, purse), 4),
         }
         self._at[purse] = out
         return out
@@ -168,7 +217,7 @@ def ladder(desk: Desk, costs: Costs | None = None, share: float = 0.1, min_margi
         rate = info["session"]["rate"]
         nxt = steps[k + 1]["chaos"] if k + 1 < len(steps) else None
         rows.append({
-            **step, "can_run": info["can_run"], "counts": info["counts"],
+            **step, "can_run": info["can_run"], "counts": info["counts"], "counts_text": info["counts_text"],
             "opens": opens, "opens_groups": new_groups,
             "session": info["session"], "conversion_per_hour": info["conversion_per_hour"],
             "next": nxt,
@@ -235,11 +284,14 @@ def plan(desk: Desk, start: float, hours: float | None = None, target: float | N
                               for p in info["picks"]]
 
     schedule = compound(start, [s["chaos"] for s in steps], rate_at, hours=hours, target=target)
-    return {"bridge": desk.bridge, "start": start, "hours": hours, "target": target,
+    # No Divine price yet (the first hour of a league, or a league that never trades Divines) is
+    # None, not NaN: NaN is not JSON, and the browser would refuse the whole answer.
+    return {"bridge": _num(desk.bridge), "start": start, "hours": hours, "target": target,
             "ladder": ladder(desk, costs, share, min_margin, steps, runner),
             "schedule": schedule, "schedule_text": describe(schedule),
             "note": ("A projection, not a promise. The purse grows at the lower of what each plan promises now "
-                     "and what the same plan made over the last week, replayed on recent prices.")}
+                     "and what the same plan made over the last week at its own stake, measured against "
+                     "simply holding Divines over the same hours.")}
 
 
 def _hours(h: float) -> str:
@@ -253,7 +305,7 @@ def describe(schedule: list[dict]) -> list[str]:
         names = ", ".join(p["label"] for p in seg["plans"]) or "nothing"
         start = f"{_hours(seg['from_hour'])}"
         if seg["rate"] <= 0:
-            lines.append(f"from {start} h: at {seg['purse']:,.0f} Chaos no flip has both fitted and made money "
+            lines.append(f"from {start} h: at {seg['purse']:,.0f} Chaos no flip both fits and beat holding Divines "
                          "last week; nothing to compound.")
             continue
         if seg["to_hour"] is None:

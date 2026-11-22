@@ -31,14 +31,16 @@ def code_version() -> str:
         return found.group(1) if found else "unknown"
 
 
-def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
-    """Write a strategy file and return what was written."""
-    doc = document(spec, params, options, summaries)
+def export(path: Path, spec: str, params: dict, options: dict, summaries: list[dict],
+           extra: dict | None = None) -> dict:
+    """Write a strategy file and return what was written. `extra` adds keys, such as a search's
+    walk-forward table."""
+    doc = document(spec, params, options, summaries, extra)
     Path(path).write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
     return doc
 
 
-def document(spec: str, params: dict, options: dict, summaries: list[dict]) -> dict:
+def document(spec: str, params: dict, options: dict, summaries: list[dict], extra: dict | None = None) -> dict:
     """The strategy file's contents, as `export` writes them; the desk hands this to the browser to save."""
     from vaalstreet.backtest import STRATEGIES
 
@@ -50,6 +52,7 @@ def document(spec: str, params: dict, options: dict, summaries: list[dict]) -> d
         "params": params,
         "options": options,
         "results": summaries,
+        **(extra or {}),
     }
     if spec not in STRATEGIES:
         file, _, cls = spec.partition(":")

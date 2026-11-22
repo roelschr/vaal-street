@@ -31,6 +31,10 @@ Few orders are noisy, so the share used is shrunk toward the default:
 with n the number of orders. The default counts as `PRIOR_ORDERS` (3) orders, so one order
 moves the share a quarter of the way to what it measured, and ten orders about 77%.
 
+An order can also fill on single trades inside an hour whose average never reached its price. Those
+fills count, but the hour's volume does not, so the measured share can come out above 100%. It is
+reported as measured and counted as 100% in the share used: no plan can take more than the whole flow.
+
 Causality: `calibrate(..., as_of=t)` uses only orders posted before t, eligible volume from
 hours before t, and fills recorded before t (from the trades each fill wrote). A plan at hour t
 therefore never learns from a fill that came later.
@@ -133,7 +137,10 @@ def calibrate(orders: list[dict], fills: dict[int, list[tuple[int, float]]], pan
             continue  # the market never traded through your price: nothing to compare with
         measured = p["filled"] / p["eligible"]
         n = p["orders"]
-        used = (n * measured + PRIOR_ORDERS * default) / (n + PRIOR_ORDERS)
+        # Nobody takes more than the whole flow. A measured share above 100% comes from fills on trades
+        # inside hours whose average never reached the order's price, which hourly data cannot show as
+        # eligible. Used as it stands, it would promise a plan more units than the market trades.
+        used = (n * min(measured, 1.0) + PRIOR_ORDERS * default) / (n + PRIOR_ORDERS)
         out.append({
             "item": item, "market": market, "orders": n, "complete": p["complete"],
             "filled": round(p["filled"], 4), "eligible": round(p["eligible"], 4),
