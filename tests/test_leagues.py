@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from conftest import H0, HOUR, NEW_START, OLD_HOURS, BLITZ, EMBER, FLASH, HC_NEW, ITEM, LURE, NEW, OLD, STANDARD, call
 
+import math
 import shutil
 
 from conftest import write_raw
 
 from vaalstreet.db import connect
 from vaalstreet.ingest import ingest
-from vaalstreet.leagues import DAY, LeagueBook, classify
+from vaalstreet.leagues import DAY, LeagueBook, classify, gap_size
 
 
 def test_families_on_the_archive(con):
@@ -30,6 +31,8 @@ def test_family_rules_from_names_and_dates():
         league("HC Ruthless Settlers", 0, 118), league("Mercenaries", 121, 130),  # live, 9 days old
         league("Ruthless", 0, 130), league("Hardcore", 0, 130), league("Mine (PL123)", 3, 4),
         league("Ruthless Mine (PL9)", 3, 4), league("Keepers Event", 125, 130),
+        # GGG's short form "R" for Ruthless: the base is Phrecia, an event, not a new "R Phrecia".
+        league("HC R Phrecia", 50, 50), league("R Phrecia", 40, 75),
     ]
     got = {k: f for k, (f, _base) in classify(rows).items()}
     assert got == {
@@ -37,6 +40,7 @@ def test_family_rules_from_names_and_dates():
         "HC Ruthless Settlers": "challenge_hc_ruthless", "Mercenaries": "challenge",
         "Ruthless": "standard_ruthless", "Hardcore": "standard_hardcore", "Mine (PL123)": "private",
         "Ruthless Mine (PL9)": "private", "Keepers Event": "event",
+        "HC R Phrecia": "event_hc_ruthless", "R Phrecia": "event_ruthless",
     }
 
 
@@ -66,6 +70,27 @@ def test_cross_league_tells_structural_gaps_from_noise(con):
     assert gaps[(STANDARD, EMBER, "chaos")]["verdict"] == "none"
     assert {r["other"]: r["verdict"] for r in out["divine"]} == {HC_NEW: "none", STANDARD: "none"}
     assert out["items"][0]["verdict"] == "structural"
+
+
+def test_cross_league_ranks_a_gap_that_rounds_to_minus_100_percent():
+    """On live data an item can be thousands of times cheaper in Standard than in a past league. Rounded,
+    its gap is exactly -100%, which has no logarithm: it must rank as the biggest gap, not fail the page
+    and the league report. The archive rows are canned here, because the shared archive's known answers
+    (Standard at half price) have no such item."""
+    assert gap_size(-1.0) == math.inf and gap_size(None) == 0
+    assert abs(gap_size(1.0) - gap_size(-0.5)) < 1e-12  # double and half price are the same size
+    row = {"other": STANDARD, "market": "chaos", "n_days": 7, "hours": 100, "spread": 0.01, "same_sign": 1.0}
+    answers = iter([
+        [{"league": STANDARD, "family": "standard"}],
+        [{"t": 7 * DAY, "f": 0}],
+        [dict(row, item="half", name="Half", g=math.log(0.5)), dict(row, item="cheap", name="Cheap", g=-12.0)],
+    ])
+    book = LeagueBook.__new__(LeagueBook)  # no archive: `cross_league` only reads through `_rows`
+    book.bridge = "divine"
+    book._rows = lambda sql, params=None: next(answers)
+    out = book.cross_league(NEW)
+    assert [(r["id"], r["gap"], r["verdict"]) for r in out["items"]] == [
+        ("cheap", -1.0, "structural"), ("half", -0.5, "structural")]
 
 
 def test_cross_league_endpoint_and_command(server, archive_root, monkeypatch, capsys):

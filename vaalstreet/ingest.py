@@ -52,10 +52,18 @@ _DIGEST_COLUMNS = (
     + ", highest_stock " + _MAP + ", lowest_ratio " + _MAP + ", highest_ratio " + _MAP + ")[]'}"
 )
 
+# DuckDB's JSON reader reserves about two buffers of `maximum_object_size` per thread up front, and
+# DuckDB starts one thread per core. With 256 MiB buffers, 16 cores ask for 8 GiB before reading a
+# byte, and ingest fails with an out-of-memory error. The largest real PoE 1 digest is about 1.7 MB
+# uncompressed (measured on Oct-Nov 2026), so 32 MiB leaves ample headroom; the thread cap bounds the
+# reservation on big machines (4 x 2 x 32 MiB = 256 MiB) and costs little, as ingest is mostly I/O.
+_MAX_DIGEST_BYTES = 32 * 1024 * 1024
+INGEST_THREADS = min(4, os.cpu_count() or 1)
+
 _PARSE = """
 WITH raw AS (
     SELECT CAST(regexp_extract(filename, '(\\d+)\\.json\\.gz$', 1) AS BIGINT) AS hour_id, unnest(markets) AS m
-    FROM read_json($files, columns = {columns}, filename = true, maximum_object_size = 268435456)
+    FROM read_json($files, columns = {columns}, filename = true, maximum_object_size = {max_object})
 ), split AS (
     SELECT hour_id, m, split_part(m.market_id, '|', 1) AS a, split_part(m.market_id, '|', 2) AS b FROM raw
 )
@@ -66,7 +74,7 @@ SELECT to_timestamp(hour_id) AS hour, m.league AS league, a AS item_a, b AS item
        coalesce(m.lowest_ratio[a], 0) AS ratio_lo_a, coalesce(m.lowest_ratio[b], 0) AS ratio_lo_b,
        coalesce(m.highest_ratio[a], 0) AS ratio_hi_a, coalesce(m.highest_ratio[b], 0) AS ratio_hi_b
 FROM split
-""".format(columns=_DIGEST_COLUMNS)
+""".format(columns=_DIGEST_COLUMNS, max_object=_MAX_DIGEST_BYTES)
 
 # Every market seen from both sides: the price of `item` in `quote`.
 LEGS_SQL = """
@@ -190,7 +198,7 @@ def ingest(root: Path, log: Callable[[str], None] | None = print) -> dict[str, i
     if prices_dir(root).exists() and (not stamp.exists() or stamp.read_text().strip() != PRICES_VERSION):
         for stale in prices_dir(root).glob("realm=*/month=*/data.parquet"):
             stale.unlink()
-    con = duckdb.connect()
+    con = duckdb.connect(config={"threads": INGEST_THREADS})
     con.execute("SET TimeZone = 'UTC'")
     try:
         for realm in REALMS:

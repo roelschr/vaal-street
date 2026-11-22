@@ -186,6 +186,21 @@ def test_orderbook_null_fails(seed):
     assert research.orderbook(orderbook_leagues(seed, False)).verdict == FAIL
 
 
+def test_orderbook_fits_across_leagues_of_different_sizes():
+    """Real leagues trade different numbers of items for different numbers of hours. The slope is
+    fitted over several training leagues at once, so it must not need them to share a shape. Known
+    answer: the planted signal still passes when each league keeps a different subset."""
+    seasons = []
+    for k, s in enumerate(orderbook_leagues(1, True)):
+        p = s.panel
+        keep_t, keep_n = T - 5 * k, N - k  # every league keeps over 14 days
+        data = {c: v[:keep_t, :keep_n] for c, v in p.data.items()}
+        seasons.append(Season(Panel(p.league, p.hours[:keep_t], p.items[:keep_n], p.names[:keep_n],
+                                    p.categories[:keep_n], p.bridge[:keep_t], data)))
+    result = research.orderbook(seasons)
+    assert result.verdict == PASS, result.lines()
+
+
 def test_book_pressure_is_causal_and_treats_zero_stock_as_missing():
     panel = orderbook_leagues(1, True)[0].panel
     panel.data["r_stock_lo"][100, 0] = 0.0

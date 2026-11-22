@@ -3,8 +3,8 @@
 Several ideas for the desk are claims about the market rather than features: "resting stock
 predicts the price", "the Divine premium follows the league day". With seven or more such
 claims and only a handful of leagues, one of them is likely to look good by chance. So the
-rules a claim must meet were written down first, in `docs/ideas.md` under "How a measurement
-passes", and this module applies them as written. Every constant below that decides a verdict
+rules a claim must meet were written down first, in `docs/measurements.md`, and this
+module applies them as written. Every constant below that decides a verdict
 comes from that page. Changing one is a new setting tried and belongs on that page too.
 
 Three kinds of measurement:
@@ -37,7 +37,7 @@ import numpy as np
 from vaalstreet import pricing
 from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling
 
-# ---- The rules, as written in docs/ideas.md ("How a measurement passes"). -------------------
+# ---- The rules, as written in docs/measurements.md. -----------------------------------------
 HORIZON = 6  # hours ahead: the scorecard's target
 WARMUP = 48  # hours skipped at the start of each league
 MIN_DAYS = 14  # a league needs this much history to count
@@ -403,13 +403,18 @@ def book_pressure(panel: Panel, lookback: int) -> np.ndarray:
     return np.hstack(out)
 
 
-def _residual_fit(x: np.ndarray, y: np.ndarray) -> float:
-    """Slope of y on x through the origin, with x capped at +-3 so a few wild hours cannot set it."""
-    ok = np.isfinite(x) & np.isfinite(y)
-    ok[:WARMUP] = False
-    xs = np.clip(x[ok], -3, 3)
-    den = float(np.sum(xs * xs))
-    return float(np.sum(xs * y[ok]) / den) if den > 0 else 0.0
+def _residual_fit(pairs: list[tuple[np.ndarray, np.ndarray]]) -> float:
+    """Slope of y on x through the origin, pooled over leagues, with x capped at +-3 so a few wild
+    hours cannot set it. Each (x, y) pair is one league's [T, N]; leagues differ in hours and items,
+    so they are summed rather than stacked, and each skips its own warm-up hours."""
+    num = den = 0.0
+    for x, y in pairs:
+        ok = np.isfinite(x) & np.isfinite(y)
+        ok[:WARMUP] = False
+        xs = np.clip(x[ok], -3, 3)
+        num += float(np.sum(xs * y[ok]))
+        den += float(np.sum(xs * xs))
+    return num / den if den > 0 else 0.0
 
 
 def orderbook(seasons: list[Season], lookbacks: tuple = ORDERBOOK_LOOKBACKS) -> Result:
@@ -435,9 +440,7 @@ def orderbook(seasons: list[Season], lookbacks: tuple = ORDERBOOK_LOOKBACKS) -> 
     for test, train in splits(seasons):
         fits, errs = {}, {}
         for k in lookbacks:
-            xs = np.vstack([parts(s)[k] for s in train])
-            ys = np.vstack([parts(s)["target"] - parts(s)["fair"] for s in train])
-            fits[k] = _residual_fit(xs, ys)
+            fits[k] = _residual_fit([(parts(s)[k], parts(s)["target"] - parts(s)["fair"]) for s in train])
             total = n = 0
             for s in train:
                 p = parts(s)
@@ -819,23 +822,29 @@ def queue_vs_share(con, leagues: list[str] | None = None, strategies: tuple[str,
     return r
 
 
-def ladder_rates(con, league: str) -> Result:
-    """The ladder's promised Chaos per hour against what the same picks made in last week's replay."""
+def ladder_rates(con, league: str, root=None) -> Result:
+    """The ladder's promised Chaos per hour against what the same picks made in last week's replay.
+
+    `root` is the data directory `con` was opened on; without it the item names come from the default one."""
     from vaalstreet import ladder
     from vaalstreet.desk import Desk
 
     t0 = time.perf_counter()
-    desk = Desk.build(con, league)
+    desk = Desk.build(con, league, root=root)
     rows = []
     for rung in ladder.ladder(desk):
         sess = rung["session"]
         promised, replayed = sess["expected_per_hour"], sess["replayed_per_hour"]
+        against = sess["replayed_vs_divine_per_hour"]
         rows.append({"purse": rung["label"], "picks": len(sess["picks"]), "promised per hour": float(promised),
-                     "replayed per hour": float(replayed),
-                     "replayed / promised": float(replayed / promised) if promised else math.nan})
+                     "replayed per hour": float(replayed), "replayed vs Divines per hour": float(against),
+                     "replayed / promised": float(replayed / promised) if promised else math.nan,
+                     "vs Divines / promised": float(against / promised) if promised else math.nan,
+                     "Divines over those hours": sess.get("divines")})
     r = Result("ladder-rates", REPORT if rows else THIN, 1, None, {"league": league}, rows,
                notes=["Promised is what today's order levels promise; replayed is what the same rule made over the "
-                      "last week. One league, as of its latest hour."])
+                      "last week at each pick's own stake, in whole lots; vs Divines is that less what holding "
+                      "Divines made over the same hours. One league, as of its latest hour."])
     r.seconds = time.perf_counter() - t0
     return r
 

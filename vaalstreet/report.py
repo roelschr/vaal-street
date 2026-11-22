@@ -29,7 +29,7 @@ from pathlib import Path
 from vaalstreet.db import connect
 from vaalstreet.desk import Desk
 from vaalstreet.ingest import ANCHORS
-from vaalstreet.leagues import LeagueBook
+from vaalstreet.leagues import LeagueBook, gap_size
 
 HOUR = 3600
 PROJECT_URL = "https://github.com/roelschr/vaal-street"
@@ -110,7 +110,7 @@ def _build(con, root, league: str, day: int, realm: str) -> dict:
     out["gaps"] = {}
     for other in sorted(cross["others"], key=lambda o: ("standard" in _family(cross, o), o)):
         rows_ = sorted((r for r in cross["items"] + cross["divine"] if r["verdict"] == "structural" and r["other"] == other),
-                       key=lambda r: (-r["hours"], -abs(math.log1p(r["gap"] or 0)), r["id"], r["market"]))[:GAP_ROWS]
+                       key=lambda r: (-r["hours"], -gap_size(r["gap"]), r["id"], r["market"]))[:GAP_ROWS]
         if rows_:
             out["gaps"][other] = rows_
     return out
