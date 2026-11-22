@@ -81,6 +81,19 @@ def test_session_plan_without_budget_matches_the_old_rule():
     assert out["gold_unknown"] == [] and out["gold_used"] is None
 
 
+def test_a_lot_bigger_than_a_quarter_must_fill_within_the_session():
+    # Like Omen of Fortune on Covens: one unit costs 84% of a 3,000 c purse and trades 0.05 an hour,
+    # a lot every 20 hours. A lot of the same size that fills in 2 hours stays, flagged.
+    slow = plan("slow", 0.50, 2521, 10_000, None) | {"units_per_hour": 0.05, "buy_order": {"item_units": 1}}
+    fast = plan("fast", 0.20, 1200, 10_000, None) | {"units_per_hour": 0.5, "buy_order": {"item_units": 1}}
+    small = plan("small", 0.10, 50, 10_000, None) | {"units_per_hour": 0.01}
+    out = session_plan([slow, fast, small], 3000)
+    picks = {p["id"]: p for p in out["flips"]}
+    assert set(picks) == {"fast", "small"}
+    assert picks["fast"]["stake"] == 1200 and picks["fast"]["lot_share"] == 0.4, "one lot is 40% of your purse"
+    assert picks["small"]["stake"] == 750 and picks["small"]["lot_share"] is None, "a quarter, as before"
+
+
 def test_session_plan_under_a_gold_budget_for_the_session():
     plans = [plan("a", 0.10, 10, 1000, 5), plan("b", 0.20, 10, 1000, 1), plan("d", 0.10, 10, 1000, 20),
              plan("u", 0.50, 10, 1000, None)]

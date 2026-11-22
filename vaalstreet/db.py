@@ -30,12 +30,12 @@ PERMANENT_LEAGUES = ("Standard", "Hardcore", "Ruthless", "Hardcore Ruthless")
 
 _VIEWS = r"""
 CREATE VIEW markets AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{markets}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE VIEW legs AS {legs};
 
 CREATE VIEW prices AS
-SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}';
+SELECT * EXCLUDE (realm, month) FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{until};
 
 CREATE TABLE leagues AS
 SELECT league,
@@ -63,8 +63,13 @@ def has_data(root: Path | None = None, realm: str = "poe1") -> bool:
     return any((prices_dir(root) / f"realm={realm}").glob("month=*/data.parquet"))
 
 
-def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyConnection:
-    """Open an in-memory DuckDB with the views above. Run `vaal sync` first."""
+def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None = None) -> duckdb.DuckDBPyConnection:
+    """Open an in-memory DuckDB with the views above. Run `vaal sync` first.
+
+    `until` (unix seconds) hides every hour after it, so the archive looks exactly as it did then:
+    league ends, families, precedents and fair value all follow. The league report uses it to keep
+    a past day's page free of anything published later.
+    """
     root = root or data_dir()
     if not has_data(root, realm):
         raise FileNotFoundError(f"No {realm} data under {root}. Run `python -m vaalstreet sync` first.")
@@ -82,6 +87,8 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
     known = pa.Table.from_pylist(rows, schema=schema)  # noqa: F841 (read by DuckDB)
     con.execute("CREATE TABLE known_items AS SELECT * FROM known")
 
+    # The items table is cut too, so a bounded connection does not even name items first traded later.
+    bound = "" if until is None else f" AND hour <= to_timestamp({int(until)})"
     markets = (markets_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     prices = (prices_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     # Names for every traded item, falling back to one derived from the ID.
@@ -92,7 +99,7 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
                coalesce(k.name, regexp_replace(regexp_replace(split_part(t.item, '/', -1),
                         '^(Currency|DivinationCard)', ''), '([a-z0-9])([A-Z])', '\\1 \\2', 'g')) AS name,
                coalesce(k.category, 'Currency') AS category, k.stack
-        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'
+        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{bound}
               UNION SELECT '{ref}') t
         LEFT JOIN known_items k USING (item)
         """
@@ -101,6 +108,7 @@ def connect(root: Path | None = None, realm: str = "poe1") -> duckdb.DuckDBPyCon
         _VIEWS.format(
             markets=markets, prices=prices, realm=realm, permanent=PERMANENT_LEAGUES,
             legs=LEGS_SQL.format(markets="markets"),
+            until=bound,
         )
     )
     _add_families(con)

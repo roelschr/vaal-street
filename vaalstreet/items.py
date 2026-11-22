@@ -15,13 +15,14 @@ import urllib.request
 from functools import lru_cache
 from pathlib import Path
 
+from vaalstreet.archive import user_agent
 from vaalstreet.paths import items_file
 
 SOURCES = {
     "poe1": "https://repoe-fork.github.io/base_items.min.json",
     "poe2": "https://repoe-fork.github.io/poe2/base_items.min.json",
 }
-VERSION = 2  # bump when `build` learns something new; older files on disk are then refreshed
+VERSION = 3  # bump when `build` learns something new; older files on disk are then refreshed
 ICON_URL = "https://web.poecdn.com/image/{art}.png"
 
 _TAG_CATEGORIES = [
@@ -80,6 +81,43 @@ def _card_reward(description: str) -> tuple[int, str] | None:
     return int(count or 1), name.strip()
 
 
+_TAGGED = re.compile(r"<([a-z]+)>\s*\{([^{}]*)\}")
+_GEM_LEVEL = re.compile(r"^Level (\d+) (.+)$")
+_QUALITY = re.compile(r"^\+(\d+)%$")
+# Lines that may follow a unique or gem reward without changing what it is; anything else (a
+# Foulborn mutation, an influence, a magic prefix) makes a variant no outside price list pins down.
+_PLAIN_EXTRAS = {"corrupted", "default", "augmented", "normal"}
+
+
+def _item_reward(description: str) -> dict | None:
+    """What a card gives when the reward is not exchange currency: a unique, a gem or a base type.
+
+    The game's card text names the reward in a tagged line - `<uniqueitem>{Headhunter}`,
+    `<gemitem>{Level 21 Flame Link}` followed by `<default>{Quality:} <augmented>{+20%}` and
+    `<corrupted>{Corrupted}`, or `<whiteitem>{Prismatic Ring}` - and these items are priced from
+    stash listings (`ninja.py`), not the exchange. Generic rewards such as "Random Unique Belt" or
+    "Level 21 Spell Gem" are kept too; they simply never match a listing.
+    """
+    found = _TAGGED.findall(description or "")
+    if not found:
+        return None
+    tag, text = found[0]
+    tags = [t for t, _ in found[1:]]
+    count_match = re.match(r"^(\d+)x (.+)$", text.strip())
+    count, text = (int(count_match[1]), count_match[2]) if count_match else (1, text.strip())
+    corrupted = "corrupted" in tags
+    if tag == "uniqueitem" and set(tags) <= _PLAIN_EXTRAS:
+        return {"gives": count, "reward": text, "kind": "unique", "corrupted": corrupted}
+    if tag == "gemitem" and set(tags) <= _PLAIN_EXTRAS:
+        level = _GEM_LEVEL.match(text)
+        quality = next((int(q[1]) for _, v in found[1:] if (q := _QUALITY.match(v.strip()))), None)
+        return {"gives": count, "reward": level[2] if level else text, "kind": "gem",
+                "level": int(level[1]) if level else None, "quality": quality, "corrupted": corrupted}
+    if tag == "whiteitem" and not tags:
+        return {"gives": count, "reward": text, "kind": "base"}
+    return None
+
+
 def build(export: dict) -> dict[str, dict]:
     """Reduce the RePoE base-item export to what the desk needs."""
     out: dict[str, dict] = {}
@@ -97,8 +135,14 @@ def build(export: dict) -> dict[str, dict]:
             "art": art or None,
         }
         if item.get("item_class") == "DivinationCard":
-            reward = _card_reward(props.get("description", ""))
-            if reward and props.get("stack_size"):
+            description = props.get("description", "")
+            outside = _item_reward(description)
+            reward = _card_reward(description)
+            if not props.get("stack_size"):
+                pass
+            elif outside:
+                entry["set"] = {"need": props["stack_size"], **outside}
+            elif reward:
                 entry["set"] = {"need": props["stack_size"], "gives": reward[0], "reward": reward[1]}
         out[item_id] = entry
     _add_recipes(out)
@@ -157,7 +201,7 @@ def _add_recipes(out: dict[str, dict]) -> None:
 
 def download(root: Path, realm: str) -> int:
     """Fetch the base-item export for a realm and keep the reduced metadata. Returns item count."""
-    request = urllib.request.Request(SOURCES[realm], headers={"User-Agent": "vaal-street/2.0"})
+    request = urllib.request.Request(SOURCES[realm], headers={"User-Agent": user_agent()})
     with urllib.request.urlopen(request, timeout=120) as response:
         export = json.load(response)
     reduced = build(export)

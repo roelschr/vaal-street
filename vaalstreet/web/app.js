@@ -15,6 +15,7 @@ async function api(path, body) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) throw new Error(data.error || res.statusText);
+  practiceFrom(data);
   return data;
 }
 const bankQuery = () => (+state.filters.capital > 0 ? { bankroll: +state.filters.capital } : {});
@@ -102,21 +103,28 @@ const ICONS = {
   ledger: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6"/>', ladder: '<path d="M7 3v18M17 3v18M7 7h10M7 12h10M7 17h10"/>',
 };
 const PAGES = [['desk', 'Desk'], ['markets', 'Markets'], ['flips', 'Flips'], ['arbitrage', 'Arbitrage'], ['ladder', 'Ladder'], ['league', 'League start'], ['lab', 'Backtest lab'], ['ledger', 'Ledger']];
+// poe.ninja, quietly: on or off, and when its prices were last fetched.
+function ninjaLine() {
+  const n = state.status?.ninja;
+  if (!n) return '';
+  const what = state.practice ? 'not used in practice (its prices are today’s)' : !n.on ? 'off' : n.last_run ? `${n.from_cache ? 'last fetched' : 'fetched'} ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
+  return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
+}
 function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>Not affiliated with Grinding Gear Games.</div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
-    <select id="leagueSel" title="League">${leagues.map(l => `<option ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}</option>`).join('')}</select>
+    <select id="leagueSel" title="${state.practice ? 'Stop the practice to change league' : 'League'}" ${state.practice ? 'disabled' : ''}>${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
     ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
-    <div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>` : ''}
+    ${state.practice ? `<div class="stat"><b class="violet">${esc(practiceTime(state.practice))}</b><span>practice hour</span></div>` : `<div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>`}` : ''}
     <span class="grow"></span>
     <div class="sync" title="${esc(sync.error || '')}"><span class="dot ${sync.error ? 'err' : sync.running ? 'busy' : ''}"></span>${esc(sync.error ? 'Sync failed' : sync.message)}</div>
     <div class="seg" id="unitSeg" title="Show prices in Chaos or Divine"><button class="${state.unit === 'chaos' ? 'on' : ''}" data-u="chaos">Chaos</button><button class="${state.unit === 'divine' ? 'on' : ''}" data-u="divine">Divine</button></div>
@@ -150,7 +158,7 @@ async function viewDesk(main) {
 
   const flips = panel(+state.filters.capital > 0 ? `Best flips for ${fmt(+state.filters.capital)} c` : 'Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
   flips.append(table([
-    { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
+    { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
     { h: 'Buy order', f: r => order(r.buy_order, true), title: 'Currency you pay, for how many items' },
     { h: 'Sell order', f: r => order(r.sell_order, false), title: 'Items you give, for how much currency' },
     { h: 'Margin', f: r => pct(r.margin) },
@@ -256,14 +264,14 @@ const goldCell = (r, value) => r.gold == null
   ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. Record the Gold of a trade in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
   : `${value}<div class="muted small">${feeSource(r)}</div>`;
 const flipCols = () => [
-  { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`), s: r => r.name },
+  { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`), s: r => r.name },
   { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
   { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
   { h: 'Units / hour', f: r => `<span title="${esc(shareTitle(r))}">${fmt(r.units_per_hour)}${r.share_source?.startsWith('your fills') ? ' <span class="dim" title="Measured from your orders">✓</span>' : ''}</span>`, s: r => r.units_per_hour },
   { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
-  { h: 'Last 7 days', f: r => r.replay ? `${pct(r.replay.return, 0)} <span class="dim">· ${r.replay.sales} sale${r.replay.sales === 1 ? '' : 's'}</span>` : '<span class="dim">no fills</span>', s: r => r.replay?.return, title: 'This plan’s rule replayed over the last 7 days on a fixed stake, re-posting orders every 4 hours: profit as a share of the stake (inventory still held is valued at fair value), and the number of hours with a sale' },
+  { h: 'Last 7 days', f: r => replayCell(r.replay), s: r => r.replay?.vs_divine ?? r.replay?.return, title: replayTitle },
   { h: 'Capital', f: r => money(r.capital), s: r => r.capital, title: 'Roughly six hours of buying held as inventory' },
   { h: 'Bid queue', f: r => dur(r.bid_queue_hours), s: r => r.bid_queue_hours, title: 'Resting bids already in the buy market, in hours of that market’s volume' },
   { h: 'Offer queue', f: r => dur(r.ask_queue_hours), s: r => r.ask_queue_hours, title: 'Items already on offer in the sell market, in hours of that market’s volume' },
@@ -274,6 +282,17 @@ const flipCols = () => [
 ];
 // Where a plan's share of the flow comes from: your recorded orders, or the share you set.
 const shareTitle = r => r.share == null ? '' : `Assumes you get ${plainPct(r.share, 1)} of the flow: ${/^default \d+%$/.test(r.share_source || '') ? 'the share you set on this page' : r.share_source}`;
+// A flip's last week, against holding Divines first: at a league start the Divine rises fast, so a
+// gain in Chaos can be a loss next to it.
+function replayCell(rp, sales = true) {
+  if (!rp) return '<span class="dim">no fills</span>';
+  const vs = rp.vs_divine == null ? '' : `${pct(rp.vs_divine, 0)} <span class="dim">vs Divines</span>`;
+  const sold = rp.realized != null && rp.return != null && Math.abs(rp.realized - rp.return) > 0.005 ? ` · ${pct(rp.realized, 0)} sold` : '';
+  return `${vs || pct(rp.return, 0)}<div class="muted small">${pct(rp.return, 0)} in Chaos${sold} · Divines ${pct(rp.divines, 0)}${sales ? ` · ${rp.sales} sale${rp.sales === 1 ? '' : 's'}` : ''}</div>`;
+}
+const replayTitle = 'This plan’s rule replayed over the last 7 days on a 1,000 Chaos stake, re-posting every 4 hours. First: its result against simply holding Divines over the same hours, the one that counts. Below: its return in Chaos (inventory still held valued at fair value), the part already sold, and what Divines made';
+// A flip whose Divine market pays far more than its Chaos market: the order fills rarely.
+const flipWarn = r => r.warning ? ` <span class="gold" title="${esc(r.warning)}">⚠ rare fills</span>` : '';
 const RANK = { profit: 6, gold: 11, own: 14 };
 
 async function viewFlips(main) {
@@ -283,7 +302,7 @@ async function viewFlips(main) {
   state.bridge = d.summary.bridge; renderTop();
   const st = d.settings;
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
-    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue; check the in-game book before sizing up.</p>
+    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue. The “Last 7 days” replay does wait in line: its orders fill only after the stock already on offer has traded. Check the in-game book before sizing up.</p>
     <p class="note">Every order costs Gold, and the game does not publish how much. The desk uses the Gold per item from the trades you recorded in the Ledger; for other items it uses the fee you assume below, and otherwise says “Gold unknown”. Minutes assume ${+(+st.minutes_per_order).toFixed(2)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
     <div class="bar">
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
@@ -307,20 +326,22 @@ async function viewFlips(main) {
     const picks = sp.flips, total = sp.expected_per_hour;
     // Kept so the Ledger can start a session against this plan.
     state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
-    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">about ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
+    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">last week: <b>${money(sp.replayed_vs_divine_per_hour)}</b> an hour against holding Divines, ${money(sp.replayed_per_hour)} an hour in Chaos · promised ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
-      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>`) },
+      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
       { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
-      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => money(r.stake), title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
+      { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => `${money(r.stake)}${r.lot_share != null ? `<div class="gold small">one lot is ${plainPct(r.lot_share)} of your purse</div>` : ''}`, title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
       { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
-      { h: 'Est. / hour', f: r => money(r.est) },
+      { h: 'Last week vs Divines', f: r => `${money(r.replayed_vs_divine_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, minus what the stake would have made held as Divines' },
+      { h: 'Last week', f: r => `${money(r.replayed_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, in Chaos' },
+      { h: 'Promised', f: r => `${money(r.est)}<span class="dim"> / h</span>`, title: 'What the plan expects if every order fills as estimated; it runs well ahead of the replay' },
       { h: 'Per 1,000 Gold', f: r => r.chaos_per_1000_gold == null ? '<span class="dim">Gold unknown</span>' : `${money(r.chaos_per_1000_gold)}<div class="muted small">${feeSource(r)}</div>` },
       { h: 'Gold to post', f: r => r.gold_to_post == null ? '–' : fmt(r.gold_to_post), title: 'Gold to post this plan’s buy and sell orders once, at the size of its stake' },
       { h: 'Gold / hour', f: r => r.gold_per_hour == null ? '–' : fmt(r.gold_per_hour), title: 'Gold an hour at the fills this stake expects, if you keep re-posting' },
       { h: 'Minutes', f: r => mins(r.minutes) },
-      { h: 'Last 7 days', f: r => r.replay ? pct(r.replay.return, 0) : '<span class="dim">no fills</span>' },
-    ], picks, { onRow: r => openItem(r.id), empty: sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
+      { h: 'Last 7 days', f: r => replayCell(r.replay, false), title: replayTitle },
+    ], picks, { onRow: r => openItem(r.id), empty: sp.trailing_divines ? `Nothing beat holding Divines (${pct(sp.divines, 0)} over the last week): ${sp.trailing_divines} plan${sp.trailing_divines === 1 ? '' : 's'} made Chaos but less than the Divine rose.` : sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
     if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record a trade's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
     host.append(p);
   };
@@ -394,6 +415,21 @@ async function viewArbitrage(main) {
   ], d.conversions.filter(r => fits(r.cost) && (r.value_24h || 0) >= liquid && (r.reward_value_24h ?? Infinity) >= liquid),
   { sort: purse ? 4 : 6, limit: 15, onRow: r => openItem(r.id), empty: 'No conversion clears these filters.' }));
   onCheck(sets);
+  // Card sets whose reward the exchange does not trade: the reward's price is a poe.ninja listing, kept apart.
+  const nj = panel('Card sets for items not on the exchange', 'c12', `<span class="muted small">Reward ${esc(d.ninja_credit || 'prices from poe.ninja')} (stash listings, not the exchange)</span>`);
+  nj.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">These cards turn into a unique, a gem or a base type. The cards are priced from the exchange; the reward from poe.ninja’s listings, which are weaker evidence than trades, so there is no “in a hurry” figure and these prices never enter fair value, round trips or alerts. Check what the reward really sells for before buying a set.</p></div>`);
+  nj.append(table([
+    { h: 'Turn in', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`), s: r => r.name },
+    { h: 'Cost', f: r => money(r.cost), s: r => r.cost, title: 'Fair value of the cards for one set, from the exchange' },
+    { h: 'Reward listed at', f: r => money(r.proceeds), s: r => r.proceeds, title: 'poe.ninja’s listing price for the reward' },
+    { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
+    { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour, title: `At ${plainPct(state.share)} of the cards' traded volume` },
+    { h: 'Listings', f: r => r.reward_listings ?? '–', s: r => r.reward_listings, title: 'How many listings back the reward’s price' },
+    { h: 'Price age', l: 1, f: r => `${r.reward_age_minutes == null ? '–' : dur(r.reward_age_minutes / 60)}${r.reward_stale ? ' <span class="gold" title="poe.ninja could not be reached; this is the last answer">stale</span>' : ''}`, s: r => r.reward_age_minutes },
+    { h: 'Note', l: 1, f: r => r.reward_variant ? `<span class="muted small">${esc(r.reward_variant)}</span>` : '' },
+    { h: 'In game', l: 1, f: checkCell, s: r => r.check },
+  ], (d.ninja_conversions || []).filter(r => fits(r.cost)), { sort: 4, limit: 15, onRow: r => openItem(r.id), empty: state.status?.ninja?.on === false ? 'poe.ninja prices are turned off (python -m vaalstreet ninja on turns them back on).' : 'No card set for an item off the exchange is priced yet. The desk asks poe.ninja at most once an hour, from the background sync.' }));
+  onCheck(nj);
   const loops = panel('Round trips through item-for-item markets', 'c12');
   loops.innerHTML += `<div class="body" style="padding-bottom:0"><p class="note">Buy the first item${d.chaos_only ? ' for Chaos' : ''}, move it along the path, and sell the last one${d.chaos_only ? ' for Chaos' : ''}. A plain arrow is a swap in the small markets where items trade directly for each other; <span class="tag">Divine</span> means selling for Divines and buying with them; <span class="tag">vendor</span> means buying from a vendor at a price you entered below. Rates are what those markets typically traded at over the last day. These markets are thin. “Waiting now” is the value of orders already resting on the other side of the thinnest swap — when it is not nothing, the swap can be taken at once; otherwise you would have to post an order and wait. “Est. / day” assumes you take ${plainPct(state.share)} of what went through the thinnest step.</p></div>`;
   loops.append(table([
@@ -448,7 +484,7 @@ async function viewArbitrage(main) {
   });
   onCheck(ft);
   mine.append(form, ft);
-  $('#g', main).append(sets, loops, mine);
+  $('#g', main).append(sets, nj, loops, mine);
   $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
   $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
@@ -467,6 +503,72 @@ function leagueChart(host, curves, current, key, yFormat) {
   return `<div class="legend">${series.slice().reverse().map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('')}</div>`;
 }
 
+// A league family in words: "challenge league", "event", "Standard (Hardcore)".
+function familyWord(f) {
+  if (!f) return '';
+  const [base, ...rest] = f.split('_');
+  const head = { challenge: 'challenge league', event: 'event', private: 'private league', standard: 'Standard' }[base] || base;
+  return rest.length ? `${head} (${rest.map(x => x[0].toUpperCase() + x.slice(1)).join(' ')})` : head;
+}
+const times = x => x == null ? '–' : `${+(+x).toFixed(x >= 10 ? 0 : 1)}×`;
+const MOVE = { rise: '<span class="up">rose</span>', fall: '<span class="down">fell</span>', flat: '<span class="muted">flat</span>' };
+const GAP = {
+  structural: ['gold', 'Steady', 'Held on most days with the same sign, at least 3%: a real difference between the leagues'],
+  noise: ['muted', 'Noise', 'Flips sign or closes from day to day: it will not hold'],
+  none: ['dim', 'None', 'Within 3%: no real gap'],
+};
+// The League start sections added for launch day, Divine timing, meta shifts and other leagues.
+async function leagueExtras(g, d) {
+  const fam = familyWord(d.family);
+  const L = d.launch;
+  if (L) {
+    const lp = panel(`Launch day: the first ${L.hours} hours of past ${esc(fam)}s`, 'c12', `<span class="muted small">Moves against each league’s first-day value, in ${L.unit === 'divine' ? 'Divine' : 'Chaos'}</span>`);
+    lp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">For each item: the hour its market first traded (“wakes up”), what it did first (rose or fell 5% from its first three traded hours, or stayed flat), and where it stood at hours ${L.checks.join(', ')} against its first-day value. Medians over ${L.precedents.length ? esc(L.precedents.join(', ')) : 'no past league'}. ${L.shortfall ? `<b>${esc(L.shortfall)}</b>` : ''}</p></div>`);
+    lp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
+      { h: 'Wakes up', f: r => r.wake == null ? '–' : `hour ${r.wake}`, s: r => r.wake, title: 'Median hour after launch when its market first traded' },
+      { h: 'First move', l: 1, f: r => MOVE[r.first] || esc(r.first), s: r => r.first },
+      ...L.checks.map(h => ({ h: `At ${h} h`, f: r => pct(r.moves?.[h], 0), s: r => r.moves?.[h], title: `Against its first-day value, ${h} hours after launch` })),
+      { h: 'Leagues agree', f: r => r.n ? `${Math.round(r.agree * r.n)} of ${r.n}` : '–', s: r => r.agree, title: 'How many past leagues made the same first move' },
+    ], L.items || [], { sort: 2 + L.checks.length, limit: 30, onRow: r => openItem(r.id), empty: 'No past league’s first hours are on disk.' }));
+    g.append(lp);
+  }
+  const dt = d.divine_timing;
+  if (dt) {
+    const tp = panel('When to buy Divines', 'c6');
+    tp.insertAdjacentHTML('beforeend', `<div class="body"><p style="margin:0 0 10px">${esc(dt.advice || `No past ${fam} to learn from yet.`)}</p><div class="legend"><span><i style="background:#8fb8f2"></i>How much dearer than its cheapest day the Divine was, median over past leagues</span></div><div id="dtc"></div></div>`);
+    g.append(tp);
+    if (dt.curve?.length) drawChart($('#dtc', tp), { series: [{ label: 'Dearer than its cheapest day', color: '#8fb8f2', x: dt.curve.map(c => c.day), y: dt.curve.map(c => c.dearer), width: 2 }], xType: 'day', yFormat: x => `+${(x * 100).toFixed(0)}%`, height: 200 });
+  }
+  const m = d.meta;
+  if (m) {
+    const mp = panel('Meta shifts: demand growing faster than ever before', 'c6');
+    mp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">Units traded in the last 24 hours against league day 1, next to the same hours in past ${esc(fam)}s. Grown at least 1.5× and faster than in any past league: players may be using it for something new. ${m.note ? esc(m.note) : ''}</p></div>`);
+    mp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
+      { h: 'Demand grew', f: r => times(r.growth), s: r => r.growth },
+      { h: 'Past leagues', f: r => `${times(r.past_low)} <span class="dim">/</span> ${times(r.past_median)} <span class="dim">/</span> ${times(r.past_high)}`, title: 'Lowest / median / highest growth over the same hours in past leagues' },
+      { h: 'Leagues', f: r => r.n, s: r => r.n },
+    ], m.items || [], { sort: 1, onRow: r => openItem(r.id), empty: 'No item’s demand is growing faster than in past leagues.' }));
+    g.append(mp);
+  }
+  const cp = panel('Other leagues’ prices', 'c12', '<span class="muted small">Same item, same hours, in each league’s own Divines; a gap is not a trade, since items cannot move between leagues</span>');
+  g.append(cp);
+  try {
+    const x = await api(withLeague('/api/cross_league'));
+    const rows = [...(x.divine || []), ...(x.items || [])];
+    cp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">Over the last ${x.days} days, compared with ${x.others.map(esc).join(', ') || 'no other league'}. “Steady” gaps held on most days with the same sign: trust them when you read prices from that league. “Noise” gaps flip or close.</p></div>`);
+    cp.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.market}">${r.market === 'divine' ? 'Divine market' : 'Chaos market'}</span>`), s: r => r.name },
+      { h: 'Other league', l: 1, f: r => `${esc(r.other)}<div class="muted small">${esc(familyWord(r.family))}</div>`, s: r => r.other },
+      { h: 'There it costs', f: r => pct(r.gap, 0), s: r => r.gap, title: 'How much more (or less) it costs in the other league, in that league’s Divines, typical day' },
+      { h: 'Gap', l: 1, f: r => { const [c, w, t] = GAP[r.verdict] || ['dim', esc(r.verdict), '']; return `<span class="${c}" title="${t}">${w}</span>`; }, s: r => ({ structural: 2, noise: 1 })[r.verdict] || 0 },
+      { h: 'Same sign', f: r => plainPct(r.same_sign), title: 'Share of days the gap kept the same direction' },
+      { h: 'Days', f: r => r.days },
+    ], rows, { sort: 3, limit: 40, onRow: r => openItem(r.id), empty: 'No other league traded these items in the same hours.' }));
+  } catch (err) { cp.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); }
+}
+
 async function viewLeague(main) {
   const v = state.league_view;
   const d = await api(withLeague('/api/league', { horizon: v.horizon, unit: v.unit }));
@@ -474,16 +576,19 @@ async function viewLeague(main) {
   renderTop();
   const past = d.precedents, unitWord = v.unit === 'divine' ? 'Divine' : 'Chaos';
   const st0 = state.status, shallow = st0.first_hour > st0.archive_start + 86400;
-  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${d.truncated ? `The archive does not reach back to the start of ${esc(d.league)}, so its league days cannot be counted yet.` : `${esc(d.league)} is on day ${d.day}.`} ${past.length ? `Lined up against the same day of ${past.map(esc).join(', ')}.` : 'No earlier league in the archive yet.'}</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>League start</h1><p>${d.truncated ? `The archive does not reach back to the start of ${esc(d.league)}, so its league days cannot be counted yet.` : `${esc(d.league)} is on day ${d.day}.`} It is a ${esc(familyWord(d.family))}, so it is lined up only against past ${esc(familyWord(d.family))}s that have ended${past.length ? `: ${past.map(esc).join(', ')}.` : ', and there is none in the archive yet.'}</p></div></div>
     ${shallow ? `<p class="note">History on disk starts ${new Date(st0.first_hour * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}. The exchange has published every hour since July 2024; the full archive is about 1.5 GB and takes one to two hours to download, in the background, newest first. <button class="btn" id="bf" ${st0.sync.backfill ? 'disabled' : ''}>${st0.sync.backfill ? 'Downloading…' : 'Download full history'}</button></p>` : ''}
     <div class="grid" id="g"></div>`;
   const g = $('#g', main);
   if ($('#bf', main)) $('#bf', main).onclick = async e => { e.target.disabled = true; e.target.textContent = 'Downloading…'; await api('/api/sync', { backfill: true }); toast('Downloading the full history in the background. Pages refresh as leagues arrive.'); };
-  const dv = panel('Divine Orb in Chaos, by league day', 'c12');
+  const dv = panel('Divine Orb in Chaos, by league day', 'c12', `<div class="seg" id="dvf" title="Which leagues to draw"><button data-f="family" class="${v.allLeagues ? '' : 'on'}">Same family</button><button data-f="all" class="${v.allLeagues ? 'on' : ''}">All leagues</button></div>`);
   const outlook = d.truncated ? '' : (d.divine_outlook || []).map(o => `<span style="margin-right:18px">next ${o.horizon} days: <b class="num">${pct(o.median, 0)}</b> <span class="dim">(${(o.worst * 100).toFixed(0)}% to ${o.best > 0 ? '+' : ''}${(o.best * 100).toFixed(0)}%, ${o.n} league${o.n === 1 ? '' : 's'})</span></span>`).join('');
   dv.innerHTML += `<div class="body">${outlook ? `<div class="muted" style="margin-bottom:10px">From day ${d.day} in past leagues, a Divine went on to cost — ${outlook}</div>` : ''}<div id="lg"></div><div id="dvc"></div></div>`;
   g.append(dv);
-  $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), d.divine, d.league, 'price', x => fmt(x) + ' c');
+  const keep = new Set([d.league, ...past]);
+  const curves = v.allLeagues ? d.divine : Object.fromEntries(Object.entries(d.divine).filter(([name]) => keep.has(name)));
+  $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), curves, d.league, 'price', x => fmt(x) + ' c');
+  $('#dvf', dv).onclick = e => { const f = e.target.dataset.f; if (f) { v.allLeagues = f === 'all'; route(); } };
 
   const moneyU = x => x == null ? '–' : v.unit === 'divine' ? `${fmt(x)}<span class="dim"> d</span>` : `${fmt(x)}<span class="dim"> c</span>`;
   const controls = `<div class="seg" id="hz">${[3, 7, 14, 30].map(h => `<button data-h="${h}" class="${v.horizon === h ? 'on' : ''}">${h} days</button>`).join('')}</div>
@@ -516,6 +621,8 @@ async function viewLeague(main) {
   g.append(cheap, rich);
   $('#hz', main).onclick = e => { const h = +e.target.dataset.h; if (h) { v.horizon = h; route(); } };
   $('#lu', main).onclick = e => { const u = e.target.dataset.u; if (u) { v.unit = u; route(); } };
+  g.prepend(rehearsePanel());
+  await leagueExtras(g, d);
 }
 
 const STRATS = {
@@ -525,8 +632,8 @@ const STRATS = {
   momentum: { label: 'Momentum (taker)', text: 'Once a day, hold the liquid items that rose most.', params: { lookback: [72, 'Hours of history ranked'], hold: [10, 'Items held'], top: [60, 'Most-traded items considered'] } },
 };
 const FILL_MODELS = {
-  share: ['Share of volume', 'A resting order takes at most the share of each hour’s volume set below.'],
-  queue: ['Wait in line', 'Your order waits behind the stock already on offer on your side, then can take all the volume through your price.'],
+  queue: ['Wait in line', 'Your order waits behind the stock already on offer on your side, then takes at most the share of each hour’s volume set below.'],
+  share: ['Share of volume', 'A resting order takes the share of each hour’s volume set below from the start, as if no one were ahead of you.'],
 };
 const paramsOf = m => {
   const out = {};
@@ -538,11 +645,90 @@ function download(name, data) {
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+const LAB_MODES = `<div class="seg" id="labMode"><button data-mode="run">Run a backtest</button><button data-mode="search">Search settings</button></div>`;
+const SCORE_WORDS = { divine: 'Return over holding Divines', return: 'Return in Chaos', drawdown: 'Return over the worst drop' };
+// "0.2, 0.3" -> [0.2, 0.3]; words stay words.
+const gridValues = text => text.split(',').map(x => x.trim()).filter(Boolean).map(x => (x !== '' && isFinite(+x) ? +x : x));
+const settingText = (s, strategy) => Object.entries(s || {}).map(([k, v]) => { const p = STRATS[strategy]?.params[k]; return `${esc(p ? p[1].toLowerCase() : STRATS_PARAM_WORDS[k] || k)}: ${esc(p?.[2]?.[v] ?? v)}`; }).join(', ') || 'the defaults';
+const STRATS_PARAM_WORDS = { attention: 'hours between visits' };
+
+// Strategy search: try a small grid, judged on leagues the settings were not chosen on.
+async function viewSearch(main, lab) {
+  const s = lab.search ||= { strategy: 'swing', grid: {}, attention: '', leagues: [], score: 'divine', capital: 10000, result: null };
+  const leagues = state.status.leagues.filter(l => l.family === 'challenge' && l.hours >= 72);
+  const sdef = STRATS[s.strategy];
+  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Search a few settings of a built-in strategy, judged the way you would have used them: each league is scored with the setting that did best on leagues that had ended before it began.</p></div><span class="grow"></span>${LAB_MODES}</div>
+    <p class="note">The desk tries at most 12 settings and 48 backtests per search, because it waits for the answer; use <code>search</code> on the command line for bigger grids. The more settings you try, the better the best one looks by luck, which is why only results on later leagues count.</p>
+    <div class="grid"><section class="panel c4"><header><h2>Search</h2></header><form class="body" id="sform" style="display:grid;gap:10px" autocomplete="off">
+      <label class="f">Strategy<select name="strategy">${Object.entries(STRATS).map(([k, x]) => `<option value="${k}" ${k === s.strategy ? 'selected' : ''}>${x.label}</option>`).join('')}</select></label>
+      <div class="muted small">${sdef.text} Give each setting one value or several, separated by commas; leave it empty to keep its default.</div>
+      ${Object.entries(sdef.params).map(([k, [def, text, options]]) => options
+        ? `<div class="f ctl">${text} <span class="dim">(none ticked: ${esc(options[def])})</span><div>${Object.entries(options).map(([v, l]) => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-go="${k}" value="${esc(v)}" ${(s.grid[k] || []).includes(v) ? 'checked' : ''}>${esc(l)}</label>`).join('')}</div></div>`
+        : `<label class="f">${text} <span class="dim">(default ${esc(def)})</span><input type="text" data-g="${k}" value="${esc((s.grid[k] || []).join(', '))}" placeholder="e.g. ${esc(def)}"></label>`).join('')}
+      <label class="f">Hours between visits <span class="dim">(a run option, default 1)</span><input type="text" data-g="attention" value="${esc((s.grid.attention || []).join(', '))}" placeholder="e.g. 1, 4"></label>
+      <div class="f ctl">Leagues <span class="dim">(none ticked: every challenge league)</span><div>${leagues.map(l => `<label style="display:inline-flex;gap:5px;margin:2px 10px 2px 0;color:var(--text)"><input type="checkbox" data-l="${esc(l.league)}" ${s.leagues.includes(l.league) ? 'checked' : ''}>${esc(l.league)}</label>`).join('')}</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label class="f">Score<select name="score">${Object.entries(SCORE_WORDS).map(([k, l]) => `<option value="${k}" ${k === s.score ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Bankroll (c)<input type="number" name="capital" value="${s.capital}" style="width:auto"></label>
+      </div>
+      <div id="serr" class="down small" role="alert"></div>
+      <button class="btn primary">Search</button></form></section>
+    <section class="panel c8"><header><h2>Results on later leagues</h2><span class="grow"></span><button class="btn" id="sexp" ${s.result ? '' : 'hidden'} title="Save the setting it would pick next, with this table, as a strategy file. Nothing is uploaded.">Export</button></header><div class="body" id="sout"><div class="empty">Enter a few values and search.</div></div></section></div>`;
+  $('#labMode', main).querySelector(`[data-mode=search]`).classList.add('on');
+  $('#labMode', main).onclick = e => { const m = e.target.dataset.mode; if (m) { lab.mode = m; route(); } };
+  const form = $('#sform', main);
+  const read = () => {
+    s.strategy = form.elements.strategy.value; s.score = form.elements.score.value; s.capital = form.elements.capital.value;
+    s.grid = {}; form.querySelectorAll('[data-g]').forEach(i => { const v = gridValues(i.value); if (v.length) s.grid[i.dataset.g] = v; });
+    form.querySelectorAll('[data-go]:checked').forEach(c => (s.grid[c.dataset.go] ||= []).push(c.value));
+    s.leagues = [...form.querySelectorAll('[data-l]:checked')].map(c => c.dataset.l);
+  };
+  form.elements.strategy.onchange = () => { s.strategy = form.elements.strategy.value; s.grid = {}; route(); };
+  const show = () => {
+    const r = s.result, out = $('#sout', main);
+    if (!r) return;
+    const p = r.pooled;
+    out.innerHTML = `<div class="kpi" style="margin-bottom:12px"><span>Settings tried</span><b>${r.settings_tried}</b><i class="muted">${r.backtests} backtests in ${+(+r.seconds).toFixed(1)} s · score: ${esc(SCORE_WORDS[r.score] || r.score)}</i></div>
+      <div id="stbl"></div>
+      <p class="muted" style="margin:10px 0 0">Average over ${p.folds} later league${p.folds === 1 ? '' : 's'}: <b class="num">${pct(p.score)}</b> with the chosen settings, against <b class="num">${pct(p.default_score)}</b> with the defaults; better than the defaults in ${p.beat_default} of ${p.folds}. ${r.stability.of ? `The choice changed ${r.stability.changes} time${r.stability.changes === 1 ? '' : 's'} in ${r.stability.of} steps.` : ''}</p>
+      <p class="muted" style="margin:6px 0 0">For the next league it would pick ${settingText(r.next.setting, r.strategy)}, chosen on ${r.next.tuned_on.map(esc).join(', ')}.</p>`;
+    $('#stbl', out).append(table([
+      { h: 'League', l: 1, f: f => esc(f.league) },
+      { h: 'Chosen on', l: 1, f: f => `<span class="muted">${f.tuned_on.map(esc).join(', ')}</span>` },
+      { h: 'Setting', l: 1, f: f => settingText(f.setting, r.strategy) },
+      { h: 'Score there', f: f => pct(f.score), title: 'The chosen setting on a league it was not chosen on' },
+      { h: 'Defaults', f: f => pct(f.default_score), title: 'The strategy’s default settings on the same league' },
+      { h: 'Holding Divines', f: f => pct(f.divine_return), title: 'What the same Chaos made held as Divine Orbs' },
+      { h: 'Return', f: f => pct(f.return), title: 'The chosen setting’s return in Chaos' },
+      { h: 'Fit on earlier leagues', f: f => `<span class="dim">${pct(f.fit_on_earlier).replace(/class="(up|down|muted)"/, 'class="dim"')}</span>`, title: 'The best score on the leagues it was chosen on: the best of many tries, so it flatters' },
+    ], r.folds));
+  };
+  form.onsubmit = async e => {
+    e.preventDefault(); read();
+    const err = $('#serr', form), btn = form.querySelector('button.primary');
+    err.textContent = ''; btn.disabled = true; btn.textContent = 'Searching…';
+    try {
+      s.result = await api('/api/search', { strategy: s.strategy, grid: s.grid, leagues: s.leagues.length ? s.leagues : null, score: s.score, capital: +s.capital });
+      $('#sexp', main).hidden = false; show();
+    } catch (x) { err.textContent = x.message; }
+    btn.disabled = false; btn.textContent = 'Search';
+  };
+  $('#sexp', main).onclick = async () => {
+    try {
+      const doc = await api('/api/strategy_export', { strategy: s.result.strategy, walk_forward: s.result });
+      download(`${s.result.strategy}-search.json`, doc);
+      toast('Saved the setting it would pick next, with its results, to your downloads. Nothing was uploaded.');
+    } catch (x) { toast(x.message, true); }
+  };
+  show();
+}
+
 async function viewLab(main) {
   if (!state.summary) await loadDesk();
   renderTop();
   const leagues = state.status.leagues.filter(l => l.kind === 'challenge' && l.hours >= 72);
-  const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'share', results: [], ran: null };
+  const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'queue', results: [], ran: null };
+  if (lab.mode === 'search') return viewSearch(main, lab);
   const several = lab.members.length > 1;
   const member = (m, n) => {
     const sdef = STRATS[m.strategy];
@@ -554,7 +740,7 @@ async function viewLab(main) {
         ? `<label class="f">${text}<select data-p="${k}">${Object.entries(options).map(([v, l]) => `<option value="${v}" ${(m.params[k] ?? def) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`
         : `<label class="f">${text}<input type="text" data-p="${k}" value="${esc(m.params[k] ?? def)}"></label>`).join('')}</div>`;
   };
-  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div></div>
+  main.innerHTML = `<div class="head"><div><h1>Backtest lab</h1><p>Replay a strategy hour by hour over past leagues. Orders posted at hour t meet hour t+1's market; nothing sees the future.</p></div><span class="grow"></span>${LAB_MODES}</div>
     <p class="note">A resting order fills at its limit only in hours whose average price traded through it; an aggressive order pays the average plus slippage. Results are in Chaos, on a fixed bankroll. Gold is charged only at the fee per unit you enter, because the real fee for each item is not known, so treat maker results as a ceiling.</p>
     <div class="grid"><section class="panel c4"><header><h2>Setup</h2></header><div class="body" id="form" style="display:grid;gap:10px">
       ${lab.members.map(member).join('')}
@@ -577,6 +763,8 @@ async function viewLab(main) {
       <div id="err" class="down small" role="alert"></div>
       <button class="btn primary" id="run">Run backtest</button></div></section>
     <section class="panel c8" id="res"><header><h2>Results</h2><span class="grow"></span><button class="btn" id="exp" hidden title="Save this strategy, its settings and its results as a file you can share. Nothing is uploaded.">Export</button></header><div class="body" id="out"><div class="empty">Pick a strategy and run it.</div></div></section></div>`;
+  $('#labMode', main).querySelector('[data-mode=run]').classList.add('on');
+  $('#labMode', main).onclick = e => { const m = e.target.dataset.mode; if (m) { lab.mode = m; route(); } };
   const form = $('#form', main);
   form.querySelectorAll('[data-m]').forEach(box => {
     const m = lab.members[+box.dataset.m];
@@ -618,6 +806,7 @@ async function viewLab(main) {
     $('#rt', out).replaceChildren(table([
       { h: 'League', l: 1, f: r => esc(r.summary.league), s: r => r.summary.league },
       { h: 'Days', f: r => r.summary.days }, { h: 'Return', f: r => pct(r.summary.return, 0), s: r => r.summary.return },
+      { h: 'Against Divines', f: r => pct(r.summary.vs_divine, 0), s: r => r.summary.vs_divine, title: 'The return measured in Divines: what the strategy made beyond simply holding Divine Orbs. The one to judge it by' },
       { h: 'Hold Divine', f: r => pct(r.summary.divine_return, 0), title: 'The same Chaos converted to Divine Orbs after day one' },
       { h: 'Per day', f: r => fmt(r.summary.per_day) + ' c', s: r => r.summary.per_day },
       { h: 'Worst drawdown', f: r => plainPct(r.summary.max_drawdown, 1) },
@@ -833,7 +1022,7 @@ async function viewLedger(main) {
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${r.market === 'divine' ? 'Divine' : 'Chaos'}` },
     { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
-    { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>` },
+    { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
       : `<button class="btn ghost" data-fill="${r.id}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
@@ -936,11 +1125,12 @@ async function viewLadder(main) {
   const rungs = panel('What each purse size can run', 'c12', '<span class="muted small">Flips, conversions and round trips that purse can start, and what opens up that the step below could not run.</span>');
   rungs.append(table([
     { h: 'Purse', l: 1, f: r => `<b>${esc(r.label)}</b><div class="muted small">${fmt(r.chaos)} c</div>` },
-    { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${r.counts.flips} flips · ${r.counts.conversions} conversions · ${r.counts.round_trips} round trips</div>` },
+    { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${esc(r.counts_text || '')}</div>` },
     { h: 'What opens up here', l: 1, f: r => r.opens?.length ? r.opens.slice(0, 6).map(o => `${esc(o.label)} <span class="dim">· one lot ${fmt(o.lot_cost)} c</span>`).join('<br>') + (r.opens.length > 6 ? `<br><span class="dim">and ${r.opens.length - 6} more</span>` : '') : '<span class="dim">nothing new</span>' },
-    { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => esc(p.label)).join('<br>') : '<span class="dim">no flip fits</span>' },
+    { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => `${esc(p.label)}${p.replay_at_stake ? ` <span class="dim">· last week at this stake ${p.replay_at_stake.vs_divine != null ? `${pct(p.replay_at_stake.vs_divine, 0)} vs Divines` : pct(p.replay_at_stake.return, 0)}</span>` : ''}`).join('<br>') : `<span class="dim">${r.session?.divines != null ? `nothing beat holding Divines (${pct(r.session.divines, 0)})` : 'no flip fits'}</span>` },
+    { h: 'Last week vs Divines / hour', f: r => money(r.session?.replayed_vs_divine_per_hour), title: 'What the same plans made an hour over the last week, minus what the purse would have made held as Divines' },
+    { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week in Chaos, replayed on recent prices: a rough guide, small lots round worse' },
     { h: 'Promised / hour', f: r => money(r.session?.expected_per_hour), title: 'What the session plan’s flips promise at today’s prices' },
-    { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week, replayed on recent prices: a rough guide, small lots round worse' },
     { h: 'To next step', f: r => r.next == null ? '–' : r.hours_to_next == null ? '<span class="dim">does not grow</span>' : dur(r.hours_to_next) },
   ], d.ladder));
   g.append(plan, rungs);
@@ -992,7 +1182,7 @@ async function openItem(id, hours = 168) {
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
       <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
       <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
-      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${pct(p.replay.return, 0)} on the stake, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}</div></div>`).join('')
+      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);
@@ -1060,6 +1250,118 @@ function openCheck(item) {
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
+// --------------------------------------------------------------- rehearsal
+// While a past league is replayed, every API answer carries `rehearsal`; the banner follows it, so
+// practice can never pass for the live market.
+// "Old day 3, 14:00": the hour within the league day, so the clock never runs backwards inside a day.
+const practiceTime = b => `${b.league} day ${b.league_day}, ${String(b.league_hour % 24).padStart(2, '0')}:00`;
+const practiceDate = b => new Date(b.hour * 1000).toLocaleString(undefined, { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' UTC';
+const SPEEDS = [[0, 'by hand'], [1, '1 game hour a minute'], [2, '2 game hours a minute'], [6, '6 game hours a minute'], [24, '24 game hours a minute']];
+// A form field in use: focused, or holding text the player typed and has not sent.
+function typing() {
+  const a = document.activeElement;
+  if (a && a.matches('input,select,textarea') && !a.closest('#practice')) return true;
+  return [...document.querySelectorAll('#main input, #main textarea, #drawer input, #tc input')]
+    .some(i => !['checkbox', 'radio', 'range'].includes(i.type) && i.value !== i.defaultValue);
+}
+let practiceStale = false;
+let practiceSeen = null, practiceResult = null, practiceTimer = null, practiceTimerSpeed = 0;
+function practiceFrom(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+  const b = data.rehearsal || (data.running === true && data.hour ? data : null);
+  const was = state.practice;
+  state.practice = b || null;
+  if (b && !was) { state.league = b.league; state.summary = null; }
+  // Back to live: forget the practice league and let the server's live default fill it in again.
+  if (!b && was) { state.league = null; state.summary = null; }
+  drawPractice();
+  // A new practice hour means new prices on every page.
+  if (b && practiceSeen != null && b.hour !== practiceSeen) {
+    practiceSeen = b.hour; refreshPracticeResult();
+    // Never wipe what the player is typing: offer a refresh instead.
+    if (typing()) { practiceStale = true; drawPractice(); } else setTimeout(route, 0);
+  }
+  practiceSeen = b ? b.hour : null;
+  // With the clock running by itself, look in every 15 s so the pages follow it.
+  const want = b && b.speed > 0 && !b.done ? b.speed : 0;
+  if (want !== practiceTimerSpeed) {
+    clearInterval(practiceTimer); practiceTimerSpeed = want;
+    if (want) practiceTimer = setInterval(() => api('/api/rehearsal').catch(() => {}), 15000);
+  }
+}
+async function refreshPracticeResult() {
+  try { const r = await fetch('/api/rehearsal').then(x => x.json()); practiceResult = r.result || null; drawPractice(); } catch { /* next step tries again */ }
+}
+function resultLine(r) {
+  if (!r) return '';
+  return `Practice profit <b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)} c</b> over ${r.hours} h · holding Divines with ${fmt(r.bankroll)} c: <b>${fmt(r.hold_divines)} c</b> · you are <b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)} c</b> against it`;
+}
+function drawPractice() {
+  let bar = $('#practice');
+  const b = state.practice;
+  document.body.classList.toggle('practice', !!b);
+  if (!b) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'practice'; bar.setAttribute('role', 'status'); document.body.prepend(bar); }
+  bar.innerHTML = `<div class="pline"><b class="ptag">PRACTICE</b><span class="ptime" title="Hours since the league's first trade">${esc(practiceTime(b))}</span><span class="muted">${esc(practiceDate(b))}</span>
+      <span class="muted">Not the live market.</span>${practiceStale ? '<button class="btn" id="pfresh" title="A new practice hour arrived while you were typing">New practice hour · refresh</button>' : ''}${b.done ? '<b class="gold">End of the data for this league.</b>' : ''}
+      <span class="grow"></span>
+      <span class="pbtns">${[1, 6, 24].map(h => `<button class="btn" data-step="${h}" ${b.done ? 'disabled' : ''}>+${h} h</button>`).join('')}</span>
+      <select id="pspeed" title="How fast the practice clock runs">${SPEEDS.map(([v, l]) => `<option value="${v}" ${+b.speed === v ? 'selected' : ''}>${l}</option>`).join('')}${SPEEDS.some(([v]) => v === +b.speed) ? '' : `<option selected value="${b.speed}">${b.speed} game hours a minute</option>`}</select>
+      <button class="btn" id="pstop">Stop</button></div>
+    <div class="pline small"><span>${resultLine(practiceResult) || 'Practice profit appears after your first trade.'}</span><span class="grow"></span><span class="muted">Practice trades, orders and alerts go to a separate practice file, never your real ledger.</span></div>`;
+  bar.onclick = async e => {
+    const step = e.target.closest('[data-step]');
+    if (step) { step.disabled = true; try { practiceFrom(await api('/api/rehearsal/step', { hours: +step.dataset.step })); } catch (err) { toast(err.message, true); } }
+    if (e.target.id === 'pstop') stopPractice();
+    if (e.target.id === 'pfresh') { practiceStale = false; drawPractice(); route(); }
+  };
+  $('#pspeed', bar).onchange = async e => { try { practiceFrom(await api('/api/rehearsal/step', { speed: +e.target.value })); } catch (err) { toast(err.message, true); } };
+}
+async function stopPractice() {
+  try {
+    const r = await api('/api/rehearsal', { stop: true });
+    practiceFrom(r);
+    practiceResult = null; showPracticeEnd(r.result); route();
+  } catch (err) { toast(err.message, true); }
+}
+function showPracticeEnd(r) {
+  if (!r) return;
+  const box = document.createElement('div'); box.className = 'panel pend';
+  box.innerHTML = `<header><h2>Practice over: ${esc(r.league)}, ${r.hours} hours</h2><span class="grow"></span><button class="btn ghost" data-x>✕</button></header>
+    <div class="body"><div class="kpis" style="margin-bottom:8px">
+      <div class="kpi"><span>Practice profit</span><b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)} c</b><i class="muted">${pct(r.return)}</i></div>
+      <div class="kpi"><span>Holding Divines instead</span><b>${fmt(r.hold_divines)} c</b><i class="muted">${fmt(r.divine_then)} → ${fmt(r.divine_now)} c</i></div>
+      <div class="kpi"><span>Against holding Divines</span><b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)} c</b></div></div>
+      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)} c realised, ${fmt(r.unrealized)} c in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)} c. ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
+  box.querySelector('[data-x]').onclick = () => box.remove();
+  document.body.append(box);
+}
+// The entry point, on League start.
+function rehearsePanel() {
+  const p = panel('Rehearse a past league', 'c12', '<span class="muted small">Practise a league start: the desk plays a past league forward as if it were live, using only prices published by then.</span>');
+  const leagues = (state.status.leagues || []).filter(l => l.hours >= 24);
+  const form = document.createElement('form'); form.className = 'body bar'; form.style.margin = '0'; form.autocomplete = 'off';
+  form.innerHTML = `<label class="f">League<select name="league">${leagues.map(l => `<option value="${esc(l.league)}">${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select></label>
+    <label class="f">Start on league day<input type="number" name="start_day" value="0" min="0" step="1"></label>
+    <label class="f">Clock<select name="speed">${SPEEDS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+    <label class="f" title="Only used to size the comparison with holding Divines">Compare with holding Divines worth (c)<input type="number" name="bankroll" value="1000" min="1" step="any"></label>
+    <button class="btn primary">Start practice</button>
+    <span class="muted small" style="padding-bottom:7px">Practice trades go to a separate file, emptied when the next practice starts; your real ledger is never touched.</span>`;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const v = k => form.elements[k].value;
+    try {
+      const r = await api('/api/rehearsal', { league: v('league'), start_day: +v('start_day') || 0, speed: +v('speed'), bankroll: +v('bankroll') || 1000 });
+      if (r.previous) showPracticeEnd(r.previous);
+      practiceResult = r.result; practiceFrom(r);
+      toast(`Practice started: ${practiceTime(r)}.`);
+      if (location.hash !== '#/desk') location.hash = '#/desk'; else route();
+    } catch (err) { toast(err.message, true); }
+  };
+  p.append(form);
+  return p;
+}
+
 // ----------------------------------------------------------------- hideout
 // Fired alerts in the hideout window: a browser notification and/or the title read aloud, both opt-in.
 // Only events after the last one this window has seen; nothing is ever sent to the game.
@@ -1100,7 +1402,7 @@ function ringControls() {
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
     <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
   $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
@@ -1131,6 +1433,7 @@ async function openHideout() {
 const VIEWS = { desk: viewDesk, markets: viewMarkets, flips: viewFlips, arbitrage: viewArbitrage, ladder: viewLadder, league: viewLeague, lab: viewLab, ledger: viewLedger };
 let routing = 0;
 async function route() {
+  if (practiceStale) { practiceStale = false; drawPractice(); }
   const main = $('#main'), turn = ++routing;
   if (!state.status?.ready) {
     const s = state.status;
