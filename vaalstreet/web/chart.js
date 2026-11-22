@@ -1,5 +1,6 @@
 // A small canvas line chart: several series on one y axis, optional volume bars, hover readout.
 // series: [{label, color, x:[], y:[], width, dash, dots, emphasize}]   bars: {x:[], y:[], color}
+// band: {label, x:[], lo:[], hi:[], color}, a faint shaded range drawn under the lines (breaks where either side is missing)
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function niceTicks(lo, hi, count) {
@@ -11,7 +12,7 @@ function niceTicks(lo, hi, count) {
   return out;
 }
 
-export function drawChart(host, { series, bars, xType = 'time', yFormat = String, tickFormat, xFormat, log = false, height }) {
+export function drawChart(host, { series, bars, band, xType = 'time', yFormat = String, tickFormat, xFormat, log = false, height }) {
   host.classList.add('chart');
   if (height) host.style.height = height + 'px';
   host.innerHTML = '<canvas></canvas><div class="tip"></div>';
@@ -19,6 +20,8 @@ export function drawChart(host, { series, bars, xType = 'time', yFormat = String
   const pad = { l: 8, r: 62, t: 10, b: 22 };
   const live = series.filter(s => s.y.some(v => v != null));
   const ys = live.flatMap(s => s.y.filter(v => v != null && (!log || v > 0)));
+  // The band stays inside the axis, so it never runs off the top or bottom.
+  if (band && ys.length) ys.push(...[...band.lo, ...band.hi].filter(v => v != null && (!log || v > 0)));
   const xs = live.flatMap(s => s.x);
   if (!ys.length) { host.innerHTML = '<div class="empty">No prints in this window.</div>'; return; }
   const tf = v => (log ? Math.log(v) : v);
@@ -61,6 +64,18 @@ export function drawChart(host, { series, bars, xType = 'time', yFormat = String
       ctx.fillStyle = bars.color || '#ffffff14';
       bars.x.forEach((x, i) => { const v = bars.y[i]; if (v) ctx.fillRect(px(x) - bw / 2, base - v / barMax * top, bw, v / barMax * top); });
     }
+    if (band) {
+      ctx.fillStyle = band.color || '#b2ef7822';
+      const ok = i => band.lo[i] != null && band.hi[i] != null && (!log || band.lo[i] > 0);
+      for (let i = 0; i < band.x.length;) {
+        if (!ok(i)) { i++; continue; }
+        let j = i; while (j + 1 < band.x.length && ok(j + 1)) j++;
+        ctx.beginPath();
+        for (let k = i; k <= j; k++) ctx.lineTo(px(band.x[k]), py(band.hi[k]));
+        for (let k = j; k >= i; k--) ctx.lineTo(px(band.x[k]), py(band.lo[k]));
+        ctx.closePath(); ctx.fill(); i = j + 1;
+      }
+    }
     for (const s of live) {
       ctx.strokeStyle = ctx.fillStyle = s.color; ctx.lineWidth = s.width || 1.5; ctx.setLineDash(s.dash || []);
       ctx.globalAlpha = s.alpha ?? 1;
@@ -95,7 +110,9 @@ export function drawChart(host, { series, bars, xType = 'time', yFormat = String
     if (i < 0) return;
     hover = anchor.x[i];
     const rows = live.map(s => { const j = nearest(s, hover); return j < 0 || Math.abs(s.x[j] - hover) > (x1 - x0) / 40 ? '' : `<div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${s.color};margin-right:6px"></i>${s.label} <b>${yFormat(s.y[j])}</b></div>`; }).join('');
-    tip.innerHTML = `<div class="muted">${xLabel(hover)}</div>${rows}`;
+    const b = band ? band.x.indexOf(hover) : -1;
+    const range = b >= 0 && band.lo[b] != null && band.hi[b] != null ? `<div class="muted">${band.label || 'Range'} <b>${yFormat(band.lo[b])} – ${yFormat(band.hi[b])}</b></div>` : '';
+    tip.innerHTML = `<div class="muted">${xLabel(hover)}</div>${rows}${range}`;
     tip.style.display = 'block';
     const left = px(hover) + 14;
     tip.style.left = (left + tip.offsetWidth > W - 8 ? px(hover) - tip.offsetWidth - 14 : left) + 'px';
