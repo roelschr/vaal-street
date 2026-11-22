@@ -536,7 +536,7 @@ class App:
                 gold_per_unit=float(body.get("gold_per_unit") or 0),
                 gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
                 schedule=body.get("schedule") or None,
-                fill_model=str(body.get("fill_model") or "share"),
+                fill_model=str(body.get("fill_model") or "queue"),
             )
             if body.get("strategies"):
                 result = backtest.run_portfolio(self.cursor(), league, runs, **options)

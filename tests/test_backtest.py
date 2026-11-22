@@ -323,8 +323,19 @@ def test_a_queued_buy_waits_for_the_stock_ahead_of_it():
     sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue", participation=1.0)
     result = sim.run(Script({0: [("buy", 80, 9.5)]}))
     assert list(result.cash) == [1000, 1000, 1000, 1000, 1000 - 50 * 9.5, 1000 - 80 * 9.5]
-    share = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000).run(Script({0: [("buy", 80, 9.5)]}))
+    share = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="share").run(Script({0: [("buy", 80, 9.5)]}))
     assert share.cash[1] == 1000 - 10 * 9.5, "the share model fills 10% of the hour at once"
+
+
+def test_orders_wait_in_line_by_default():
+    import inspect
+
+    assert backtest.Simulation(queue_panel([10, 9])).fill_model == "queue"
+    assert inspect.signature(backtest.run).parameters["fill_model"].default == "queue"
+    # With the default, the 250 items resting ahead hold the buy back in hour 1; share fills 10 at once.
+    sim = backtest.Simulation(queue_panel([10, 9, 10]), capital=1000)
+    sim.run(Script({0: [("buy", 80, 9.5)]}))
+    assert sim.position[0] == 0
 
 
 def test_a_queued_order_in_a_thin_market_still_takes_at_most_the_share():

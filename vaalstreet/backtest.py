@@ -12,7 +12,7 @@ published per market and hour - the average traded price (VWAP) and the volume:
 * A market order (no limit) pays the hour's VWAP plus `slippage`, the taker's
   cost of crossing the spread.
 * A fill takes at most `participation` of the hour's volume in that market. With
-  `fill_model="queue"`, a resting order instead waits behind the stock published on its
+  `fill_model="queue"`, the default, a resting order also waits behind the stock published on its
   side when it was posted (see `Simulation._queue_at`), and fills from the volume that trades
   through its level after that queue is gone, still at most `participation` of it. So queue
   never fills more than share in an hour.
@@ -434,7 +434,7 @@ class Simulation:
         gold_per_unit: float | np.ndarray = 0.0,
         gold_budget: float | None = None,
         schedule: str | np.ndarray | None = None,
-        fill_model: str = "share",
+        fill_model: str = "queue",
         wallet: Wallet | None = None,
         model_from: "Simulation | None" = None,
         risk_hours: float = 24,
@@ -1074,7 +1074,7 @@ def run(
     gold_per_unit: float | dict[str, float] = 0.0,
     gold_budget: float | None = None,
     schedule: str | None = None,
-    fill_model: str = "share",
+    fill_model: str = "queue",
     risk_hours: float = 24,
 ) -> Result:
     """Backtest one strategy on one league.
@@ -1087,8 +1087,9 @@ def run(
     `gold_per_unit` is the Gold paid per unit posted: one number for every item, or a mapping
     from item id to fee (items it leaves out cost nothing). `gold_budget` caps the Gold spent
     on new orders. `schedule` (e.g. "mon-fri 19-22", UTC) limits visits to your play hours.
-    `fill_model` is "share" (a fill takes at most `participation` of the hour's volume) or
-    "queue" (a resting order first waits behind the stock published on its side when it went up).
+    `fill_model` is "queue" (the default: a resting order first waits behind the stock published
+    on its side when it went up, then takes at most `participation` of the hour's volume) or
+    "share" (a fill takes at most `participation` of the hour's volume from the hour it goes up).
     `risk_hours` is how long you expect to hold items, for the inventory risk (`drop_per_unit`).
     """
     panel, offset = _load(con, league, start_day, days, universe)

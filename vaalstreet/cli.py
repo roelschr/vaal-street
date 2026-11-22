@@ -952,9 +952,10 @@ def main(argv: list[str] | None = None) -> None:
                    "'reversion:{\"entry_z\": -2.5}'. Give several with --portfolio")
     p.add_argument("--portfolio", action="store_true",
                    help="run the strategies together on one bankroll; the first one listed fills first")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
-                   help="share: a fill takes at most --participation of the hour's volume (default). "
-                   "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue",
+                   help="queue: an order first waits until the stock already on offer at your side has "
+                   "traded, then takes at most --participation of the hour's volume (default). "
+                   "share: it takes that share from the start, as if no one were ahead of you")
     p.add_argument("--risk-hours", type=float, default=24,
                    help="how long you expect to hold items, for the Worst drop column (default 24)")
     p.add_argument("--export", metavar="FILE.json",
@@ -999,7 +1000,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--whole-lots", action="store_true")
     p.add_argument("--gold-per-unit", type=float, default=0.0)
     p.add_argument("--schedule")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_search)
 
