@@ -1,6 +1,6 @@
 # Ideas from issue #2: what happened to each one
 
-This page records what became of every idea in issue #2, "Ideas to explore next". All the work sits in a stack of pull requests, #4 to #29, plus #16 on `main`. The verdicts are:
+This page records what became of every idea in issue #2, "Ideas to explore next". All the work sits in a stack of pull requests, #4 to #31. #31 carries the ingest memory fix from #16 onto the stack. The verdicts are:
 
 - **Built (#N)**: it is on the desk, in the pull request(s) named.
 - **Measured: fail, nothing shipped**, or **not enough data**: it was a claim about the market. It was tested on the full history under the rules at the end of this page and did not pass, so the desk does not use it. The numbers are under "Results on the full history".
@@ -107,7 +107,7 @@ What each outside data source allows is written up in `data-sources.md`.
 
 ## Fixes along the way
 
-- **Ingest memory** (#16, based on `main`): ingest fits in memory on the full archive.
+- **Ingest memory** (#31, cherry-picked from #16): ingest fits in memory on the full archive.
 - **Real-data fixes** (#17, #26, #28): joke-hour prices, garbage swaps, plans judged against holding Divines, each market's own flip levels, and crashes and memory limits found in the full-history run.
 
 ## Results on the full history
@@ -124,7 +124,7 @@ The archive runs from July 2024 to 22 November 2026. The challenge leagues in it
 | Regime detection | `research regime` | Not enough data | The Covens crash was flagged 1 hour after it happened, but Covens does not count. 0.215 false alarms per quiet item-week, against a ceiling of 0.1. | Not shipped as an alert. |
 | Item relationships | `research relationships` | Candidates | 140 pairs, all expected ones, such as Mirror of Kalandra with Mirror Shard. | Nothing to trade on. |
 | Recipe discovery | `research recipes` | Candidates | 1: History against The Slumbering Beast at 2:1, in 2 of 2 leagues. | Check it in game. The desk does not trade on it. |
-| Strategy search with walk-forward | `search <strategy> --fill-model queue` | Swing: a lead. Reversion and momentum: fail | With the wait-in-line fill model, the chosen swing settings beat holding Divines on Mercenaries and Keepers, and are about level on Mirage and Allflame. Reversion −79% and momentum −82% against holding Divines. Under the old share fill model, swing showed +600 to +2,500%, which came from the fill model. | The wait-in-line model was chosen after the share result was seen, so treat swing as a lead, not proof. |
+| Strategy search with walk-forward | `search <strategy> --fill-model queue` | Swing: a lead. Reversion and momentum: fail | With the wait-in-line fill model (capped at 10% of an hour's volume), the chosen swing settings beat holding Divines on Mercenaries (+265%) and Keepers (+151%), and are about level on Mirage (−11%) and Allflame (+6%); the average is +81%. The setting chosen every time was reach=0.35, top=40. Reversion −79% and momentum −82% against holding Divines. Under the old share fill model, swing showed +600 to +2,500%, which came from the fill model. | The wait-in-line model was chosen after the share result was seen, so treat swing as a lead, not proof. |
 | Waiting in line against a share of volume | `research queue-vs-share`, `backtest swing --fill-model share\|queue` | Report only | Swing on Mirage against holding Divines: +960% with a share of volume, −5.4% waiting in line (with the 10% cap). | Waiting in line is now the default (#29). Neither model has been checked against real fills; `fills` is how to check it. |
 | Bankroll ladder | `research ladder-rates` | Report only | Last week's replay delivers only 3 to 26% of the "promised" rate. | The desk shows the replay first. Trust it. |
 | League start | `playbook`, `divine-timing`, `meta`, `cross-league` | Checked | Every analysis uses the 5 earlier challenge leagues as precedents, and no event league. In 5 of 5 leagues the Divine was cheapest on day 0. | The Divine has been cheapest at launch every time so far. |
@@ -159,7 +159,12 @@ The "Measure first" ideas are claims about the market. We test seven or more of 
 
 ## What the owner still has to do
 
-- **Merge the pull requests.** Start with #16, the ingest memory fix, which is based on `main`. Then merge the stack from #4 to #30 in order.
-- **Index the archive.** After merging #16, run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
+1. **Push local `main`.** Your local `main` has one commit not yet on GitHub (`2d54310 chore: update AGENTS.md`), so #4 shows it in its diff. Run `git push origin main` first, so #4 shows only its own change.
+2. **Merge the stack from the top down, with "Create a merge commit"**, not squash. Each pull request merges into the branch below it, and #4 finally brings everything into `main`:
+   ```
+   for n in 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 15 14 13 12 11 10 9 8 7 6 5 4; do gh pr merge $n --merge; done
+   ```
+3. **Close #16.** Its fix arrives with #31.
+4. **Index the archive.** Then run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
 - **Check the screen check in game.** Its window layout has not been tested against the live game. It needs Windows and Python 3.10 to 3.12.
 - **poe.ninja dumps (optional).** The leagues before July 2024 could go into `data/ninja/`.
