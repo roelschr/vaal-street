@@ -145,3 +145,21 @@ body.hideout #main{padding:10px}
 body.hideout .panel{margin-bottom:10px}
 body.hideout th,body.hideout td{padding:5px 8px}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid var(--bg)}
+.member{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+
+/* rehearsal: practice must never pass for the live market */
+#practice{position:fixed;top:0;left:0;right:0;z-index:40;padding:6px 16px;color:#120d1f;font-weight:500;
+  background:repeating-linear-gradient(135deg,#b9a3ee 0 18px,#a990e6 18px 36px);border-bottom:2px solid #6d55b8}
+#practice .pline{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#practice .pline+.pline{margin-top:3px}
+#practice .grow{flex:1}
+#practice .muted{color:#2f2550}
+#practice .up{color:#0d5c3a}#practice .down{color:#8c1d26}#practice .gold{color:#5a3d00}
+#practice .ptag{background:#120d1f;color:#b9a3ee;padding:1px 8px;border-radius:5px;letter-spacing:.08em}
+#practice .ptime{font:600 15px var(--mono)}
+#practice .btn,#practice select{background:#efe9ff;color:#120d1f;border-color:#6d55b8;padding:3px 9px}
+body.practice{padding-top:64px;box-shadow:inset 0 0 0 3px #b9a3ee}
+body.practice.hideout{padding-top:0}
+body.hideout #practice{position:sticky}
+.violet{color:var(--violet)}
+.pend{position:fixed;left:50%;top:90px;transform:translateX(-50%);width:min(720px,94vw);z-index:45;box-shadow:0 18px 60px #000a}
