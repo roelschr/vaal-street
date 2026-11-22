@@ -159,12 +159,8 @@ The "Measure first" ideas are claims about the market. We test seven or more of 
 
 ## What the owner still has to do
 
-1. **Push local `main`.** Your local `main` has one commit not yet on GitHub (`2d54310 chore: update AGENTS.md`), so #4 shows it in its diff. Run `git push origin main` first, so #4 shows only its own change.
-2. **Merge the stack from the top down, with "Create a merge commit"**, not squash. Each pull request merges into the branch below it, and #4 finally brings everything into `main`:
-   ```
-   for n in 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 15 14 13 12 11 10 9 8 7 6 5 4; do gh pr merge $n --merge; done
-   ```
-3. **Close #16.** Its fix arrives with #31.
-4. **Index the archive.** Then run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
+The stack (#4 to #31) is merged into `main`, and #16 is closed: its fix arrived with #31.
+
+- **Index the archive.** Run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
 - **Check the screen check in game.** Its window layout has not been tested against the live game. It needs Windows and Python 3.10 to 3.12.
 - **poe.ninja dumps (optional).** The leagues before July 2024 could go into `data/ninja/`.
