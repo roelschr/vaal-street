@@ -57,6 +57,7 @@ def test_a_replay_says_what_it_made_per_hour(desk):
     replays = [p["replay"] for p in desk.flips(min_margin=0.0) if p["replay"]]
     assert replays
     for r in replays:
+        assert r["stake"] == REPLAY_STAKE, "the page names the stake the rate is on"
         assert r["per_hour"] == pytest.approx(r["return"] * REPLAY_STAKE / r["hours"], rel=0.01, abs=1e-3)
         assert r["vs_divine_per_hour"] == pytest.approx(
             ((1 + r["return"]) / (1 + r["divines"]) - 1) * REPLAY_STAKE / r["hours"], rel=0.02, abs=0.02)

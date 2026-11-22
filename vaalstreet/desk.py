@@ -883,7 +883,7 @@ class Desk:
                         out[(kind, item_id, reach)] = {
                             "return": _num(r, 3), "sales": int(sim.sales[i]),
                             "realized": _num(sim.realized[i] / REPLAY_STAKE, 3),
-                            "capital": _num(sim.peak_cost[i], 4), "hours": hours,
+                            "capital": _num(sim.peak_cost[i], 4), "hours": hours, "stake": REPLAY_STAKE,
                             "divines": _num(divines, 3), "vs_divine": _num((1 + r) / (1 + divines) - 1, 3),
                             **_per_hour(r, divines, REPLAY_STAKE, hours),
                         }

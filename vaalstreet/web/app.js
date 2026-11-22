@@ -52,7 +52,7 @@ function money(v, unit = state.unit) {
 }
 // What a replay made per hour, with the stake it was measured on: "9.8 c / h on 1,000 c". A plan's
 // "Est. / hour" is at whatever capital its markets absorb, so the stake has to be said.
-const replayRate = rp => rp.per_hour == null ? '' : `${money(rp.per_hour)} / h on ${Math.round(rp.stake ?? 1000).toLocaleString('en-US')} c`;
+const replayRate = rp => rp.per_hour == null || rp.stake == null ? '' : `${money(rp.per_hour)} / h on ${Math.round(rp.stake).toLocaleString('en-US')} c`;
 const pct = (v, digits = 1) => v == null ? '<span class="dim">–</span>' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : 'muted'}">${v > 0 ? '+' : ''}${(v * 100).toFixed(digits)}%</span>`;
 const dur = h => h == null ? '–' : h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? h.toFixed(1) + ' h' : Math.round(h / 24) + ' d';
 // Minutes as people say them: "2 min", "1.5 min", never "2.000".
