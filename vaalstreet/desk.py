@@ -41,11 +41,11 @@ PATIENCE = (0.15, 0.25, 0.35, 0.5)  # share of a market's volume that trades bey
 # A market's hourly average sometimes prints far from fair value because the book was empty and somebody
 # paid a whole Divine for three oils. That is not a level a second seller could count on, so order levels
 # are never placed more than this far (in log terms, about 1.5x) from fair value.
-MAX_SWING = math.log(1.5)  # keep in step with backtest.MAX_SWING
 PLAN_LEGS = (("chaos", "r", "r"), ("divine", "b", "b"), ("cross", "r", "b"))  # kind, buy market, sell market
 PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
+SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fill within one
 MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
 
 
@@ -241,14 +241,59 @@ class Costs:
         return row | out
 
 
+def cycle_hours(plan: dict) -> float:
+    """Hours one stake takes to buy and sell once under this plan (two if the plan does not say)."""
+    return plan.get("cycle_hours") or 2.0
+
+
+def replayed_rate(replay: dict | None, stake: float, against_divine: bool = True) -> float | None:
+    """Chaos an hour a plan's rule made in its replay, scaled to `stake`. None if it was never replayed.
+
+    A replay at the stake itself (`Desk.replay_at`) is taken as it is. One measured on another stake
+    (`Desk.replay` uses `REPLAY_STAKE`) is scaled: profit grows with the stake only up to the most
+    capital the replay ever tied up, and stays flat above it. That is rough at small stakes, which
+    is why the ladder replays at the stake. Against Divines (the default), the whole stake is also measured against holding Divines
+    over the same hours, so a rising Divine counts against Chaos that sat idle as well as against
+    the flip.
+    """
+    if not replay or replay.get("return") is None:
+        return None
+    hours = replay.get("hours") or REPLAY_DAYS * DAY
+    measured = replay.get("stake") or REPLAY_STAKE
+    profit = replay["return"] * measured
+    if not replay.get("at_stake"):
+        used = replay.get("capital")
+        profit *= min(1.0, stake / used) if used else min(stake, measured) / measured
+    if not against_divine:
+        return profit / hours
+    divines = replay.get("divines") or 0.0
+    return ((stake + profit) / (1 + divines) - stake) / hours
+
+
+def lot_hours(plan: dict) -> float:
+    """Hours the plan's markets take to fill one whole lot at its share of the flow (inf if it never does)."""
+    units = max(plan.get("buy_order", {}).get("item_units") or 1, plan.get("sell_order", {}).get("item_units") or 1)
+    per_hour = plan.get("units_per_hour") or 0
+    return units / per_hour if per_hour > 0 else math.inf
+
+
 def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None = None,
                  max_picks: int = 12) -> dict:
     """The flips to run in one sitting with `bankroll` Chaos, one per item.
 
-    A plan is eligible if one whole lot fits the bankroll and the same rule sold at least twice and
-    made money over the last week. Each item gets a quarter of the bankroll, or one whole lot if a lot
-    costs more. A stake of S earns margin x min(flow value, S / 2) an hour (the purse turns over at
-    most once per buy-then-sell).
+    Each item gets at most a quarter of the bankroll. A plan whose one whole lot costs more than that
+    is eligible only if its markets fill a lot within `SESSION_HOURS` at the plan's share of the
+    flow: a lot that takes a day to fill would tie up most of a small purse in one item for the whole
+    sitting. Such a pick's stake is that one lot, and it carries `lot_share`, the share of the
+    bankroll the lot takes ("one lot is 40% of your purse").
+
+    A plan is eligible if one whole lot fits the bankroll and the same rule, replayed over the last
+    week, sold at least twice and, at the stake it would get here, beat holding Divines over the same
+    hours (`replayed_rate`; at a league start the Divine rises fast, and a gain in Chaos can still be
+    a loss next to it). Plans that made Chaos but trailed Divines are counted in `trailing_divines`,
+    and `divines` says what Divines made, so an empty plan can say why. A stake of S earns
+    margin x min(flow value, S / cycle hours) an hour: the purse turns over at most once per
+    buy-then-sell, and that takes as long as the two markets take to reach the levels.
 
     Without a Gold budget, plans are taken by Chaos earned per Chaos staked. With `gold_budget`
     (Gold to spend this session), they are taken by Chaos per 1,000 Gold. Gold is charged when an
@@ -259,18 +304,24 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
     """
     def earns(r: dict, stake: float) -> float:
         flow = r.get("flow_value")
-        return r["margin"] * min(flow if flow is not None else math.inf, stake / 2)
+        return r["margin"] * min(flow if flow is not None else math.inf, stake / cycle_hours(r))
 
+    quarter = bankroll / 4
     eligible = [r for r in plans if (r.get("lot_cost") or 0) > 0 and r["lot_cost"] <= bankroll
+                and (r["lot_cost"] <= quarter or lot_hours(r) <= SESSION_HOURS)
                 and r.get("margin") is not None and r.get("replay")
-                and (r["replay"].get("return") or 0) > 0 and (r["replay"].get("sales") or 0) >= 2]
+                and (r["replay"].get("sales") or 0) >= 2]
     def per_gold(r: dict) -> float | None:
         """Chaos per 1,000 Gold; a plan whose orders cost no Gold at all ranks first."""
         if r.get("gold") == 0:
             return math.inf
         return r.get("chaos_per_1000_gold")
 
-    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], bankroll / 4)]]
+    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], quarter)]]
+    # Judged at the stake it would get: a thin market's replay used only part of its 1,000 Chaos,
+    # and the Divine's rise is charged on the whole stake, idle or not.
+    trailing = [r for r, s, _ in sized if (r["replay"].get("return") or 0) > 0 and (replayed_rate(r["replay"], s) or 0) <= 0]
+    sized = [x for x in sized if (replayed_rate(x[0]["replay"], x[1]) or 0) > 0]
     unknown: list[dict] = []
     if gold_budget is not None:
         unknown = [r for r, _, _ in sized if per_gold(r) is None]
@@ -305,17 +356,25 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
         left -= stake
         picks.append({"id": r["id"], "name": r["name"], "category": r.get("category"), "kind": r["kind"],
                       "buy_order": r["buy_order"], "sell_order": r["sell_order"], "margin": r["margin"],
-                      "lot_cost": r["lot_cost"], "replay": r["replay"],
+                      "lot_cost": r["lot_cost"], "replay": r["replay"], "reach": r.get("reach"),
                       "chaos_per_1000_gold": r.get("chaos_per_1000_gold"), "gold_sources": r.get("gold_sources"),
                       "minutes": r.get("minutes"),
                       "stake": stake, "est": est, "gold_to_post": posted, "gold_per_hour": gold_hour,
+                      "lot_share": _num(r["lot_cost"] / bankroll, 3) if r["lot_cost"] > quarter else None,
+                      # Last week's replay of this rule, scaled to the stake: in Chaos, and against Divines.
+                      "replayed_per_hour": _num(replayed_rate(r["replay"], stake, against_divine=False), 4),
+                      "replayed_vs_divine_per_hour": _num(replayed_rate(r["replay"], stake), 4),
                       "share_source": r.get("share_source")})
     return {
         "bankroll": bankroll, "gold_budget": gold_budget, "flips": picks,
         "expected_per_hour": sum(p["est"] for p in picks), "deployed": bankroll - left,
+        "replayed_per_hour": sum(p["replayed_per_hour"] or 0 for p in picks),
+        "replayed_vs_divine_per_hour": sum(p["replayed_vs_divine_per_hour"] or 0 for p in picks),
         "gold_used": gold_budget - gold_left if gold_budget is not None else None,
         "minutes": sum(p["minutes"] or 0 for p in picks),
         "gold_unknown": [{"id": r["id"], "name": r["name"], "kind": r["kind"]} for r in unknown],
+        "trailing_divines": len(trailing),
+        "divines": next((r["replay"].get("divines") for r in eligible if r["replay"].get("divines") is not None), None),
     }
 
 
@@ -368,18 +427,16 @@ class Desk:
                            until=None if as_of is None else last)
         fv = pricing.fair_value(panel["price"], panel["value"])
         # A print is compared with the fair value known *before* it, so a leg cannot explain itself.
-        prior = np.vstack([fv.fair[:1], fv.fair[:-1]])[-SWING_WINDOW:]
         legs = {}
         for key, label in (("r", "Chaos"), ("b", "Divine")):
             price, lo, hi, vol = panel[f"{key}_price"], panel[f"{key}_lo"], panel[f"{key}_hi"], panel[f"{key}_volume"]
             leg_fv = pricing.fair_value(price, vol * price)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                dev = np.log(price[-SWING_WINDOW:] / prior)
+            dev = pricing.leg_deviation(price, fv.fair, leg_fv.fair)[-SWING_WINDOW:]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 low, high = np.nanmedian(lo[-DAY:], axis=0), np.nanmedian(hi[-DAY:], axis=0)
             legs[key] = Leg(
-                label, leg_fv.fair, np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan),
+                label, leg_fv.fair, dev,
                 np.nan_to_num(vol[-SWING_WINDOW:]),
                 pricing.trailing_sum(vol, DAY)[-1] / DAY,
                 pricing.activity(price, DAY)[-1], _age(price), low, high,
@@ -577,8 +634,9 @@ class Desk:
             "lot_cost": _num(max(buy[0] * buy_unit, sell[1] * buy_price), 4),
             "flow_value": _num(flow_value, 4),
             "capital": _num(min(plan["capital"], bankroll), 4),
-            # The purse turns over at most once per buy-then-sell (two hours at this data's resolution).
-            "profit_per_hour": _num(margin * min(flow_value, bankroll / 2), 4),
+            # The purse turns over at most once per buy-then-sell, which takes as long as it takes
+            # the two markets' hourly averages to reach the levels.
+            "profit_per_hour": _num(margin * min(flow_value, bankroll / cycle_hours(plan)), 4),
         }
 
     @_memo
@@ -622,12 +680,22 @@ class Desk:
             for reach in PATIENCE:
                 # Volume-weighted: `reach` of the units traded at or beyond each level, so an hour in which
                 # three units changed hands at a silly ratio cannot set it.
-                buy = fair * np.exp(weighted_quantile(buy_leg.dev.T, buy_leg.weight.T, reach))
-                sell = fair * np.exp(weighted_quantile(sell_leg.dev.T, sell_leg.weight.T, 1 - reach))
+                low = weighted_quantile(buy_leg.dev.T, buy_leg.weight.T, reach)
+                high = weighted_quantile(sell_leg.dev.T, sell_leg.weight.T, 1 - reach)
+                buy, sell = fair * np.exp(low), fair * np.exp(high)
                 with np.errstate(divide="ignore", invalid="ignore"):
                     margin = sell / buy - 1
                 # Only the volume that trades beyond a level can fill an order resting there.
                 units = share_vec * reach * np.minimum(buy_leg.flow, sell_leg.flow)
+                # How long one stake takes to go round: wait for an hour whose average reaches the buy,
+                # then for one that reaches the sell. Hours, not volume: a purse smaller than the flow
+                # turns over only as often as the levels are reached.
+                # (Against the quantile itself: hours clipped onto a level sit exactly on it.)
+                with np.errstate(invalid="ignore"):
+                    hit_buy = np.mean(buy_leg.dev <= low + 1e-12, axis=0)
+                    hit_sell = np.mean(sell_leg.dev >= high - 1e-12, axis=0)
+                floor = 1 / len(buy_leg.dev)
+                cycle = 1 / np.maximum(hit_buy, floor) + 1 / np.maximum(hit_sell, floor)
                 profit = margin * units * buy
                 ok = usable & np.isfinite(margin) & (margin >= min_margin) & (units > 0)
                 for i in np.flatnonzero(ok):
@@ -644,15 +712,26 @@ class Desk:
                         "buy_order": self._order(float(buy[i]), kind == "divine"),
                         "sell_order": self._order(float(sell[i]), kind != "chaos"),
                         "units_per_hour": _num(units[i], 4),
+                        "cycle_hours": _num(cycle[i], 3),
                         "profit_per_hour": float(profit[i]),
                         "share": _num(share_vec[i], 4), "share_source": sources.get(i, f"default {share:.0%}"),
                         "capital": _num(units[i] * buy[i] * 6, 4),  # about six hours of buying held as inventory
                         "range_low": _num(buy_leg.low[i]), "range_high": _num(sell_leg.high[i]),
                         "bid_queue_hours": _num(bid_queue, 3), "ask_queue_hours": _num(ask_queue, 3),
-                        "replay": replay.get((kind, p.items[i])),
+                        "replay": replay.get((kind, p.items[i], reach)),
                     }
         plans = list(best.values())
+        r_fair, b_fair = self.legs["r"].fair[-1], self.legs["b"].fair[-1]
         for plan in plans:
+            if plan["kind"] == "cross":
+                # The two markets are real, but a Divine market far above the Chaos market is a thin
+                # crowd paying a lot per lot: the plan fills rarely, and its promise is the least reliable.
+                i = p._by_id[plan["id"]]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    gap = float(b_fair[i] / r_fair[i])
+                plan["divine_gap"] = _num(gap, 3)
+                plan["warning"] = (f"The Divine market pays {gap:.0f}x the Chaos market here; it fills rarely."
+                                   if math.isfinite(gap) and gap > OUT_OF_LINE else None)
             plan["profit_per_hour"] = _num(plan["profit_per_hour"], 4)
             plan["flow_value"] = _num((plan["units_per_hour"] or 0) * (plan["buy"] or 0), 4)
             plan["lot_cost"] = _num(max(
@@ -691,13 +770,28 @@ class Desk:
                               f"your fills on the {fast.title()} side are faster")
         return out, sources
 
-    def replay(self, share: float = 0.1, days: int = REPLAY_DAYS) -> dict[tuple[str, str], dict]:
-        """How each kind of plan would have done on each item over the last `days` days.
+    def replay(self, share: float = 0.1, days: int = REPLAY_DAYS) -> dict[tuple[str, str, float], dict]:
+        """How each kind of plan, at each patience level, would have done on each item over the last `days` days.
 
-        The flip rule is replayed through the backtest simulator with the same stake on every
-        item, visiting every four hours. Returns {(kind, item id): {"return": profit as a share
-        of the stake, "sales": hours with a sale}}. A plan that looks good now but lost money
-        all week is telling you something.
+        The flip rule is replayed through the backtest simulator with the same stake on every item,
+        visiting every four hours, with orders waiting behind the stock already on offer (the
+        simulator's default "queue" fill model), at the same patience (`reach`) a plan on the board uses. Returns
+        {(kind, item id, reach): entry}. An entry holds:
+
+        - `return`: profit as a share of the stake, unsold inventory marked at fair value;
+        - `realized`: the part of it from sales;
+        - `sales`: hours with a sale;
+        - `capital`: the most Chaos the item ever had tied up, which says how much of the stake the
+          rule could use (a thin market cannot absorb 1,000 Chaos, so a smaller stake earns about
+          as much);
+        - `hours`: the hours in which orders could fill (the first two days of the window only
+          teach the levels, and a young league has fewer than `days` days);
+        - `divines`: what holding Divines made over those hours, and `vs_divine`: the return
+          against that. At a league start the Divine rises fast, so a flip that holds Chaos or
+          items can show a large return in Chaos and still trail plain Divines. `vs_divine` is the
+          figure a plan is judged by.
+
+        A plan that looks good now but lost money all week is telling you something.
         """
         key = (round(share, 4), days)
         if key in self._replays:
@@ -705,16 +799,82 @@ class Desk:
         from vaalstreet import backtest  # backtest imports nothing from here; keep the dependency one-way
 
         window = self.panel.window(-(days * DAY + SWING_WINDOW))
-        n = len(window.items)
-        out: dict[tuple[str, str], dict] = {}
+        n, T = len(window.items), len(window.hours)
+        start = min(SWING_WINDOW, T - 1)  # Swing's warm-up: it posts its first orders at this hour
+        hours = max(T - 1 - start, 1)
+        b0, b1 = float(window.bridge[start]), float(window.bridge[-1])
+        divines = b1 / b0 - 1 if math.isfinite(b0) and math.isfinite(b1) and b0 > 0 else 0.0
+        out: dict[tuple[str, str, float], dict] = {}
+        base = None
         for kind, buy_leg, sell_leg in PLAN_LEGS:
-            sim = backtest.Simulation(window, capital=REPLAY_STAKE * n, participation=share, attention=4)
-            sim.run(backtest.Swing(top=n, per_item=1 / n, buy_leg=buy_leg, sell_leg=sell_leg, min_margin=0.02))
-            profit = sim.profit()
-            for i, item_id in enumerate(window.items):
-                if sim.sales[i] or sim.position[i] > 0:
-                    out[(kind, item_id)] = {"return": _num(profit[i] / REPLAY_STAKE, 3), "sales": int(sim.sales[i])}
+            for reach in PATIENCE:
+                sim = backtest.Simulation(window, capital=REPLAY_STAKE * n, participation=share, attention=4,
+                                          model_from=base)
+                base = base or sim  # one model fit for every run
+                sim.run(backtest.Swing(top=n, per_item=1 / n, buy_leg=buy_leg, sell_leg=sell_leg, min_margin=0.02,
+                                       reach=reach, warmup=start))
+                profit = sim.profit()
+                for i, item_id in enumerate(window.items):
+                    if sim.sales[i] or sim.position[i] > 0:
+                        r = profit[i] / REPLAY_STAKE
+                        out[(kind, item_id, reach)] = {
+                            "return": _num(r, 3), "sales": int(sim.sales[i]),
+                            "realized": _num(sim.realized[i] / REPLAY_STAKE, 3),
+                            "capital": _num(sim.peak_cost[i], 4), "hours": hours,
+                            "divines": _num(divines, 3), "vs_divine": _num((1 + r) / (1 + divines) - 1, 3),
+                        }
         self._replays[key] = out
+        self._replays[("model", days)] = base
+        return out
+
+    def replay_at(self, picks: list[dict], share: float = 0.1, days: int = REPLAY_DAYS) -> list[dict | None]:
+        """Each pick's rule replayed over the last `days` days at the pick's own stake, in whole lots.
+
+        `replay` measures every plan on 1,000 Chaos. A small purse differs in two ways that matter:
+        it cannot buy a lot it cannot afford, and it can turn over much faster than 1,000 Chaos of
+        inventory that the market takes only slowly. Picks with the same kind and patience share one
+        run, each item's buying held to its own stake (valued at fair value, so stock bought cheap and
+        marked up can tie up more than the stake at cost). Entries look like `replay`'s, with `return` measured on
+        the pick's `stake`. A pick that never filled gets a zero entry rather than None.
+        """
+        from vaalstreet import backtest
+
+        self.replay(share, days)  # fits the model once; every run here reuses it
+        base = self._replays[("model", days)]
+        window = base.panel
+        n, T = len(window.items), len(window.hours)
+        start = min(SWING_WINDOW, T - 1)
+        hours = max(T - 1 - start, 1)
+        b0, b1 = float(window.bridge[start]), float(window.bridge[-1])
+        divines = b1 / b0 - 1 if math.isfinite(b0) and math.isfinite(b1) and b0 > 0 else 0.0
+        groups: dict[tuple[str, float], list[tuple[int, int, float]]] = {}
+        for k, pick in enumerate(picks):
+            i = window._by_id.get(pick["id"])
+            if i is not None and pick.get("stake", 0) > 0 and pick.get("reach") in PATIENCE:
+                groups.setdefault((pick["kind"], pick["reach"]), []).append((k, i, float(pick["stake"])))
+        out: list[dict | None] = [None] * len(picks)
+        legs = {kind: (buy, sell) for kind, buy, sell in PLAN_LEGS}
+        for (kind, reach), members in groups.items():
+            memo = ("at", round(share, 4), days, kind, reach, tuple((i, round(s, 2)) for _, i, s in members))
+            if memo not in self._replays:
+                total = sum(s for _, _, s in members)
+                per_item = np.zeros(n)
+                for _, i, s in members:
+                    per_item[i] = s / total
+                sim = backtest.Simulation(window, capital=total, participation=share, attention=4, whole_lots=True,
+                                          model_from=base)
+                sim.run(backtest.Swing(top=n, per_item=per_item, buy_leg=legs[kind][0], sell_leg=legs[kind][1],
+                                       min_margin=0.02, reach=reach, warmup=start))
+                profit = sim.profit()
+                self._replays[memo] = {i: {
+                    "return": _num(profit[i] / s, 3), "sales": int(sim.sales[i]),
+                    "realized": _num(sim.realized[i] / s, 3), "capital": _num(sim.peak_cost[i], 4),
+                    "stake": _num(s, 4), "hours": hours, "divines": _num(divines, 3),
+                    "vs_divine": _num((1 + profit[i] / s) / (1 + divines) - 1, 3), "whole_lots": True,
+                    "at_stake": True,  # measured at this pick's stake: never rescaled
+                } for _, i, s in members}
+            for k, i, _ in members:
+                out[k] = self._replays[memo][i]
         return out
 
     # ------------------------------------------------------------- arbitrage
@@ -930,24 +1090,25 @@ class Desk:
         r, b = self.legs["r"], self.legs["b"]
         index = self.panel._by_id
         ref, divine = ANCHORS[self.realm]
-        value_24h = np.nansum(self.panel["value"][-DAY:], axis=0)
-        quotes: dict[tuple[str, bool], tuple[float, float] | None] = {}
+        quotes: dict[tuple[str, bool], tuple[float, float, float, float] | None] = {}
 
-        def quote(item_id: str, chaos_here: bool = False) -> tuple[float, float] | None:
-            """(entry cost, exit proceeds) for one unit, in reference currency."""
+        def quote(item_id: str, chaos_here: bool = False) -> tuple[float, float, float, float] | None:
+            """(entry cost, exit proceeds) for one unit, in reference currency, and the value the market
+            you would buy in and the one you would sell in traded over the last day."""
             if item_id == ref:
-                return (1.0, 1.0)
+                return (1.0, 1.0, math.inf, math.inf)
             key = (item_id, chaos_here)
             if key not in quotes:
                 i = index.get(item_id)
                 legs = (r,) if chaos_only or chaos_here else (r, b)
-                options = [float(leg.fair[-1, i]) for leg in legs if i is not None and self._quotable(leg, i)]
-                quotes[key] = (min(options), max(options)) if options else None
+                options = [(float(leg.fair[-1, i]), float(leg.flow[i]) * DAY * float(leg.fair[-1, i]))
+                           for leg in legs if i is not None and self._quotable(leg, i)]
+                if options:
+                    (buy, buy_value), (sell, sell_value) = min(options), max(options)
+                    quotes[key] = (buy, sell, buy_value, sell_value)
+                else:
+                    quotes[key] = None
             return quotes[key]
-
-        def depth(item_id: str) -> float:
-            i = index.get(item_id)
-            return math.inf if item_id == ref or i is None else float(value_24h[i])
 
         # An edge is (item received, units received per unit given, value traded in a day, hours active,
         # value of the received item resting on offer in the latest hour - what a swap could take at once,
@@ -994,8 +1155,12 @@ class Desk:
             start, end = quote(path[0], hows[0] == "divine"), quote(path[-1], hows[-1] == "divine")
             if not start or not end:
                 return
-            if not math.isfinite(value):  # vendor swaps alone: as deep as the markets at either end
-                value, hours = min(depth(path[0]), depth(path[-1])), DAY
+            if not math.isfinite(value):  # vendor swaps alone
+                hours = DAY
+            # A trip is as deep as its thinnest market, and that includes the market you buy the first
+            # item in and the one you sell the last item in: a swap that trades millions a day does not
+            # help when the item you start with trades one unit every few hours.
+            value = min(value, start[2], end[3])
             if value < min_value:
                 return
             edge = math.prod(rates) * end[1] / start[0] - 1

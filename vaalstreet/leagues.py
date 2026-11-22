@@ -33,10 +33,12 @@ DAY = 24 * 3600
 PRIVATE = re.compile(r"\(PL\d+\)$")
 EVENT_NAME = re.compile(r"(?i)\bevent\b")
 # Hardcore / Ruthless prefixes, longest first so "HC Ruthless X" is not read as "HC" + "Ruthless X".
+# GGG also shortens Ruthless to "R" ("HC R Ancestors"); without that, the base would be "R Ancestors",
+# which is not in the archive and so would count as a challenge league.
 VARIANTS = (
-    (re.compile(r"^(?:HC|Hardcore) Ruthless (.+)$"), "hc_ruthless"),
+    (re.compile(r"^(?:HC|Hardcore) (?:Ruthless|R) (.+)$"), "hc_ruthless"),
     (re.compile(r"^(?:HC|Hardcore) (.+)$"), "hardcore"),
-    (re.compile(r"^Ruthless (.+)$"), "ruthless"),
+    (re.compile(r"^(?:Ruthless|R) (.+)$"), "ruthless"),
     (re.compile(r"^(?:SSF|Solo) (.+)$"), "ssf"),
 )
 PERMANENT = {"Standard": "standard", "Hardcore": "standard_hardcore", "Ruthless": "standard_ruthless",
@@ -67,7 +69,7 @@ def classify(rows: list[dict], end: int | None = None) -> dict[str, tuple[str, s
     1. A name ending in "(PLnnnn)" is a private league: family "private".
     2. The permanent leagues: "Standard" is "standard"; "Hardcore", "Ruthless" and "Hardcore Ruthless"
        are "standard_hardcore", "standard_ruthless" and "standard_hc_ruthless".
-    3. A name starting with "Hardcore "/"HC ", "Ruthless ", "HC Ruthless "/"Hardcore Ruthless ", or
+    3. A name starting with "Hardcore "/"HC ", "Ruthless "/"R ", "HC Ruthless "/"HC R "/"Hardcore Ruthless ", or
        "SSF "/"Solo " is a variant of the league named by the rest (its base). It takes its base's
        family with "_hardcore", "_ruthless", "_hc_ruthless" or "_ssf" added; a base not in the archive
        counts as a challenge league.
@@ -131,6 +133,17 @@ def _num(x, digits: int = 5):
     if x == 0:
         return 0.0
     return round(x, digits - 1 - int(math.floor(math.log10(abs(x)))))
+
+
+def gap_size(gap: float | None) -> float:
+    """How big a cross-league gap is, in log terms, so that half price and double rank alike.
+
+    A gap is stored rounded, so an item thousands of times cheaper in the other league reads exactly
+    -100%, which has no logarithm. That is the biggest gap there is, not an error: on live data a
+    past league against Standard has such items, and ranking them must not fail.
+    """
+    gap = gap or 0.0
+    return abs(math.log1p(gap)) if gap > -1 else math.inf
 
 
 class LeagueBook:
@@ -678,6 +691,6 @@ class LeagueBook:
                    "verdict": "structural" if structural else "none" if quiet else "noise"}
             (out["divine"] if r["item"] == self.bridge else out["items"]).append(row)
         out["items"].sort(key=lambda x: (["structural", "noise", "none"].index(x["verdict"]),
-                                         -abs(math.log1p(x["gap"] or 0)), x["id"], x["market"], x["other"]))
+                                         -gap_size(x["gap"]), x["id"], x["market"], x["other"]))
         out["divine"].sort(key=lambda x: (x["market"], x["other"]))
         return out

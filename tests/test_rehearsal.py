@@ -13,6 +13,7 @@ import shutil
 import pytest
 
 from conftest import BLITZ, H0, HOUR, ITEM, NEW, NEW_HOURS, NEW_START, OLD, all_hours, call, write_raw
+from vaalstreet import ladder
 from vaalstreet.db import connect
 from vaalstreet.desk import Desk
 from vaalstreet.ingest import ingest
@@ -52,6 +53,9 @@ def _desk_views(desk: Desk) -> dict:
     return {
         "summary": desk.summary(), "market": desk.market(), "flips": desk.flips(min_margin=0.0),
         "conversions": desk.conversions(), "loops": desk.loops(min_edge=0.0), "replay": sorted(map(str, desk.replay().items())),
+        # The cycle-time promise and the replay at each pick's own stake, through the ladder.
+        "ladder": ladder.ladder(desk),
+        "replay_at": desk.replay_at([p | {"stake": 50.0} for p in desk.flips(min_margin=0.0)]),
     }
 
 

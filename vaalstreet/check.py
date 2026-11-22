@@ -5,8 +5,9 @@ Trade check
 The player reads an offer off the in-game order window ("64 items for 1 Divine") and asks
 whether taking it is a good idea. The offer is judged against *its own market's* fair value,
 not the item's blended one: an item's Chaos market and its Divine market are different prices
-(the Divine market is usually several percent dearer), so a fair Chaos-market price looks like
-a bargain next to the blended value and a fair Divine-market price looks dear. The blended fair
+(the Divine market is usually dearer: a median 16% on Covens, and up to several times as much for
+cheap items), so a fair Chaos-market price looks like a bargain next to the blended value and a
+fair Divine-market price looks dear. The blended fair
 value and its range are still reported, as the reference most of the desk shows.
 
 The verdict is about the side you would take. A buyer wants the price under the market's value,

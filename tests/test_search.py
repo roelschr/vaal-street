@@ -165,3 +165,19 @@ def test_search_api_runs_a_capped_search(server):
     assert status == 400 and "limit" in err["error"]
     status, err = call(server + "/api/search", {"strategy": "x.py:Mine", "grid": "a=1"})
     assert status == 400
+
+
+def test_search_api_export_writes_what_search_export_writes(server):
+    from vaalstreet import search, sharing
+
+    _, rep = call(server + "/api/search", {"strategy": "hold", "grid": "warmup=24,48;attention=1,4",
+                                           "leagues": ["Old", "New"]})
+    status, doc = call(server + "/api/strategy_export", {"strategy": "hold", "walk_forward": rep})
+    assert status == 200
+    # The same arguments `search --export` passes: the next setting split into strategy settings and
+    # run options, the out-of-sample rows as results, and the whole report kept alongside.
+    params, _ = search._split(rep["next"]["setting"], "hold")
+    assert doc == sharing.document("hold", params, {**rep["options"], **rep["next"]["setting"]},
+                                   search.export_rows(rep), extra={"walk_forward": rep})
+    assert set(params) <= {"warmup"} and doc["results"][0]["out_of_sample"]
+    assert call(server + "/api/strategy_export", {"strategy": "hold", "walk_forward": {"folds": []}})[0] == 400
