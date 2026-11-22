@@ -132,6 +132,16 @@ svg.spark{width:84px;height:22px;vertical-align:middle}
 #tc .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
 #tc input[type=number]{width:90px}
 #tc ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.5}
+#tour{position:fixed;right:20px;bottom:20px;width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 100px);overflow:auto;background:var(--side);border:1px solid var(--accent);border-radius:10px;box-shadow:0 18px 50px #0009;z-index:31}
+#tour[hidden]{display:none}
+#tour header,#tour footer{display:flex;align-items:center;gap:8px;padding:10px 14px}
+#tour header{border-bottom:1px solid var(--line)}
+#tour footer{border-top:1px solid var(--line)}
+#tour .grow{flex:1}
+#tour .body{padding:4px 14px;line-height:1.5}
+#tour ul{padding-left:18px}
+#tour li{margin:4px 0}
+@media(max-width:600px){#tour{right:16px;bottom:16px}}
 .verdict{font:600 20px var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 body.hideout #tc{top:6px;right:6px;left:6px;width:auto}
 

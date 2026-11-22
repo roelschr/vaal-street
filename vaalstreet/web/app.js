@@ -114,7 +114,8 @@ function renderNav(page) {
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
+  $('#tourLink').onclick = e => { e.preventDefault(); openTour(); };
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;
@@ -1275,6 +1276,59 @@ function openCheck(item) {
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
+// -------------------------------------------------------------------- tour
+// A short first-visit walk through the pages. Each step opens the page it talks about, so the
+// panel sits in a corner instead of covering the desk. Seen once, it stays away until `?` asks.
+const TOUR = [
+  { title: 'Welcome to Vaal Street', body: `<p>A trading desk for the Currency Exchange, built from the hourly history GGG publishes. Everything runs on this machine.</p>
+    <p>Two things to know before you trade:</p><ul>
+    <li>The desk is one to two hours behind the game: an hour’s prices come out only after it ends. Check the live ratio in game before you commit.</li>
+    <li>Flips are <b>resting orders</b>: you post a buy below the market and an offer above it, then wait for other players. A round usually takes hours, not minutes.</li></ul>` },
+  { page: 'desk', title: 'Desk', body: `<p>The hour at a glance: the Divine price, the best flips, sets worth completing, what moved, your watchlist and alerts that fired.</p>
+    <p>The top bar shows the league, its day, and how old the latest hour is. Switch prices between Chaos and Divine there.</p>` },
+  { page: 'markets', title: 'Markets', body: `<p>Every traded item with its fair value and how sure the model is (±%). Most items have a Chaos market and a Divine market, and they pay different prices.</p>
+    <p>Click an item for its chart and its flip plans. Star it to put it on your watchlist and in the hideout window. Press <kbd>/</kbd> to search.</p>` },
+  { page: 'flips', title: 'Flips', body: `<p>Ranked plans with the exact orders to post. Enter your purse to get a session plan.</p>
+    <ul><li>Judge a plan by its <b>last 7 days against holding Divines</b>, not by its promised profit per hour, which is a ceiling.</li>
+    <li>Gold is often the real limit: rank by Chaos per 1,000 Gold, or set a Gold budget.</li></ul>` },
+  { page: 'arbitrage', title: 'Arbitrage', body: `<p>Things that turn into something dearer: card sets, shards and splinters, three-for-one essence and oil upgrades, and round trips through item-for-item markets.</p>
+    <p>Mark ✓ or ✗ once you tried one in game, and add your own recipes and vendor prices at the bottom.</p>` },
+  { page: 'ledger', title: 'Ledger', body: `<p>Record the trades you make and the orders you post, with the Gold they cost. This is what makes the desk yours:</p>
+    <ul><li>It learns each item’s Gold fee from your records.</li><li>It learns how much of the market your orders really get, and flips get more realistic.</li>
+    <li>It tells you when an order should be re-priced, cancelled or collected.</li></ul><p>Fix a mistake with ✎, set alerts, and start a session to see what you made per hour.</p>` },
+  { page: 'league', title: 'Planning and practice', body: `<ul><li><b>Ladder</b>: what a small purse can run at each size, and when to switch plans.</li>
+    <li><b>League start</b> (this page): what past leagues did from today’s league day, and when Divines were cheapest. You can also <b>rehearse a past league</b> here, hour by hour, without touching your real ledger.</li>
+    <li><b>Backtest lab</b>: replay a strategy over past leagues and compare it with holding Divines.</li></ul>` },
+  { title: 'While you play', body: `<ul><li><kbd>H</kbd> opens the hideout window: top flips, watchlist and alerts in a small window that stays on top in Chrome and Edge. Run the game in windowed or borderless mode to see it over the game.</li>
+    <li><kbd>C</kbd> checks an offer from the in-game window: type the item and the ratio, and get go, caution or no-go.</li>
+    <li><kbd>?</kbd> brings this tour back.</li></ul>` },
+];
+let tourStep = 0;
+const tourSeen = () => { try { return !!localStorage.tourSeen; } catch { return true; } };  // no storage: never nag
+function openTour(step = 0) {
+  let host = $('#tour');
+  if (!host) { host = document.createElement('aside'); host.id = 'tour'; host.setAttribute('aria-label', 'Tour of the desk'); document.body.append(host); }
+  tourStep = Math.max(0, Math.min(step, TOUR.length - 1));
+  const s = TOUR[tourStep], last = tourStep === TOUR.length - 1;
+  if (s.page && !location.hash.startsWith(`#/${s.page}`)) location.hash = `#/${s.page}`;
+  host.hidden = false;
+  host.innerHTML = `<header><h2>${esc(s.title)}</h2><span class="grow"></span><span class="muted small">${tourStep + 1} of ${TOUR.length}</span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <div class="body">${s.body}</div>
+    <footer>${tourStep ? '<button type="button" class="btn" data-back>Back</button>' : '<button type="button" class="btn ghost" data-x>Skip</button>'}<span class="grow"></span>
+      <button type="button" class="btn primary" data-next>${last ? 'Done' : 'Next'}</button></footer>`;
+  host.onclick = e => {
+    if (e.target.closest('[data-x]')) closeTour();
+    else if (e.target.closest('[data-back]')) openTour(tourStep - 1);
+    else if (e.target.closest('[data-next]')) last ? closeTour() : openTour(tourStep + 1);
+  };
+  $('[data-next]', host).focus({ preventScroll: true });
+}
+function closeTour() {
+  const host = $('#tour'); if (host) host.hidden = true;
+  try { localStorage.tourSeen = '1'; } catch { /* the tour comes back next visit; harmless */ }
+}
+const tourOpen = () => $('#tour') && !$('#tour').hidden;
+
 // --------------------------------------------------------------- rehearsal
 // While a past league is replayed, every API answer carries `rehearsal`; the banner follows it, so
 // practice can never pass for the live market.
@@ -1466,6 +1520,7 @@ async function route() {
     return;
   }
   if (state.hideout) { document.body.classList.add('hideout'); try { await viewHideout(main); } catch (err) { main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; } return; }
+  if (!tourSeen() && !$('#tour')) openTour();  // first visit, once the desk has data to show
   const page = (location.hash.replace('#/', '') || 'desk').split('?')[0];
   const view = VIEWS[page] || viewDesk;
   renderNav(VIEWS[page] ? page : 'desk');
@@ -1497,8 +1552,9 @@ function announce(event) {
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else closeDrawer(); }
+  if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
   else if (e.ctrlKey || e.metaKey || e.altKey) return;
+  else if (e.key === '?') { e.preventDefault(); if (!state.hideout) openTour(); }
   else if (e.key === 'h' || e.key === 'H') openHideout();
   else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); openCheck(); }
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
