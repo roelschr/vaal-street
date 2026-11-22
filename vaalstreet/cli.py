@@ -391,7 +391,7 @@ def _arb(args: argparse.Namespace) -> None:
         r["checked"] = check(r)
     print(f"\nRound trips of up to {args.swaps} swaps")
     _table(loops, [("route", "Route", ""), ("edge", "Edge", ".1%"), ("value_24h", "Thinnest swap/day", ",.0f"),
-                   ("resting_value", "Resting now", ",.0f"), ("profit_per_day", "c/day", ",.0f"),
+                   ("resting_value", "Resting now", ",.0f"), ("profit_per_hour", "c/hour", ",.1f"),
                    ("checked", "In game", "")], args.rows)
 
 
@@ -628,7 +628,8 @@ def _backtest(args: argparse.Namespace) -> None:
         return
     _table(summaries, [("league", "League", ""), ("strategy", "Strategy", ""), ("days", "Days", ""),
                        ("vs_divine", "Vs Divines", "+.1%"), ("return", "Return", "+.1%"),
-                       ("divine_return", "Hold Divine", "+.1%"), ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
+                       ("divine_return", "Hold Divine", "+.1%"), ("per_hour", "c/hour", ",.1f"),
+                       ("vs_divine_per_hour", "c/h vs Div", ",.1f"), ("max_drawdown", "Max DD", ".1%"),
                        ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
                        ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f"),
                        ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),

@@ -12,7 +12,7 @@ import pytest
 
 from conftest import NEW, SCRAP, SCRAP_PREMIUM
 from vaalstreet import backtest, check, pricing
-from vaalstreet.desk import LOT_WINDOW, SWING_WINDOW, Desk
+from vaalstreet.desk import LOT_WINDOW, REPLAY_STAKE, SWING_WINDOW, Desk
 from vaalstreet.panel import weighted_quantile
 
 
@@ -49,6 +49,19 @@ def test_replay_uses_the_same_levels_as_the_board(desk):
                 weighted_quantile(leg_state.dev[:, i:i + 1].T, leg_state.weight[:, i:i + 1].T, reach)[0])
             replayed = sim.fair[-1, i] * np.exp(sim.swing(leg, reach, SWING_WINDOW)[-1, i])
             assert replayed == pytest.approx(board, rel=1e-6)
+
+
+def test_a_replay_says_what_it_made_per_hour(desk):
+    """A replay's return is on a 1,000 Chaos stake over `hours` hours: per hour it is return x 1,000 / hours,
+    and against Divines it is that stake counted in Divines' worth at the start, less the stake."""
+    replays = [p["replay"] for p in desk.flips(min_margin=0.0) if p["replay"]]
+    assert replays
+    for r in replays:
+        assert r["per_hour"] == pytest.approx(r["return"] * REPLAY_STAKE / r["hours"], rel=0.01, abs=1e-3)
+        assert r["vs_divine_per_hour"] == pytest.approx(
+            ((1 + r["return"]) / (1 + r["divines"]) - 1) * REPLAY_STAKE / r["hours"], rel=0.02, abs=0.02)
+        # The synthetic Divine rises, so beating it is the higher bar.
+        assert r["divines"] > 0 and r["vs_divine_per_hour"] < r["per_hour"]
 
 
 def test_trade_check_and_flip_agree_on_the_divine_market(desk):

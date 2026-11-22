@@ -480,6 +480,8 @@ def test_a_round_trip_is_as_deep_as_the_market_it_buys_in(desk):
     thin = trip()
     assert thin["value_24h"] == pytest.approx(24 * 2.0, rel=0.02)
     assert thin["profit_per_day"] == pytest.approx(0.1 * 48 * thin["edge"], rel=0.02)
+    # The same figure per hour, the unit flips and conversions use: 4.8 Chaos of trade a day is 0.2 an hour.
+    assert thin["profit_per_hour"] == pytest.approx(0.1 * 2 * thin["edge"], rel=0.02)
 
 
 def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):

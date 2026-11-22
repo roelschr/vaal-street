@@ -93,6 +93,10 @@ def test_swing_earns_the_premium_and_takers_pay_for_it(con):
     # Measured in Divines, the same run: (1 + return) / (1 + what holding Divines made) - 1.
     assert summary["vs_divine"] == pytest.approx((1 + swing.total_return) / (1 + swing.divine_return) - 1, abs=1e-4)
     assert summary["vs_divine"] < summary["return"], "the synthetic Divine rises, so Divines are a higher bar"
+    # Per hour: the run is 8 days of 24 hours on 2,000 Chaos.
+    assert summary["per_hour"] == pytest.approx(swing.total_return * 2000 / 192, abs=0.01)
+    assert summary["vs_divine_per_hour"] == pytest.approx(summary["vs_divine"] * 2000 / 192, abs=0.01)
+    assert 0 < summary["vs_divine_per_hour"] < summary["per_hour"]
 
 
 def test_hold_tracks_the_market_and_windows_select_league_days(con):

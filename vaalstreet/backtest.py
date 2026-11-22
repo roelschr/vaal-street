@@ -402,6 +402,7 @@ class Result:
     def summary(self) -> dict:
         days = max(len(self.hours) / 24, 1e-9)
         order = np.argsort(-np.abs(self.realized))[:8]
+        end = float(self.equity[-1])
         return {
             "league": self.league,
             "strategy": self.strategy,
@@ -414,6 +415,11 @@ class Result:
             "vs_divine": None if math.isnan(self.divine_return)
             else round((1 + self.total_return) / (1 + self.divine_return) - 1, 4),
             "per_day": round(float((self.equity[-1] - self.start_capital) / days), 2),
+            # Chaos per hour on this run's bankroll. Against Divines, it is what the run
+            # ended with, counted in Divines' worth at the start, less what it started with.
+            "per_hour": round((end - self.start_capital) / (days * 24), 3),
+            "vs_divine_per_hour": None if math.isnan(self.divine_return)
+            else round((end / (1 + self.divine_return) - self.start_capital) / (days * 24), 3),
             "max_drawdown": round(self.max_drawdown, 4),
             "daily_sharpe": None if math.isnan(self.daily_sharpe) else round(self.daily_sharpe, 3),
             "fills": self.fills,
