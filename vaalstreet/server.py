@@ -722,6 +722,9 @@ class App:
             if path == "/api/trade":
                 if body.get("delete"):
                     self.ledger.delete_trade(body["delete"])
+                elif body.get("edit"):
+                    fields = ("item", "side", "units", "price", "gold", "note")
+                    self.ledger.edit_trade(body["edit"], **{k: body[k] for k in fields if k in body})
                 else:
                     self.ledger.add_trade(league, body["item"], body["side"], body["units"], body["price"],
                                           body.get("note", ""), gold=body.get("gold"))

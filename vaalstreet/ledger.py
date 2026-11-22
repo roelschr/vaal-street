@@ -193,6 +193,38 @@ class Ledger:
             (int(t or self.clock()), league, item, side, units, price, str(note)[:200], gold, order_id),
         )
 
+    def edit_trade(self, trade_id: int, **changes) -> None:
+        """Correct a recorded trade: its item, side, units, price, Gold or note. Its time stays.
+
+        The edit is checked against the whole history, not only today's holdings, so turning an
+        old buy into a sale cannot leave a later sale selling units you never had. A trade an order
+        fill created keeps the order's item, side and units, so the order and its fills still agree.
+        """
+        fields = ("item", "side", "units", "price", "gold", "note")
+        unknown = set(changes) - set(fields)
+        if unknown:
+            raise ValueError(f"A trade has no field {', '.join(sorted(unknown))}.")
+        with self._lock, self._db:  # one transaction: a refused edit rolls back
+            row = self._db.execute("SELECT * FROM trades WHERE id = ?", (int(trade_id),)).fetchone()
+            if row is None:
+                raise ValueError(f"No trade {trade_id}.")
+            new = dict(row) | changes
+            new["units"], new["price"], new["gold"] = float(new["units"]), float(new["price"]), _gold(new["gold"])
+            new["note"] = str(new["note"] or "")[:200]
+            if new["side"] not in ("buy", "sell") or not new["units"] > 0 or new["price"] < 0 or not new["item"]:
+                raise ValueError("A trade needs an item, side buy/sell, positive units and a non-negative price.")
+            if row["order_id"] is not None:
+                if any(new[k] != row[k] for k in ("item", "side", "units")):
+                    raise ValueError("This trade came from an order fill: its item, side and units follow the order. "
+                                     "Delete it and record the trade by hand instead.")
+                new["gold"] = row["gold"]  # the order carries the Gold, never its fill (see the module docstring)
+            before = _oversold(self._db, row["league"])
+            self._db.execute("UPDATE trades SET item = ?, side = ?, units = ?, price = ?, gold = ?, note = ? WHERE id = ?",
+                             (new["item"], new["side"], new["units"], new["price"], new["gold"], new["note"], int(trade_id)))
+            if _oversold(self._db, row["league"]) - before:
+                raise ValueError("That edit would leave a sale selling more than the ledger held at the time. "
+                                 "Fix or delete that sale first.")
+
     def delete_trade(self, trade_id: int) -> None:
         self._run("DELETE FROM trades WHERE id = ?", (int(trade_id),))
 
@@ -807,3 +839,22 @@ def _gold(value) -> float | None:
     if not value >= 0:
         raise ValueError("Gold cannot be negative.")
     return value
+
+
+def _oversold(db: sqlite3.Connection, league: str) -> set[int]:
+    """Ids of the sales that sold more than the ledger held at their time, in history order.
+
+    An edit may not add one. Older files can hold some already (a deleted buy), and those must
+    not block an unrelated correction, so callers compare the set before and after.
+    """
+    held: dict[str, float] = {}
+    out = set()
+    for tr in db.execute("SELECT id, item, side, units FROM trades WHERE league = ? ORDER BY t, id", (league,)):
+        have = held.get(tr["item"], 0.0)
+        if tr["side"] == "buy":
+            held[tr["item"]] = have + tr["units"]
+        else:
+            if tr["units"] > have + 1e-9:
+                out.add(tr["id"])
+            held[tr["item"]] = max(have - tr["units"], 0.0)
+    return out

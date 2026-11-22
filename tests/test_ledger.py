@@ -103,6 +103,60 @@ def test_order_fills_create_trades_at_the_right_price(tmp_path):
         ledger.set_order_status(buy, "filled")
 
 
+
+def test_a_trade_on_the_wrong_side_can_be_corrected(tmp_path):
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "orb", "buy", 10, 2, t=1)
+    wrong = ledger.add_trade("L", "orb", "buy", 4, 3, note="meant to sell", gold=8, t=2)
+    assert ledger.positions("L")["orb"]["units"] == 14
+    ledger.edit_trade(wrong, side="sell")
+    orb = ledger.positions("L")["orb"]
+    # 10 bought at 2, 4 sold at 3: 6 left at cost 12, and 4 x (3 - 2) realised.
+    assert orb["units"] == 6 and orb["cost"] == pytest.approx(12) and orb["realized"] == pytest.approx(4)
+    edited = ledger.trades("L")[-1]
+    assert (edited["t"], edited["note"], edited["gold"]) == (2, "meant to sell", 8), "only what was changed changes"
+
+    ledger.edit_trade(wrong, units=5, price=2.5, gold=None, note="")
+    edited = ledger.trades("L")[-1]
+    assert (edited["units"], edited["price"], edited["gold"], edited["note"]) == (5, 2.5, None, "")
+    ledger.edit_trade(wrong, item="gem", side="buy")
+    assert ledger.positions("L")["gem"]["units"] == 5 and ledger.positions("L")["orb"]["units"] == 10
+
+
+def test_an_edit_that_would_oversell_history_is_refused(tmp_path):
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "orb", "buy", 10, 2, t=1)
+    sale = ledger.add_trade("L", "orb", "sell", 8, 3, t=2)
+    ledger.add_trade("L", "orb", "buy", 50, 2, t=3)  # holdings today would cover the sale; history does not
+    for change in ({"side": "sell"}, {"units": 5}, {"item": "gem"}):
+        with pytest.raises(ValueError, match="more than the ledger held"):
+            ledger.edit_trade(buy, **change)
+    assert [(t["item"], t["side"], t["units"]) for t in ledger.trades("L")][:1] == [("orb", "buy", 10)], "a refused edit changes nothing"
+    with pytest.raises(ValueError):
+        ledger.edit_trade(sale, units=0)
+    with pytest.raises(ValueError):
+        ledger.edit_trade(sale, t=5)  # the time is not editable
+    with pytest.raises(ValueError):
+        ledger.edit_trade(999, price=1)
+
+    # A file that is already oversold (a buy deleted by hand) does not block an unrelated correction.
+    ledger.delete_trade(buy)
+    ledger.edit_trade(sale, note="typo fixed", price=3.5)
+    assert ledger.trades("L")[0]["note"] == "typo fixed"
+
+
+def test_a_trade_from_an_order_fill_keeps_the_orders_side_and_units(tmp_path):
+    ledger = Ledger(tmp_path)
+    order = ledger.add_order("L", "orb", "buy", "chaos", 2, 1, 10, gold=50)
+    fill = ledger.fill_order(order, 10)
+    for change in ({"side": "sell"}, {"units": 4}, {"item": "gem"}):
+        with pytest.raises(ValueError, match="order fill"):
+            ledger.edit_trade(fill, **change)
+    ledger.edit_trade(fill, price=1.9, note="rounded in game", gold=99)
+    trade = ledger.trades("L")[0]
+    assert trade["price"] == 1.9 and trade["note"] == "rounded in game"
+    assert trade["gold"] is None and ledger.gold_fees("L")["orb"]["gold_per_unit"] == 5, "the order keeps the Gold"
+
 def test_order_advice(tmp_path):
     ledger = Ledger(tmp_path)
     bridge = 100.0
