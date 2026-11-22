@@ -99,3 +99,28 @@ def test_cross_plan_names_the_share_it_uses(desk):
     # Chaos side measured slower: your fills set the pace.
     slow = {p["kind"]: p for p in desk.flips(share_by_item={ITEM: {"chaos": [0.05, 2]}}) if p["id"] == ITEM}
     assert slow["cross"]["share"] == 0.05 and slow["cross"]["share_source"] == "your fills, 2 orders"
+
+
+def test_a_measured_share_above_the_whole_flow_counts_as_all_of_it():
+    """An order can fill on single trades inside hours whose average never reached its price: those fills
+    count, the hours' volume does not. Here a buy at 9 Chaos stands ten hours in a market that trades 50
+    units an hour at an average of 10, and only one hour averages below 9; the order still fills 400.
+
+    Known answer: eligible = 50 units, measured = 400 / 50 = 800%. The share used counts that as 100%:
+    (1 x 1.0 + 3 x 0.1) / 4 = 32.5%, not (8 + 0.3) / 4 = 207.5% of the market's flow.
+    """
+    import numpy as np
+
+    from vaalstreet.panel import Panel
+
+    price, volume = np.full((10, 1), 10.0), np.full((10, 1), 50.0)
+    price[3, 0] = 8.9
+    panel = Panel("L", np.arange(10) * HOUR, ["x"], ["X"], ["Currency"], np.full(10, 100.0),
+                  {"r_price": price, "r_volume": volume})
+    order = {"id": 1, "item": "x", "market": "chaos", "side": "buy", "currency_units": 9, "item_units": 1,
+             "units": 400, "filled": 400, "status": "filled", "created": 0, "updated": 9 * HOUR}
+    fills = {1: [(2 * HOUR, 150.0), (5 * HOUR, 150.0), (8 * HOUR, 100.0)]}
+    [row] = calibrate.calibrate([order], fills, panel, 10 * HOUR)
+    assert row["eligible"] == pytest.approx(50) and row["measured"] == pytest.approx(8.0)
+    assert row["share"] == pytest.approx(0.325)
+    assert calibrate.shares([row])["x"]["chaos"][0] <= 1

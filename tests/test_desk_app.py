@@ -134,6 +134,17 @@ def test_api_orders_sessions_and_recipe_checks(server):
     assert after["recipe_checks"][0]["label"] != key
 
 
+def test_api_flips_filters_by_market_before_it_cuts_the_list(server):
+    """The Flips page re-ranks and searches the list it gets, so the server must not cut it to the most
+    profitable plans first, and a market filter must apply before any cut a caller asks for."""
+    every = call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
+    kinds = [p["kind"] for p in every]
+    assert len(set(kinds)) > 1 and kinds[0] != "divine", "the archive ranks another kind of plan first"
+    divine = call(f"{server}/api/flips?min_margin=0.01&kind=divine&limit=1")[1]["flips"]
+    assert [p["kind"] for p in divine] == ["divine"]
+    assert len(call(f"{server}/api/flips?min_margin=0.01&limit=1")[1]["flips"]) == 1
+
+
 def test_api_gold_fields_settings_and_session_plan(flat_server):
     server = flat_server  # a flat Divine, so some flip beats holding Divines and makes the session plan
     flips = call(f"{server}/api/flips?min_margin=0.01")[1]

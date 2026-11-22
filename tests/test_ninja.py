@@ -340,3 +340,28 @@ def test_unique_reward_skips_foil_and_linked_copies():
     assert plain["chaos"] == 5.0 and plain["variant"] is None
     corrupt = ninja._pick({"reward": "Windripper", "kind": "unique", "corrupted": True}, [(l, got) for l in REAL_UNIQUES])
     assert corrupt["chaos"] == 5.0 and "priced as uncorrupted" in corrupt["variant"]
+
+
+def test_status_falls_back_to_the_cache_after_a_restart(archive_root, tmp_path, fake, monkeypatch):
+    from vaalstreet.ledger import Ledger
+    from vaalstreet.server import App
+
+    def app_with(base_url):
+        app = App(archive_root, sync=False)
+        app.ledger = Ledger(tmp_path)
+        app._ninja = ninja.Ninja(tmp_path, base_url, delay=0, clock=clock, sleep=clock.sleep)
+        monkeypatch.setattr(app, "default_league", lambda: NEW)
+        return app
+
+    clock = Clock()
+    empty = app_with(fake.url).api_status({})["ninja"]
+    assert empty["last_run"] is None and not empty["from_cache"], "nothing fetched, nothing to show"
+    first = app_with(fake.url)
+    first.refresh_ninja()
+    assert first.api_status({})["ninja"]["from_cache"] is False
+    # A restart: a new server whose in-memory state is empty, reading the same cache. The address is
+    # unreachable on purpose: the status answer must come from the cache without asking poe.ninja.
+    asked = len(fake.requests)
+    after = app_with("http://127.0.0.1:9").api_status({})["ninja"]
+    assert after["last_run"] == int(clock.now) and after["from_cache"]
+    assert len(fake.requests) == asked

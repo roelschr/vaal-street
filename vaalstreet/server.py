@@ -193,6 +193,19 @@ class App:
                 self._ninja = ninja.Ninja(self.root, self.ninja_base_url)
             return self._ninja
 
+    def ninja_status(self) -> dict:
+        """The footer's poe.ninja line. After a restart the in-memory state is empty until the next
+        hourly refresh, so the newest time in the cache stands in; reading the cache sends nothing."""
+        out = dict(self.ninja_state, on=self.ninja_on(), credit=ninja.CREDIT, from_cache=False)
+        if out["last_run"] is None:
+            try:
+                newest = max((r["fetched"] for r in self.ninja().status() if r["fetched"]), default=None)
+            except Exception:  # a broken cache must not take the status answer down
+                newest = None
+            if newest is not None:
+                out.update(last_run=int(newest), from_cache=True)
+        return out
+
     def ninja_on(self) -> bool:
         if self._practice():
             return False  # poe.ninja knows only today's prices: in a rehearsal they would leak the future
@@ -370,7 +383,7 @@ class App:
             "archive_start": archive.FIRST_HOUR[REALM],
             "generation": self._generation,
             "ready": db.has_data(self.root, REALM),
-            "ninja": dict(self.ninja_state, on=self.ninja_on(), credit=ninja.CREDIT),
+            "ninja": self.ninja_status(),
         }
         if out["ready"]:
             try:
@@ -423,12 +436,15 @@ class App:
         plans = desk.flips(share=share, min_margin=float(q.get("min_margin", 0.02)), bankroll=bankroll,
                            costs=self.costs(desk.league),
                            share_by_item=calibrate.shares(self.fill_calibration(desk, share)))
-        out = {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))], "settings": self.settings()}
+        # Filter by market before any cut. The Flips page re-ranks and searches the whole list itself, so a
+        # cut to the most profitable plans would hide plans that rank high by Gold or match a search.
+        kind = q.get("kind", "all")
+        plans = [p for p in plans if kind == "all" or p["kind"] == kind]
+        limit = int(q["limit"]) if q.get("limit") else None
+        out = {"summary": desk.summary(), "flips": plans[:limit], "settings": self.settings()}
         if bankroll:
-            kind = q.get("kind", "all")
             budget = float(q["gold_budget"]) if q.get("gold_budget") else None
-            out["session"] = session_plan([p for p in plans if kind == "all" or p["kind"] == kind], bankroll,
-                                          budget if budget is not None and budget >= 0 else None)
+            out["session"] = session_plan(plans, bankroll, budget if budget is not None and budget >= 0 else None)
         return out
 
     def api_arbitrage(self, q: dict) -> dict:
@@ -523,7 +539,7 @@ class App:
                 gold_per_unit=float(body.get("gold_per_unit") or 0),
                 gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
                 schedule=body.get("schedule") or None,
-                fill_model=str(body.get("fill_model") or "share"),
+                fill_model=str(body.get("fill_model") or "queue"),
             )
             if body.get("strategies"):
                 result = backtest.run_portfolio(self.cursor(), league, runs, **options)
@@ -546,6 +562,17 @@ class App:
         spec = body.get("strategy")
         if spec not in backtest.STRATEGIES:
             raise ApiError("The desk exports built-in strategies only; use the CLI for your own modules.")
+        report = body.get("walk_forward")
+        if report is not None:
+            # A strategy search: the setting it would pick next and its out-of-sample table, as `search --export`.
+            try:
+                setting = report["next"]["setting"]
+                params, _ = search._split(setting, spec)
+                options = {**(report.get("options") or {}), **setting}
+                return sharing.document(spec, params, options, search.export_rows(report),
+                                        extra={"walk_forward": report})
+            except (KeyError, TypeError, ValueError) as err:
+                raise ApiError(f"That is not a search result: {err}") from err
         params, options, results = body.get("params") or {}, body.get("options") or {}, body.get("results") or []
         if not (isinstance(params, dict) and isinstance(options, dict) and isinstance(results, list)):
             raise ApiError("params and options must be sets of named values, results a list.")

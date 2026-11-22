@@ -12,14 +12,19 @@ published per market and hour - the average traded price (VWAP) and the volume:
 * A market order (no limit) pays the hour's VWAP plus `slippage`, the taker's
   cost of crossing the spread.
 * A fill takes at most `participation` of the hour's volume in that market. With
-  `fill_model="queue"`, a resting order instead waits behind the stock published on its
+  `fill_model="queue"`, the default, a resting order also waits behind the stock published on its
   side when it was posted (see `Simulation._queue_at`), and fills from the volume that trades
-  through its level after that queue is gone.
+  through its level after that queue is gone, still at most `participation` of it. So queue
+  never fills more than share in an hour.
 * No leverage, no shorting: buys are scaled to cash, sells to inventory.
 
 Orders live in one of two markets per item: "r" (against Chaos) or "b" (against
 Divine). Divine proceeds are converted to Chaos at that hour's Divine price, so
 the account is kept in Chaos throughout.
+
+A run loaded from the archive trades only the items that have joined its universe, the most
+traded items by value traded so far (see `listed`); before an item joins, a strategy can
+neither see nor trade it, so the choice of items is as causal as the prices.
 
 A strategy is any object with `step(ctx)`; see `Hold`, `Swing`, `Reversion`,
 `Momentum` below, or pass your own class to `run`. `run_portfolio` runs several on one
@@ -216,29 +221,37 @@ class Context:
     def league_hour(self) -> int:
         return self.t + self._sim.offset
 
+    def _seen(self, rows: np.ndarray) -> np.ndarray:
+        """Hide the items that have not joined the universe yet (see `listed`) as NaN.
+
+        Which columns exist was decided with the whole run in view, so an item that only joins later
+        must not be visible before it does: a strategy would otherwise rank it now."""
+        listed = self._sim.listed
+        return rows if listed is None else np.where(listed[self.t], rows, np.nan)
+
     def history(self, column: str, hours: int | None = None) -> np.ndarray:
         """Rows up to and including the current hour of a panel column ([t+1, N] or the last `hours`)."""
         data = self._sim.panel[column]
         start = 0 if hours is None else max(0, self.t + 1 - hours)
-        return data[start : self.t + 1]
+        return self._seen(data[start : self.t + 1])
 
     @property
     def fair(self) -> np.ndarray:
         """Causal fair value per item at the current hour."""
-        return self._sim.fair[self.t]
+        return self._seen(self._sim.fair[self.t])
 
     def fair_history(self, hours: int | None = None) -> np.ndarray:
         start = 0 if hours is None else max(0, self.t + 1 - hours)
-        return self._sim.fair[start : self.t + 1]
+        return self._seen(self._sim.fair[start : self.t + 1])
 
     @property
     def z(self) -> np.ndarray:
         """Surprise of this hour's print against the model's forecast (NaN if no print)."""
-        return self._sim.z[self.t]
+        return self._seen(self._sim.z[self.t])
 
     def swing(self, leg: str, reach: float) -> np.ndarray:
         """Log distance from fair value below which `reach` of the leg's recent volume traded."""
-        return self._sim.swing(leg, reach)[self.t]
+        return self._seen(self._sim.swing(leg, reach)[self.t])
 
     @property
     def bridge(self) -> float:
@@ -433,7 +446,7 @@ class Simulation:
         gold_per_unit: float | np.ndarray = 0.0,
         gold_budget: float | None = None,
         schedule: str | np.ndarray | None = None,
-        fill_model: str = "share",
+        fill_model: str = "queue",
         wallet: Wallet | None = None,
         model_from: "Simulation | None" = None,
         risk_hours: float = 24,
@@ -458,6 +471,8 @@ class Simulation:
         if isinstance(schedule, str):
             schedule = parse_schedule(schedule)
         self.playing = None if schedule is None else in_schedule(schedule, panel.hours)
+        # [T, N] which items may be traded at each hour, from `_load`; without it, every item may.
+        self.listed = panel.data.get("listed")
         self.start_capital = capital
         self.wallet = Wallet(capital) if wallet is None else wallet
         n = len(panel.items)
@@ -568,8 +583,8 @@ class Simulation:
         With the "share" model, a fill takes at most `participation` of the hour's volume. With the
         "queue" model, a resting order first waits for the stock that rested ahead of it when it
         was posted (see `_queue_at`): only volume that traded through its level counts, and the
-        order fills from whatever trades after the queue is gone. Market orders do not queue, so
-        they keep the `participation` cap. Either way, units already taken in this market and hour
+        order fills from what trades after the queue is gone, still at most `participation` of the
+        hour's volume. Market orders do not queue and keep the same cap. Either way, units already taken in this market and hour
         by another strategy of the same portfolio are not there to take again.
         """
         taken = self.wallet.taken(t, key, side, len(volume))
@@ -579,7 +594,9 @@ class Simulation:
         queue = getattr(book, f"{side}_queue")
         flow = np.maximum(volume - taken, 0)
         resting = through & ~market & (getattr(book, f"{side}_units") > 0)
-        room = np.where(market, share, np.where(resting, np.maximum(flow - queue, 0), 0.0))
+        # Past the queue an order still takes at most the share: in a thin market with little
+        # resting stock, the queue alone would let it take the whole hour's volume.
+        room = np.where(market, share, np.where(resting, np.minimum(np.maximum(flow - queue, 0), share), 0.0))
         setattr(book, f"{side}_queue", np.where(resting, np.maximum(queue - flow, 0), queue))
         return room
 
@@ -601,8 +618,8 @@ class Simulation:
         Where the guess errs: if the stock spans every price, the queue is too long for an order
         at a sharp price; taking the hour's lowest, and counting unknown stock as empty, can make
         it too short. It is read at hour t (forward-filled up to six hours when the market printed
-        nothing), so it is known when the order goes up. Once the queue is gone, nothing else caps
-        the order: at the front it can take the whole hour's volume through its level.
+        nothing), so it is known when the order goes up. Once the queue is gone, the order fills
+        like the "share" model: at most `participation` of the hour's volume.
         """
         if (side == "buy" and math.isinf(limit)) or (side == "sell" and limit <= 0):
             return 0.0  # market orders take liquidity; they do not queue
@@ -792,8 +809,21 @@ class Simulation:
             posting = self.whole_lots or bool(self.gold_fee.any()) or self.fill_model == "queue"
             before = {k: b.copy() for k, b in self.books.items()} if posting else None
             strategy.step(ctx)
+            if self.listed is not None:
+                self._unlisted(t)
             if posting:
                 self._post(t, before)
+
+    def _unlisted(self, t: int) -> None:
+        """Drop orders for items not yet in the universe, before any Gold is charged for them.
+
+        New arrays, not writes into the ones the strategy handed over, which it may keep."""
+        ok = self.listed[t]
+        for book in self.books.values():
+            for side in ("buy", "sell"):
+                limit, units = getattr(book, f"{side}_limit"), getattr(book, f"{side}_units")
+                setattr(book, f"{side}_limit", np.where(ok, limit, np.nan))
+                setattr(book, f"{side}_units", np.where(ok, units, 0.0))
 
     def _tape(self, T: int) -> dict[str, np.ndarray]:
         return {k: np.empty(T) for k in ("equity", "cash", "gold", "holdings", "risk", "capital")}
@@ -1024,10 +1054,30 @@ def load_strategy(spec: str, params: dict | None = None) -> tuple[Strategy, str]
     return cls(**params), cls.__name__
 
 
+def listed(so_far: np.ndarray, universe: int, chunk: int = 512) -> np.ndarray:
+    """[T, N] whether each item is in the backtest's universe at each hour.
+
+    An item joins at the first hour its traded value so far (`so_far`, cumulative from the league's
+    start) ranks among the `universe` largest, and stays: an item you hold must stay sellable. Each
+    row uses only hours up to its own, so what a strategy may trade at hour t never depends on later
+    hours. Rows are ranked in chunks to bound memory on a full league.
+    """
+    T, N = so_far.shape
+    top = so_far > 0
+    if N > universe:
+        for a in range(0, T, chunk):
+            rows = so_far[a : a + chunk]
+            kth = -np.partition(-rows, universe - 1, axis=1)[:, universe - 1]
+            top[a : a + chunk] &= rows >= kth[:, None]
+    return np.logical_or.accumulate(top, axis=0)
+
+
 def _load(con: duckdb.DuckDBPyConnection, league: str, start_day: float, days: float | None,
           universe: int) -> tuple[Panel, int]:
-    """The league's panel for the chosen days, cut to its `universe` most traded items, and the
-    league hour it starts at."""
+    """The league's panel for the chosen days and the league hour it starts at.
+
+    Its columns are the items that join the `universe` most traded items at some hour of the run
+    (see `listed`); the panel's "listed" column says from which hour each one may be traded."""
     first, last = con.execute(
         "SELECT epoch(min(hour))::BIGINT, epoch(max(hour))::BIGINT FROM prices WHERE league = ?", [league]
     ).fetchall()[0]
@@ -1036,13 +1086,19 @@ def _load(con: duckdb.DuckDBPyConnection, league: str, start_day: float, days: f
     since = first + int(start_day * 24) * HOUR
     until = last if days is None else min(last, since + int(days * 24) * HOUR)
     panel = Panel.load(con, league, CORE + LEGS, since=since, until=until)
-    # Keep the items that carry the league's trade; thousands of dead columns only cost time.
-    totals = np.nansum(panel["value"], axis=0)
-    keep = np.argsort(-totals)[:universe]
-    keep.sort()
+    # Keep the items that carry the league's trade; thousands of dead columns only cost time. Ranking
+    # by value over the whole run would pick, on day one, items that only matter in week three.
+    before = dict(con.execute(
+        "SELECT item, sum(value) FROM prices WHERE league = ? AND hour < to_timestamp(?) GROUP BY item", [league, since]
+    ).fetchall())
+    prior = np.array([before.get(i) or 0.0 for i in panel.items])
+    member = listed(prior + np.cumsum(np.nan_to_num(panel["value"]), axis=0), universe)
+    keep = np.flatnonzero(member[-1])
+    data = {k: v[:, keep] for k, v in panel.data.items()}
+    data["listed"] = member[:, keep]
     panel = Panel(
         panel.league, panel.hours, [panel.items[i] for i in keep], [panel.names[i] for i in keep],
-        [panel.categories[i] for i in keep], panel.bridge, {k: v[:, keep] for k, v in panel.data.items()},
+        [panel.categories[i] for i in keep], panel.bridge, data,
     )
     return panel, (since - first) // HOUR
 
@@ -1071,7 +1127,7 @@ def run(
     gold_per_unit: float | dict[str, float] = 0.0,
     gold_budget: float | None = None,
     schedule: str | None = None,
-    fill_model: str = "share",
+    fill_model: str = "queue",
     risk_hours: float = 24,
 ) -> Result:
     """Backtest one strategy on one league.
@@ -1084,8 +1140,9 @@ def run(
     `gold_per_unit` is the Gold paid per unit posted: one number for every item, or a mapping
     from item id to fee (items it leaves out cost nothing). `gold_budget` caps the Gold spent
     on new orders. `schedule` (e.g. "mon-fri 19-22", UTC) limits visits to your play hours.
-    `fill_model` is "share" (a fill takes at most `participation` of the hour's volume) or
-    "queue" (a resting order first waits behind the stock published on its side when it went up).
+    `fill_model` is "queue" (the default: a resting order first waits behind the stock published
+    on its side when it went up, then takes at most `participation` of the hour's volume) or
+    "share" (a fill takes at most `participation` of the hour's volume from the hour it goes up).
     `risk_hours` is how long you expect to hold items, for the inventory risk (`drop_per_unit`).
     """
     panel, offset = _load(con, league, start_day, days, universe)
