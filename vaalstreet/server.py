@@ -436,12 +436,15 @@ class App:
         plans = desk.flips(share=share, min_margin=float(q.get("min_margin", 0.02)), bankroll=bankroll,
                            costs=self.costs(desk.league),
                            share_by_item=calibrate.shares(self.fill_calibration(desk, share)))
-        out = {"summary": desk.summary(), "flips": plans[: int(q.get("limit", 300))], "settings": self.settings()}
+        # Filter by market before any cut. The Flips page re-ranks and searches the whole list itself, so a
+        # cut to the most profitable plans would hide plans that rank high by Gold or match a search.
+        kind = q.get("kind", "all")
+        plans = [p for p in plans if kind == "all" or p["kind"] == kind]
+        limit = int(q["limit"]) if q.get("limit") else None
+        out = {"summary": desk.summary(), "flips": plans[:limit], "settings": self.settings()}
         if bankroll:
-            kind = q.get("kind", "all")
             budget = float(q["gold_budget"]) if q.get("gold_budget") else None
-            out["session"] = session_plan([p for p in plans if kind == "all" or p["kind"] == kind], bankroll,
-                                          budget if budget is not None and budget >= 0 else None)
+            out["session"] = session_plan(plans, bankroll, budget if budget is not None and budget >= 0 else None)
         return out
 
     def api_arbitrage(self, q: dict) -> dict:
@@ -536,7 +539,7 @@ class App:
                 gold_per_unit=float(body.get("gold_per_unit") or 0),
                 gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
                 schedule=body.get("schedule") or None,
-                fill_model=str(body.get("fill_model") or "share"),
+                fill_model=str(body.get("fill_model") or "queue"),
             )
             if body.get("strategies"):
                 result = backtest.run_portfolio(self.cursor(), league, runs, **options)

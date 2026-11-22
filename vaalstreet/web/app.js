@@ -302,7 +302,7 @@ async function viewFlips(main) {
   state.bridge = d.summary.bridge; renderTop();
   const st = d.settings;
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
-    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue; check the in-game book before sizing up.</p>
+    <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue. The “Last 7 days” replay does wait in line: its orders fill only after the stock already on offer has traded. Check the in-game book before sizing up.</p>
     <p class="note">Every order costs Gold, and the game does not publish how much. The desk uses the Gold per item from the trades you recorded in the Ledger; for other items it uses the fee you assume below, and otherwise says “Gold unknown”. Minutes assume ${+(+st.minutes_per_order).toFixed(2)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
     <div class="bar">
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
@@ -632,8 +632,8 @@ const STRATS = {
   momentum: { label: 'Momentum (taker)', text: 'Once a day, hold the liquid items that rose most.', params: { lookback: [72, 'Hours of history ranked'], hold: [10, 'Items held'], top: [60, 'Most-traded items considered'] } },
 };
 const FILL_MODELS = {
-  share: ['Share of volume', 'A resting order takes at most the share of each hour’s volume set below.'],
-  queue: ['Wait in line', 'Your order waits behind the stock already on offer on your side, then can take all the volume through your price.'],
+  queue: ['Wait in line', 'Your order waits behind the stock already on offer on your side, then takes at most the share of each hour’s volume set below.'],
+  share: ['Share of volume', 'A resting order takes the share of each hour’s volume set below from the start, as if no one were ahead of you.'],
 };
 const paramsOf = m => {
   const out = {};
@@ -727,7 +727,7 @@ async function viewLab(main) {
   if (!state.summary) await loadDesk();
   renderTop();
   const leagues = state.status.leagues.filter(l => l.kind === 'challenge' && l.hours >= 72);
-  const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'share', results: [], ran: null };
+  const lab = state.lab ||= { members: [{ strategy: 'swing', params: {} }], leagues: [state.league], capital: 10000, participation: 0.1, slippage: 0.03, attention: 4, start_day: 0, days: '', whole_lots: false, gold_per_unit: '', gold_budget: '', schedule: '', fill_model: 'queue', results: [], ran: null };
   if (lab.mode === 'search') return viewSearch(main, lab);
   const several = lab.members.length > 1;
   const member = (m, n) => {
