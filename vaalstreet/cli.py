@@ -171,6 +171,49 @@ def _flips(args: argparse.Namespace) -> None:
                    ("capital", "Capital", ",.0f")], args.rows)
 
 
+def _rehearse(args: argparse.Namespace) -> None:
+    """Step through a past league hour by hour, seeing only what was published by then."""
+    from vaalstreet.desk import Desk
+    from vaalstreet.rehearsal import league_hours
+
+    con = connect()
+    try:
+        first, last = league_hours(con, args.league)
+    except LookupError as err:
+        sys.exit(str(err))
+    hour = first + int(args.start_day * 24) * HOUR
+    if not first <= hour <= last:
+        sys.exit(f"{args.league} has {(last - first) // HOUR // 24 + 1} days on disk; pick a start day inside them.")
+    print(f"Rehearsing {args.league}: each step is one hour later. Enter for the next hour, a number to jump "
+          "that many hours, q to quit. Nothing after the hour shown is used.")
+    import warnings
+
+    warnings.simplefilter("ignore", RuntimeWarning)  # empty early-league columns; the table shows "-" for them
+    while True:
+        desk = Desk.build(con, args.league, as_of=hour)
+        h = (hour - first) // HOUR
+        when = time.strftime("%Y-%m-%d %H:00 UTC", time.gmtime(hour))
+        print(f"\n== {args.league}  day {h // 24}, hour {h % 24}  ({when})  Divine {desk.bridge:.1f}c ==")
+        plans = desk.flips(min_margin=args.min_margin)
+        print("Top flips:")
+        _table(plans, [("name", "Item", ""), ("kind", "Plan", ""), ("buy", "Buy", ".4g"), ("sell", "Sell", ".4g"),
+                       ("margin", "Margin", ".1%"), ("profit_per_hour", "c/hour", ",.0f")], args.rows)
+        movers = sorted((r for r in desk.market() if r.get("change_24h") is not None),
+                        key=lambda r: -abs(r["change_24h"]))
+        print("Movers over 24 hours:")
+        _table(movers, [("name", "Item", ""), ("price", "Price", ".4g"), ("change_24h", "24h", "+.1%")], args.rows)
+        if hour >= last:
+            print(f"\nThat was the last hour of {args.league} on disk.")
+            return
+        try:
+            answer = input("> ").strip().lower()
+        except EOFError:
+            return
+        if answer in ("q", "quit", "exit"):
+            return
+        hour = min(last, hour + (int(answer) if answer.isdigit() and int(answer) > 0 else 1) * HOUR)
+
+
 def _fills(args: argparse.Namespace) -> None:
     from vaalstreet import calibrate
     from vaalstreet.desk import Desk
@@ -209,11 +252,17 @@ def _ladder(args: argparse.Namespace) -> None:
     for r in out["ladder"]:
         s = r["session"]
         rows.append({"label": r["label"], "chaos": r["chaos"], "can_run": r["can_run"],
-                     "promised": s["expected_per_hour"], "replayed": s["replayed_per_hour"],
-                     "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
+                     "against": s["replayed_vs_divine_per_hour"], "replayed": s["replayed_per_hour"],
+                     "promised": s["expected_per_hour"], "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
     _table(rows, [("label", "Purse", ""), ("chaos", "Chaos", ",.0f"), ("can_run", "Can run", ""),
-                  ("promised", "c/hour now", ",.2f"), ("replayed", "c/hour last week", ",.2f"),
+                  ("against", "Last week vs Divines", ",.2f"), ("replayed", "Last week", ",.2f"),
+                  ("promised", "Promised", ",.2f"),
                   ("hours", "Hours to next", ",.1f"), ("gold", "Gold/hour", ",.0f")], len(rows))
+    divines = next((r["session"]["divines"] for r in out["ladder"] if r["session"].get("divines") is not None), None)
+    print("Chaos an hour. Last week: what each step's plans made over the last week at their own stakes. "
+          "Vs Divines: the same, less what holding Divines would have made"
+          + (f" ({divines:+.0%} over those hours)." if divines is not None else ".")
+          + " Promised: what today's levels earn if the last two days repeat; it has run well ahead of last week.")
     print("Gold/hour is blank until you record the Gold your trades cost, or set an assumed fee in the desk.")
     print("\nWhat opens up at each step:")
     for r in out["ladder"]:
@@ -239,6 +288,17 @@ def _check(args: argparse.Namespace) -> None:
     print(f"\n  {r['verdict'].upper()}\n")
     for reason in r["reasons"]:
         print(f"  - {reason}")
+
+
+def _screen(args: argparse.Namespace) -> None:
+    # Only the companion's own settings file; never the archive or the ledger, which may live in
+    # another operating system's filesystem when this runs under Windows next to a desk in WSL.
+    from vaalstreet import screen
+
+    try:
+        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region)
+    except (RuntimeError, ValueError) as err:
+        sys.exit(str(err))
 
 
 def _stash(args: argparse.Namespace) -> None:
@@ -295,6 +355,7 @@ def _arb(args: argparse.Namespace) -> None:
         return found["status"] if found else "unchecked"
 
     rows = desk.conversions(share=args.share, fixed=fixed)
+    outside = _outside_rows(desk, ledger, args.share)
     for r in rows:
         if r.get("inputs"):
             r["recipe"] = " + ".join(f"{x['units']:g} {x['name']}" for x in r["inputs"]) + f" -> {r['gives']:g} {r['reward']}"
@@ -306,6 +367,23 @@ def _arb(args: argparse.Namespace) -> None:
     _table(rows, [("name", "Item", ""), ("recipe", "Set", ""), ("cost", "Cost", ",.4g"), ("proceeds", "Worth", ",.4g"),
                   ("margin", "Margin", ".1%"), ("margin_now", "In a hurry", ".1%"),
                   ("profit_per_hour", "c/hour", ",.0f"), ("checked", "In game", "")], args.rows)
+    if outside:
+        print(f"\nCard sets whose reward does not trade on the exchange: "
+              f"reward priced by poe.ninja (stash listings, not the exchange) - prices from poe.ninja")
+        now = time.time()
+        for r in outside:
+            r["recipe"] = f"{r['need']} -> {r['gives']} {r['reward']}"
+            r["checked"] = check(r)
+            age = (now - r["reward_fetched"]) / HOUR if r.get("reward_fetched") else None
+            r["evidence"] = (f"{r['reward_listings'] or 0} listed, {age:.0f}h old" if age is not None else "?")
+            r["evidence"] += " (stale)" if r["reward_stale"] else ""
+        _table(outside, [("name", "Card", ""), ("recipe", "Set", ""), ("cost", "Cost", ",.4g"),
+                         ("proceeds", "Worth", ",.4g"), ("margin", "Margin", ".1%"),
+                         ("profit_per_hour", "c/hour", ",.0f"), ("evidence", "poe.ninja", ""),
+                         ("checked", "In game", "")], args.rows)
+        notes = [f"{r['reward']}: {r['reward_variant']}" for r in outside[: args.rows] if r.get("reward_variant")]
+        for note in notes:
+            print(f"  {note}")
 
     loops = desk.loops(share=args.share, swaps=args.swaps, fixed=fixed)
     for r in loops:
@@ -315,6 +393,55 @@ def _arb(args: argparse.Namespace) -> None:
     _table(loops, [("route", "Route", ""), ("edge", "Edge", ".1%"), ("value_24h", "Thinnest swap/day", ",.0f"),
                    ("resting_value", "Resting now", ",.0f"), ("profit_per_day", "c/day", ",.0f"),
                    ("checked", "In game", "")], args.rows)
+
+
+def _outside_rows(desk, ledger, share: float) -> list[dict]:
+    """Card sets priced from the poe.ninja cache (no network), unless you turned that off."""
+    from vaalstreet import ninja
+
+    if not ledger.settings().get("ninja_prices"):
+        return []
+    client = ninja.Ninja(data_dir(), os.environ.get("NINJA_BASE_URL", ninja.DEFAULT_BASE_URL))
+    return desk.outside_conversions(ninja.reward_prices(client, desk.league, desk.meta), share=share)
+
+
+def _ninja(args: argparse.Namespace) -> None:
+    from datetime import datetime, timezone
+
+    from vaalstreet import ninja
+    from vaalstreet.ledger import Ledger
+
+    root = data_dir()
+    if args.action in ("on", "off"):
+        Ledger(root).set("ninja_prices", 1.0 if args.action == "on" else 0.0)
+        print("poe.ninja prices are " + ("on: the desk asks for them at most hourly." if args.action == "on"
+                                         else "off: the desk sends poe.ninja no requests."))
+        return
+    client = ninja.Ninja(root, os.environ.get("NINJA_BASE_URL", ninja.DEFAULT_BASE_URL))
+    if args.action == "refresh":
+        if not Ledger(root).settings().get("ninja_prices"):
+            sys.exit("poe.ninja prices are turned off (setting ninja_prices = 0).")
+        con = connect()
+        league = _league(con, args)
+        summary = ninja.refresh(client, league, items.load(root, "poe1"))
+        if summary["league_id"] is None:
+            sys.exit(summary["errors"][0] if summary["errors"] else "No card reward needs poe.ninja.")
+        print(f"{league}: checked {', '.join(summary['types']) or 'nothing (no card rewards need it)'} "
+              f"- prices from poe.ninja. Each list is asked for at most once an hour.")
+        for error in summary["errors"]:
+            print(f"  {error} (the last good answer is kept and marked stale)")
+        return
+    rows = client.status()
+    if not rows:
+        print("Nothing from poe.ninja yet. Run `python -m vaalstreet ninja refresh`, or start the desk.")
+        return
+    when = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if t else "never"
+    print("Cached answers from poe.ninja (prices from poe.ninja):")
+    for r in rows:
+        what = r["params"].get("type") or "leagues"
+        league = r["params"].get("league", "")
+        state = f"failed: {r['error']}" if r["error"] else "ok"
+        print(f"  {what:<16} {league:<12} fetched {when(r['fetched'])}, last asked {when(r['checked'])}, {state}")
 
 
 def _item_id(names: dict[str, str], text: str) -> str:
@@ -500,12 +627,13 @@ def _backtest(args: argparse.Namespace) -> None:
         print(json.dumps(summaries, indent=1))
         return
     _table(summaries, [("league", "League", ""), ("strategy", "Strategy", ""), ("days", "Days", ""),
-                       ("return", "Return", "+.1%"), ("divine_return", "Hold Divine", "+.1%"),
-                       ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
+                       ("vs_divine", "Vs Divines", "+.1%"), ("return", "Return", "+.1%"),
+                       ("divine_return", "Hold Divine", "+.1%"), ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
                        ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
                        ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f"),
                        ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),
                        ("average_risk", "Avg drop", ",.0f")])
+    print("  Vs Divines: the return measured in Divines, so beating simply holding Divines is above zero.")
     print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
           f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
     for s in summaries:
@@ -517,6 +645,26 @@ def _backtest(args: argparse.Namespace) -> None:
                                      ("peak_capital", "Most capital", ",.0f"),
                                      ("average_capital", "Avg capital", ",.0f"),
                                      ("peak_risk", "Worst drop", ",.0f"), ("fills", "Fills", ",")])
+
+
+def _search(args: argparse.Namespace) -> None:
+    from vaalstreet import search
+
+    con = connect()
+    leagues = [x.strip() for x in args.leagues.split(",") if x.strip()] if args.leagues else None
+    options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage, days=args.days,
+                   attention=args.attention, whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit,
+                   schedule=args.schedule, fill_model=args.fill_model)
+    report = search.walk_forward(con, args.strategy, args.grid, leagues=leagues, how=args.score, **options)
+    if args.export:
+        from vaalstreet import sharing
+
+        params, _ = search._split(report["next"]["setting"], args.strategy)
+        sharing.export(args.export, args.strategy, params, {**options, **report["next"]["setting"]},
+                       search.export_rows(report), extra={"walk_forward": report})
+        print(f"Wrote {args.export}: the setting it would pick next, and the results on leagues it was not tuned on."
+              " Nothing was uploaded.", file=sys.stderr)
+    print(json.dumps(report, indent=1) if args.json else search.format_report(report))
 
 
 def _strategy_import(args: argparse.Namespace) -> None:
@@ -581,6 +729,63 @@ def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
     print()
 
 
+def _research(args: argparse.Namespace) -> None:
+    from vaalstreet import research
+
+    if args.name == "all":
+        _research_all(research.MEASUREMENTS, args.league or [])
+        return
+    con = connect()
+    print("\n".join(research.run(con, args.name, args.league).lines()))
+    print()
+
+
+def _research_all(names: tuple[str, ...], leagues: list[str]) -> None:
+    """Each measurement in its own child process, printed in order.
+
+    On the full archive one measurement alone peaks near 6.4 GB, and memory a process has used is
+    not handed back to the system, so running them one after another in one process gets killed.
+    A child gives all of its memory back when it exits.
+    """
+    import subprocess
+    from pathlib import Path
+
+    env = dict(os.environ)
+    # The child imports this same copy of the package, even when it is not installed.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH")) if p)
+    failed = []
+    for name in names:
+        command = [sys.executable, "-m", "vaalstreet", "research", name]
+        for league in leagues:
+            command += ["--league", league]
+        child = subprocess.run(command, capture_output=True, text=True, env=env)
+        sys.stdout.write(child.stdout)
+        sys.stdout.flush()
+        if child.stderr:
+            sys.stderr.write(child.stderr)
+        if child.returncode != 0:
+            failed.append(name)
+            print(f"{name}: did not finish (exit code {child.returncode})\n")
+    if failed:
+        sys.exit(f"Measurements that did not finish: {', '.join(failed)}")
+
+
+def _report(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from vaalstreet import report
+
+    con = connect()
+    league = _league(con, args)
+    con.close()
+    try:
+        report.write(None, Path(args.out), league, args.day, all_days=args.all_days)
+    except (LookupError, ValueError) as e:
+        sys.exit(str(e))
+    print("Nothing was uploaded. The folder is yours to publish wherever you like, or to keep.", file=sys.stderr)
+
+
 def _sql(args: argparse.Namespace) -> None:
     connect(realm=args.realm).sql(args.query).show(max_rows=200, max_width=220)
 
@@ -619,6 +824,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--realm", choices=REALMS, default="poe1")
     p.set_defaults(run=_status)
 
+    p = commands.add_parser("ninja", help="prices from poe.ninja for card rewards the exchange does not trade")
+    p.add_argument("action", choices=("refresh", "status", "on", "off"),
+                   help="refresh: ask poe.ninja for what the card rewards need (at most hourly); "
+                        "status: what is cached and how old it is; on/off: allow or stop poe.ninja requests")
+    p.add_argument("--league")
+    p.set_defaults(run=_ninja)
+
     p = commands.add_parser("price", help="latest hourly prices for an item")
     p.add_argument("item", help='item name or ID ending, e.g. "Divine Orb"')
     p.add_argument("--league")
@@ -633,6 +845,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-margin", type=float, default=0.02)
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_flips)
+
+    p = commands.add_parser("rehearse", help="practise on a past league: step through it hour by hour, "
+                                             "seeing only what the desk knew at each hour")
+    p.add_argument("league")
+    p.add_argument("--start-day", type=float, default=0, help="league day to start on (default: its first hour)")
+    p.add_argument("--min-margin", type=float, default=0.02)
+    p.add_argument("--rows", type=int, default=5)
+    p.set_defaults(run=_rehearse)
 
     p = commands.add_parser("fills", help="how fast your tracked orders filled, and the share of the flow plans now use")
     p.add_argument("--league")
@@ -654,6 +874,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--stock", type=float, help="how many items are on offer at that ratio, if the window shows it")
     p.add_argument("--league")
     p.set_defaults(run=_check)
+
+    p = commands.add_parser(
+        "screen", help="press a key to read an offer off the exchange window and check it (optional extra)",
+        description="A companion to run next to the game, under Windows Python. Each press of the hotkey takes "
+                    "one screenshot (of the area you set with --calibrate), reads the offer's item, ratio and "
+                    "stock, and shows the desk's verdict here and in the desk's hideout window. It sends "
+                    "nothing to the game and keeps no screenshot.",
+        epilog='Needs the optional libraries: pip install "vaalstreet[screen]". The desk itself '
+               "(vaalstreet serve) can run in WSL; this companion reaches it at http://localhost:<port>.")
+    p.add_argument("--desk", default="http://localhost:3000", help="the desk's address (default %(default)s)")
+    p.add_argument("--hotkey", help="the key to press, in pynput's form (default <ctrl>+<alt>+<f9>)")
+    p.add_argument("--calibrate", action="store_true", help="capture once, then save the area around the exchange window")
+    p.add_argument("--region", help='save this area and use it: "left top width height" in pixels')
+    p.add_argument("--league")
+    p.set_defaults(run=_screen)
 
     p = commands.add_parser(
         "stash", help="value what you hold, and say which market pays more for each item",
@@ -736,15 +971,23 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--rows", type=int, default=30)
     p.set_defaults(run=_cross_league)
 
+    p = commands.add_parser("report", help="write a 'state of the economy' web page for a league day to a local folder")
+    p.add_argument("--league")
+    p.add_argument("--day", type=int, help="league day (default: today, or the last day of an ended league)")
+    p.add_argument("--all-days", action="store_true", help="write a page for every day of the league")
+    p.add_argument("--out", default="reports", help="folder to write to (default: ./reports)")
+    p.set_defaults(run=_report)
+
     p = commands.add_parser("backtest", help="replay a strategy over one or more leagues")
     p.add_argument("strategy", nargs="+",
                    help=f"{', '.join(backtest.STRATEGIES)} or path/to/file.py:ClassName; add settings as "
                    "'reversion:{\"entry_z\": -2.5}'. Give several with --portfolio")
     p.add_argument("--portfolio", action="store_true",
                    help="run the strategies together on one bankroll; the first one listed fills first")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
-                   help="share: a fill takes at most --participation of the hour's volume (default). "
-                   "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue",
+                   help="queue: an order first waits until the stock already on offer at your side has "
+                   "traded, then takes at most --participation of the hour's volume (default). "
+                   "share: it takes that share from the start, as if no one were ahead of you")
     p.add_argument("--risk-hours", type=float, default=24,
                    help="how long you expect to hold items, for the Worst drop column (default 24)")
     p.add_argument("--export", metavar="FILE.json",
@@ -768,6 +1011,31 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_backtest)
 
+    p = commands.add_parser("search", help="try a grid of settings, judged only on leagues each choice was not tuned on")
+    p.add_argument("strategy", choices=list(backtest.STRATEGIES))
+    p.add_argument("--grid", required=True,
+                   help="settings to try, e.g. 'reach=0.2,0.3;top=20,40;attention=1,4', or a JSON object such as "
+                   "'{\"schedule\": [\"sat,sun 10-14\"]}' (needed when a value holds a comma). Besides the strategy's "
+                   "own settings: attention, schedule, whole_lots, fill_model, participation, slippage, gold_per_unit")
+    p.add_argument("--leagues", help="comma-separated leagues (default: every challenge league); they are put "
+                   "in order of their start, and each is tuned only on leagues that ended before it began")
+    p.add_argument("--score", choices=["divine", "return", "drawdown"], default="divine",
+                   help="what tuning maximises: divine = return over holding Divines (default), return = Chaos "
+                   "return, drawdown = return over the worst drop")
+    p.add_argument("--export", metavar="FILE.json",
+                   help="save the setting it would pick next, with the walk-forward table, to share")
+    p.add_argument("--capital", type=float, default=10000)
+    p.add_argument("--participation", type=float, default=0.1)
+    p.add_argument("--slippage", type=float, default=0.03)
+    p.add_argument("--attention", type=int, default=1)
+    p.add_argument("--days", type=float, help="only the first days of each league, for a quicker search")
+    p.add_argument("--whole-lots", action="store_true")
+    p.add_argument("--gold-per-unit", type=float, default=0.0)
+    p.add_argument("--schedule")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(run=_search)
+
     p = commands.add_parser("strategy", help="strategy files shared by other players")
     sub = p.add_subparsers(dest="action", required=True)
     q = sub.add_parser("import", help="show a shared strategy file and save its code to your strategies folder")
@@ -782,6 +1050,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--two-market", action="store_true",
                    help="also try the experimental model: one value per item plus a Divine-market premium")
     p.set_defaults(run=_scorecard)
+
+    p = commands.add_parser(
+        "research", help="experiments: test a claim about the market against pass rules fixed in advance",
+        description="Each measurement prints pass, fail or not enough data, its numbers, and how many settings "
+                    "were tried. The rules are in docs/measurements.md.")
+    from vaalstreet.research import MEASUREMENTS
+    p.add_argument("name", choices=MEASUREMENTS + ("all",))
+    p.add_argument("--league", action="append",
+                   help="leagues to use (repeat); default: every challenge league, or the live one where only one is used")
+    p.set_defaults(run=_research)
 
     p = commands.add_parser("sql", help="run a query against the views")
     p.add_argument("query")

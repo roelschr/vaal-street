@@ -45,6 +45,28 @@ def test_fair_value_is_causal():
     assert np.array_equal(a.fair[:400], b.fair[:400]), "future volume must not move the past"
 
 
+def test_a_stake_turns_over_once_per_cycle_not_every_two_hours(desk):
+    """The test orb swings +-5% over 12 hours, so its levels are reached only some hours: a buy and a sell
+    take several hours, and a purse smaller than the flow earns its margin once per cycle."""
+    plans = desk.flips(min_margin=0.01)
+    assert plans and all(p["cycle_hours"] > 2 for p in plans)
+    for p in desk.flips(min_margin=0.01, bankroll=200):
+        expected = p["margin"] * min(p["flow_value"], 200 / p["cycle_hours"])
+        assert p["profit_per_hour"] == pytest.approx(expected, rel=1e-3)
+
+
+def test_fair_value_is_quiet_about_items_that_never_print():
+    import warnings
+
+    _, seen = noisy_walk()
+    seen = seen.copy()
+    seen[:, 0] = np.nan  # an item with no prints at all, as many have on a young league
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", category=RuntimeWarning)
+        fv = pricing.fair_value(seen, seen * 100.0)
+    assert np.isnan(fv.fair[:, 0]).all() and np.isfinite(fv.fair[-1, 1:]).all()
+
+
 def test_fair_value_shrugs_off_a_fat_finger_and_survives_gaps():
     _, seen = noisy_walk(noise=0.02)
     spiked = seen.copy()
@@ -131,7 +153,7 @@ def test_weighted_quantile_ignores_volume_free_outliers():
 
 def test_panel_is_a_dense_hourly_grid(con):
     panel = Panel.load(con, NEW, CORE + LEGS)
-    assert panel.shape == (8 * 24, 6)  # five items plus the Test Lure
+    assert panel.shape == (8 * 24, 7)  # five items plus the Test Lure and the Test Blade card
     assert np.all(np.diff(panel.hours) == 3600)
     i = panel.index("test orb")
     assert panel["r_price"][5, i] == pytest.approx(item_price(NEW, 5), rel=1e-3)
@@ -446,6 +468,20 @@ def test_round_trips_skip_swap_markets_far_out_of_line(desk):
     assert not [p for p in paths if CARD in p]
 
 
+def test_a_round_trip_is_as_deep_as_the_market_it_buys_in(desk):
+    """Known answer: shards -> orb is limited by its swap market, 100 orbs an hour (about 25,000 Chaos a day).
+    When the shard's Chaos market trades one shard an hour (2 Chaos), the trip is 48 Chaos a day deep."""
+    trip = lambda: next(row for row in desk.loops(min_value=10, chaos_only=True)  # noqa: E731
+                        if [x["id"] for x in row["path"]] == [OTHER, ITEM])
+    swap_value = 100 * 24 * desk.fair(ITEM)
+    assert trip()["value_24h"] == pytest.approx(swap_value, rel=0.05)
+    desk.legs["r"].flow[desk.panel.index(OTHER)] = 1.0
+    desk._cache.clear()
+    thin = trip()
+    assert thin["value_24h"] == pytest.approx(24 * 2.0, rel=0.02)
+    assert thin["profit_per_day"] == pytest.approx(0.1 * 48 * thin["edge"], rel=0.02)
+
+
 def test_round_trips_skip_a_divine_stop_far_out_of_line(desk):
     from vaalstreet.ingest import DIVINE
 
@@ -502,3 +538,20 @@ def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
     assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
     mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
     assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
+
+
+def test_rolling_in_column_chunks_matches_one_pass(monkeypatch):
+    """`rolling` works through columns a few at a time to bound memory on a full league with a
+    week-long window. Known answer: the same numbers as one pass over every column."""
+    import numpy as np
+
+    from vaalstreet import panel as panel_mod
+
+    rng = np.random.default_rng(7)
+    a = rng.normal(size=(200, 13))
+    a[rng.random(a.shape) < 0.3] = np.nan
+    whole = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    monkeypatch.setattr(panel_mod, "ROLLING_CELLS", 24 * 200 * 2)  # two columns per chunk
+    chunked = panel_mod.rolling(a, 24, np.nanmedian, 3)
+    np.testing.assert_array_equal(np.isnan(whole), np.isnan(chunked))
+    np.testing.assert_allclose(whole[~np.isnan(whole)], chunked[~np.isnan(chunked)])
