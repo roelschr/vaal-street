@@ -91,6 +91,18 @@ def test_api_backtest_and_ledger_round_trip(server):
     assert next(r for r in call(f"{server}/api/desk")[1]["market"] if r["id"] == ITEM)["watched"]
 
 
+
+def test_api_edits_a_trade(server):
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9})[0] == 200
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 4, "price": 11})[0] == 200
+    wrong = call(f"{server}/api/ledger")[1]["trades"][0]  # newest first
+    assert call(f"{server}/api/trade", {"edit": wrong["id"], "side": "sell"})[0] == 200
+    ledger = call(f"{server}/api/ledger")[1]
+    assert ledger["trades"][0]["side"] == "sell" and ledger["positions"][0]["units"] == 6
+    assert ledger["positions"][0]["realized"] == pytest.approx(4 * (11 - 9))
+    status, answer = call(f"{server}/api/trade", {"edit": wrong["id"], "units": 99})
+    assert status == 400 and "more than the ledger held" in answer["error"]
+
 def test_server_refuses_other_sites_and_serves_the_app(server):
     assert call(f"{server}/api/status", headers={"Origin": "https://evil.example"})[0] == 403
     assert call(f"{server}/api/trade", {"item": ITEM}, headers={"Origin": "https://evil.example"})[0] == 403

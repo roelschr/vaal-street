@@ -978,14 +978,14 @@ async function viewLedger(main) {
       <div class="kpi"><span>Unrealised</span><b class="${t.unrealized >= 0 ? 'up' : 'down'}">${money(t.unrealized)}</b></div>
       <div class="kpi"><span>Realised</span><b class="${t.realized >= 0 ? 'up' : 'down'}">${money(t.realized)}</b></div>
     </div>
-    <section class="panel" style="margin-bottom:14px"><header><h2>Record a trade</h2></header><div class="body bar" style="margin:0">
+    <section class="panel" id="tform" style="margin-bottom:14px"><header><h2 id="thead">Record a trade</h2><span class="muted small" id="tlock" hidden>Filled from an order: its item, side and units follow the order, and the order holds the Gold.</span></header><div class="body bar" style="margin:0">
       <label class="f">Item<input type="text" id="ti" list="items" placeholder="Start typing…" style="width:240px"><datalist id="items">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
       <div class="seg" id="side"><button data-s="buy" class="on">Bought</button><button data-s="sell">Sold</button></div>
       <label class="f">Units<input type="number" id="tu" min="0" step="any"></label>
       <label class="f">Price each (c)<input type="number" id="tp" min="0" step="any"></label>
       <label class="f">Gold paid<input type="number" id="tg" min="0" step="any" placeholder="optional" title="The Gold this trade cost. The desk learns each item's fee from these."></label>
       <label class="f">Note<input type="text" id="tn" style="width:160px"></label>
-      <button class="btn primary" id="add">Add</button></div></section>
+      <button class="btn primary" id="add">Add</button><button class="btn" id="tcancel" hidden>Cancel</button></div></section>
     <section class="panel" style="margin-bottom:14px"><header><h2>Record an order you posted</h2></header><div class="body bar" style="margin:0">
       <label class="f">Item<input type="text" id="oi" list="items" placeholder="Start typing…" style="width:240px"></label>
       <div class="seg" id="oside"><button data-s="buy" class="on">Buying</button><button data-s="sell">Selling</button></div>
@@ -996,13 +996,31 @@ async function viewLedger(main) {
       <label class="f">Gold paid<input type="number" id="og" min="0" step="any" placeholder="optional"></label>
       <button class="btn primary" id="oadd">Add</button></div></section>
     <div class="grid" id="g"></div>`;
-  let side = 'buy';
-  $('#side', main).onclick = e => { const s = e.target.dataset.s; if (s) { side = s; main.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s)); } };
+  let side = 'buy', editing = null;  // editing: the trade loaded into the form by its ✎ button
+  const setSide = s => { side = s; main.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s)); };
+  $('#side', main).onclick = e => { const s = e.target.dataset.s; if (s) setSide(s); };
   $('#ti', main).onchange = e => { const row = state.market.find(r => r.name === e.target.value); if (row && !$('#tp', main).value) $('#tp', main).value = row.price; };
+  const editTrade = tr => {
+    editing = tr;
+    $('#thead', main).textContent = `Edit the trade from ${new Date(tr.t * 1000).toLocaleString()}`;
+    $('#ti', main).value = tr.name; setSide(tr.side);
+    $('#tu', main).value = tr.units; $('#tp', main).value = tr.price; $('#tg', main).value = tr.gold ?? ''; $('#tn', main).value = tr.note || '';
+    const fromOrder = tr.order_id != null;
+    [$('#ti', main), $('#tu', main), $('#tg', main), ...main.querySelectorAll('#side button')].forEach(el => { el.disabled = fromOrder; });
+    $('#tlock', main).hidden = !fromOrder;
+    $('#add', main).textContent = 'Save changes'; $('#tcancel', main).hidden = false;
+    $('#tform', main).scrollIntoView({ block: 'start', behavior: 'smooth' });
+    $(fromOrder ? '#tp' : '#tu', main).focus();
+  };
+  $('#tcancel', main).onclick = () => route();
   $('#add', main).onclick = async () => {
-    const row = state.market.find(r => r.name === $('#ti', main).value);
-    if (!row) return toast('Pick an item from the list.', true);
-    try { await api('/api/trade', { league: state.league, item: row.id, side, units: +$('#tu', main).value, price: +$('#tp', main).value, gold: optional($('#tg', main).value), note: $('#tn', main).value }); route(); }
+    const name = $('#ti', main).value;
+    // An edited trade keeps its item without a lookup, so an item that no longer trades can still be corrected.
+    const item = editing && name === editing.name ? editing.item : state.market.find(r => r.name === name)?.id;
+    if (!item) return toast('Pick an item from the list.', true);
+    const fields = { price: +$('#tp', main).value, note: $('#tn', main).value };
+    if (!editing || editing.order_id == null) Object.assign(fields, { item, side, units: +$('#tu', main).value, gold: optional($('#tg', main).value) });
+    try { await api('/api/trade', { league: state.league, ...(editing ? { edit: editing.id } : {}), ...fields }); if (editing) toast('Trade updated.'); route(); }
     catch (err) { toast(err.message, true); }
   };
   let oside = 'buy', omkt = 'chaos';
@@ -1079,9 +1097,16 @@ async function viewLedger(main) {
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() }, { h: 'Item', l: 1, f: r => esc(r.name) },
     { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Bought' : 'Sold' }, { h: 'Units', f: r => fmt(r.units) }, { h: 'Price', f: r => money(r.price) },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
-    { h: 'Note', l: 1, f: r => esc(r.note) }, { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this trade">✕</button>` },
+    { h: 'Note', l: 1, f: r => esc(r.note) },
+    { h: '', f: r => `<button class="btn ghost" data-edit="${r.id}" title="Edit this trade">✎</button><button class="btn ghost" data-del="${r.id}" title="Delete this trade">✕</button>` },
   ], d.trades, { empty: 'Nothing recorded.' });
-  tt.onclick = async e => { const b = e.target.closest('[data-del]'); if (b) { await api('/api/trade', { delete: +b.dataset.del }); route(); } };
+  tt.onclick = async e => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed) return editTrade(d.trades.find(r => r.id === +ed.dataset.edit));
+    const b = e.target.closest('[data-del]');
+    if (!b) return;
+    try { await api('/api/trade', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
+  };
   tr.append(tt);
   const al = alertsPanel(d, names);
   const cal = panel('How much of the flow your orders got', 'c12', '<span class="muted small">From the orders you recorded and their fills, against the volume that traded through your price. Flips use these shares where they exist.</span>');
