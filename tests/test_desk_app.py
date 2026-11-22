@@ -111,6 +111,11 @@ def test_api_records_an_item_you_made_so_it_can_be_sold(server):
     assert ledger["totals"]["cost"] == pytest.approx(15) and ledger["totals"]["realized"] == pytest.approx(5)
     assert call(f"{server}/api/made", {"delete": made["id"]})[0] == 200
     assert call(f"{server}/api/ledger")[1]["made"] == []
+    # An item the ledger holds can be used even when neither the market nor the item export knows its id.
+    gone = "Metadata/Items/Currency/CurrencyNoLongerTraded"
+    assert call(f"{server}/api/trade", {"item": gone, "side": "buy", "units": 3, "price": 2})[0] == 200
+    assert call(f"{server}/api/made", {"inputs": [[gone, 3]], "output": ITEM})[0] == 200
+    assert call(f"{server}/api/ledger")[1]["made"][0]["inputs"][0]["id"] == gone
 
 
 def test_api_edits_a_trade(server):

@@ -719,6 +719,22 @@ class App:
             raise ApiError(f"No item called {text!r}. Use the name as the exchange shows it.")
         return found
 
+    def _ledger_item(self, desk, text) -> str:
+        """The item a ledger entry names, from an id or a name.
+
+        The league's own market comes first, so a made item is the very item the trade form buys and
+        sells; then an id the ledger already holds, which may have stopped trading; then the item
+        export, which knows items that never traded here.
+        """
+        text = str(text or "").strip()
+        try:
+            return check.resolve(desk, text)
+        except LookupError:
+            pass
+        if text in self.ledger.positions(desk.league):
+            return text
+        return self._item_ref(text)
+
     def api_post(self, path: str, body: dict) -> dict:
         league = body.get("league") or self.default_league()
         try:
@@ -735,10 +751,10 @@ class App:
                 if body.get("delete"):
                     self.ledger.delete_made(body["delete"])
                 else:
-                    # Names or ids, as the recipe form sends them.
-                    inputs = [[self._item_ref(item), units] for item, units in body["inputs"]]
-                    self.ledger.add_made(league, inputs, self._item_ref(body["output"]), body.get("gives", 1),
-                                         body.get("note", ""), name=self.desk(league)._name)
+                    desk = self.desk(league)
+                    inputs = [[self._ledger_item(desk, item), units] for item, units in body["inputs"]]
+                    self.ledger.add_made(league, inputs, self._ledger_item(desk, body["output"]), body.get("gives", 1),
+                                         body.get("note", ""), name=desk._name)
             elif path == "/api/order":
                 if body.get("delete"):
                     self.ledger.delete_order(body["delete"])
