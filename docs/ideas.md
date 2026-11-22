@@ -159,7 +159,7 @@ The "Measure first" ideas are claims about the market. We test seven or more of 
 
 ## What the owner still has to do
 
-- **Merge the pull requests.** Start with #16, the ingest memory fix, which is based on `main`. Then merge the stack from #4 to #29 in order.
+- **Merge the pull requests.** Start with #16, the ingest memory fix, which is based on `main`. Then merge the stack from #4 to #30 in order.
 - **Index the archive.** After merging #16, run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
 - **Check the screen check in game.** Its window layout has not been tested against the live game. It needs Windows and Python 3.10 to 3.12.
 - **poe.ninja dumps (optional).** The leagues before July 2024 could go into `data/ninja/`.
