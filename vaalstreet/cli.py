@@ -732,11 +732,43 @@ def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
 def _research(args: argparse.Namespace) -> None:
     from vaalstreet import research
 
+    if args.name == "all":
+        _research_all(research.MEASUREMENTS, args.league or [])
+        return
     con = connect()
-    names = research.MEASUREMENTS if args.name == "all" else (args.name,)
+    print("\n".join(research.run(con, args.name, args.league).lines()))
+    print()
+
+
+def _research_all(names: tuple[str, ...], leagues: list[str]) -> None:
+    """Each measurement in its own child process, printed in order.
+
+    On the full archive one measurement alone peaks near 6.4 GB, and memory a process has used is
+    not handed back to the system, so running them one after another in one process gets killed.
+    A child gives all of its memory back when it exits.
+    """
+    import subprocess
+    from pathlib import Path
+
+    env = dict(os.environ)
+    # The child imports this same copy of the package, even when it is not installed.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH")) if p)
+    failed = []
     for name in names:
-        print("\n".join(research.run(con, name, args.league).lines()))
-        print()
+        command = [sys.executable, "-m", "vaalstreet", "research", name]
+        for league in leagues:
+            command += ["--league", league]
+        child = subprocess.run(command, capture_output=True, text=True, env=env)
+        sys.stdout.write(child.stdout)
+        sys.stdout.flush()
+        if child.stderr:
+            sys.stderr.write(child.stderr)
+        if child.returncode != 0:
+            failed.append(name)
+            print(f"{name}: did not finish (exit code {child.returncode})\n")
+    if failed:
+        sys.exit(f"Measurements that did not finish: {', '.join(failed)}")
 
 
 def _report(args: argparse.Namespace) -> None:
