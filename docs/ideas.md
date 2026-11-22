@@ -1,114 +1,133 @@
-# Ideas from issue #2: what we build, and in what order
+# Ideas from issue #2: what happened to each one
 
-This page gives a verdict on every idea in issue #2, "Ideas to explore next". There are five kinds of verdict:
+This page records what became of every idea in issue #2, "Ideas to explore next". All the work sits in a stack of pull requests, #4 to #29, plus #16 on `main`. The verdicts are:
 
-- **Build**: it fits the desk and the data we have. The wave number says when.
-- **Measure first**: it is a claim about the market, such as "resting stock predicts price". We test it on the full history once the sync is done. We ship it only if it holds up. "Tested, does not predict" is a valid result, and we record it here.
-- **After the sync**: it needs the full league history on disk, which is still downloading.
-- **Owner's decision**: it touched a promise the README makes (local only, read-only traffic, PoE 1). The owner has decided: collecting public data under each source's rules is fine; uploading or publishing is not; the server stays local; PoE 2 waits.
-- **Not now**: no data source exists for it, and guessing would put made-up game facts into the desk.
+- **Built (#N)**: it is on the desk, in the pull request(s) named.
+- **Measured: fail, nothing shipped**, or **not enough data**: it was a claim about the market. It was tested on the full history under the rules at the end of this page and did not pass, so the desk does not use it. The numbers are under "Results on the full history".
+- **Measured: candidates** or **report only**: a list to check in game, or a description of the data. The desk never trades on it.
+- **Not building (owner's decision)**: it would break a promise the README makes. The owner decided: collecting public data under each source's rules is fine; uploading or publishing is not; the server stays local; PoE 2 waits.
+- **Not built**: no data source exists for it, and guessing would put made-up game facts into the desk.
 
-Waves run in order. Within a wave, the tasks touch different files, so they can be built side by side. What each outside data source allows is written up in `data-sources.md`.
-
-- **Wave 1 (foundations):** the ledger learns Gold, orders, sessions and recipe checks. The backtest trades whole lots, pays Gold and keeps a play schedule. Fair value gets a range and a separate Divine-market premium.
-- **Wave 2:** the desk uses wave 1, with profit per Gold, trade checks, stash value and longer round trips.
-- **Wave 3:** planning tools and alerts.
-- **Wave 4 (after the sync):** league-start analytics and the measurements.
+What each outside data source allows is written up in `data-sources.md`.
 
 ## Ground truth: closing the loop with the game
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Gold in the ledger | Build, wave 1 | Each trade gets an optional Gold amount. From those, the desk learns the Gold fee per unit for each item. Until you have recorded a trade, the fee shows as unknown. We do not guess a fee schedule. |
-| Profit per Gold | Build, wave 2 | Flips, conversions and round trips are ranked by Chaos per 1,000 Gold, using the fees from your ledger or a fee you enter. A session plan fits under a Gold budget. |
-| Typed trade check | Build, wave 2 | You type the ratio and stock from the order window and get go / no-go against fair value with its range, the flip plan and how much stock already rests at that level. |
-| Screenshot trade check | Built, as an optional extra | `vaalstreet screen`, installed with `pip install "vaalstreet[screen]"`, runs under Windows Python next to the game. It takes one screenshot and does one text-recognition pass per key press, sends nothing to the game and keeps screenshots in memory only (GGG's rules in `data-sources.md`). It reads the offer and asks the typed check. The window layout it expects is not yet tested against the live game. |
-| Fill calibration | Build, wave 3 | It needs orders you posted and what filled, which the order tracker records in wave 1. It then compares your fills with the plan's estimate, and tunes "share of the flow" per item once enough fills exist. |
-| Recipe verification log | Build, wave 1 and 2 | Wave 1 stores "confirmed in game" per recipe. In wave 2, the Arbitrage page flags recipes nobody has confirmed. |
+| Gold in the ledger | Built (#5) | Each trade takes an optional Gold amount. The desk learns each item's Gold fee from those. Until you record a trade, the fee shows as unknown; there is no guessed fee schedule. |
+| Profit per Gold | Built (#9) | Flips, conversions and round trips are ranked by Chaos per 1,000 Gold, from your recorded fees or a fee you enter. A session plan fits under a Gold budget. |
+| Typed trade check | Built (#8, page in #15) | Type the ratio and stock from the order window and get go, caution or no-go against fair value and its range. |
+| Screenshot trade check | Built (#22), as an optional extra | `vaalstreet screen` (`pip install "vaalstreet[screen]"`) runs under Windows Python next to the game. It reads the offer on a key press, sends nothing to the game and keeps screenshots in memory only. The window layout it expects has not been tested against the live game. |
+| Fill calibration | Built (#12, page in #18) | Compares the fills of your tracked orders with the plan's estimate and learns your share of the flow per market once enough fills exist. |
+| Recipe verification log | Built (#5, #10) | You mark whether a recipe or round trip worked in game. The Arbitrage page flags recipes nobody has confirmed. |
 
 ## Small bankrolls
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Whole-lot backtests | Build, wave 1 | The simulator fills only whole items, at whole-number ratios a small purse can post. The flip page already does this when you enter a bankroll. |
-| Bankroll ladder | Build, wave 3 | The same flips and backtests are run at a ladder of purse sizes, from a few dozen Chaos to a few Divines. The ladder shows what opens up at each step. We check it on full league history after the sync. |
-| Compounding plan | Build, wave 3 | It is built with the ladder. It shows the purse sizes at which the session plan changes, and what to switch to at each one. |
-| Vendor loops | Only with prices you enter | No sanctioned public source carries NPC vendor prices (see `data-sources.md`). The desk can run vendor loops on a price table you fill in yourself, each entry marked unconfirmed until you check it in game. |
+| Whole-lot backtests | Built (#7) | The backtest fills only whole items, at whole-number ratios a small purse can post. |
+| Bankroll ladder | Built (#11, page in #18) | Flips and backtests at a ladder of purse sizes. On the full history, last week's replay delivered only 3 to 26% of the "promised" rate, so the desk shows the replay first. Trust the replay. |
+| Compounding plan | Built (#11) | Shows the purse sizes at which the session plan changes, and what to switch to. |
+| Vendor loops | Built (#10), with prices you enter | No sanctioned source carries NPC vendor prices. The desk runs vendor loops on a price table you fill in, each entry unconfirmed until you check it in game. |
 
 ## Arbitrage
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Longer loops | Build, wave 2 | Round trips of three or more swaps, and loops through Divine, with the same "thinnest swap" depth check as today. |
-| More recipes | Build, wave 2, as recipes you enter | The item export has no recipe data, and the wiki blocks automated reading. We add a local recipe list you can extend from the desk. The recipes the desk already derives stay as they are. Every new recipe starts unconfirmed. |
-| Recipe discovery from prices | Measure first, wave 4 | We look for pairs whose price ratio stays fixed. The output is a list of candidates to check in game, never a recipe the desk trades on. |
-| Live resting-order watch | Build, wave 3 | An alert fires when a round trip has orders resting to be taken and its edge clears your threshold. |
-| Cross-league arbitrage of attention | After the sync, wave 4 | The digests already carry Hardcore, Standard and Ruthless markets. We compare the same markets across them. |
+| Longer loops | Built (#10) | Round trips of three or more swaps, and loops through Divine, with the same depth check. |
+| More recipes | Built (#10), as recipes you enter | A local recipe list you extend from the desk. Every new recipe starts unconfirmed. |
+| Recipe discovery from prices | Measured: candidates (#21) | One candidate on the full history: History against The Slumbering Beast at 2:1. Check it in game; the desk does not trade on it. |
+| Live resting-order watch | Built (#13) | An alert fires when a round trip has orders waiting to be taken and its edge clears your threshold. |
+| Cross-league arbitrage of attention | Built (#19) | Compares the same market across the challenge league, Hardcore, Standard and Ruthless. The gaps found so far are lasting ones, such as the Divine in Standard. |
 
 ## Pricing models
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Two-market model | Build, wave 1 | Each item gets one value plus a Divine-market premium that moves slowly. The fit is causal and comes with a look-ahead test. |
-| Premium forecasting | Measure first, wave 4 | We test whether the premium follows the league day the same way across leagues. |
-| Order-book inference | Measure first, wave 4 | We test whether the changes in resting stock predict the next hours' price. If they do not, we say so and ship nothing. |
-| Spread estimation | Measure first, wave 4 | We estimate the spread from what is published. The README already says validating it needs checks in game. The typed trade check can collect those checks. |
-| Regime detection | Measure first, wave 4 | Foulborn Exalted Orb on day 6 is the known case. A detector must flag it early without flagging every quiet market. |
-| Item relationships | Measure first, wave 4 | We look for leaders, laggards and baskets on the full history. We keep only what holds across leagues. |
-| Uncertainty everywhere | Build, wave 1, then spread through later waves | The fair value filter already tracks its own uncertainty. Wave 1 exposes it as a range. Margins and estimates then carry ranges as each page is touched. |
+| Two-market model | Built as an experiment (#6); measured: fail | It predicts worse than pricing each market on its own, in every league. It stays a scorecard experiment (`scorecard --two-market`) and is not used anywhere on the desk. |
+| Premium forecasting | Measured: fail, nothing shipped (#21) | The desk keeps the trailing premium. |
+| Order-book inference | Measured: fail, nothing shipped (#21) | The stock on offer adds nothing beyond fair value. |
+| Spread estimation | Measured: report only (#21) | Spreads are wide and steady from week to week. Check them in game with the trade check. |
+| Regime detection | Measured: not enough data, not shipped as an alert (#21) | The only known crash is in Covens, too young to count, and the detector raises too many false alarms. |
+| Item relationships | Measured: candidates (#21) | 140 pairs, all expected ones. Nothing to trade on. |
+| Uncertainty everywhere | Built (#6, #8, #15) | Fair value carries a range, shown on Markets, the item chart, the trade check and stash value. The range says how sure the model is now; it is not a forecast. |
 
 ## League start
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Launch-day playbook | After the sync, wave 4 | Hour by hour for the first 72 hours of each past league. It needs those starts on disk. |
-| Patch-note impact | Only with tags you enter | No machine-readable patch-note source is open to the desk. A tag list you fill in yourself is possible later. |
-| Next-league rehearsal | Backend built, wave 4; page to come | The desk is built "as of" a past hour and played forward. This is the same causality rule the backtests follow, so it is a natural fit. The server and the `rehearse` command run it; the browser page is a later task. |
-| Divine timing | After the sync, wave 4 | It comes from the Divine-by-league-day curves the League start page already draws. |
-| Meta shifts | After the sync, wave 4 | We compare each item's demand growth with every past league at the same day. |
-| Event leagues | After the sync, wave 4 | Short events become their own family of precedents, so they stop skewing the challenge-league ones. |
+| Launch-day playbook | Built (#19, page in #27) | Hour by hour for the first days of each past challenge league. |
+| Patch-note impact | Not built | No machine-readable patch-note source is open to the desk, and no tag list you enter was built. |
+| Next-league rehearsal | Built (#25, page in #27) | The desk is rebuilt "as of" a past hour and played forward, with its own practice ledger. Start it from League start or with `rehearse`. |
+| Divine timing | Built (#19, page in #27) | From the Divine-by-league-day curves. In 5 of 5 past leagues the Divine was cheapest on day 0. |
+| Meta shifts | Built (#19, page in #27) | Each item's demand growth against every past league at the same day. Many rows rest on a single past league. |
+| Event leagues | Built (#19) | Event leagues are their own family and never count as precedents for a challenge league. |
 
 ## Backtesting and strategy
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Queue model | Build, wave 3 | We use the published resting stock as the queue ahead of you, instead of a flat share of volume. We test it on full history. |
-| Gold-aware backtests | Build, wave 1 | Each order is charged Gold, and the run stops posting when the budget runs out. The fee is a parameter, because the schedule is not published. |
-| Strategy search | Built, wave 4 | We sweep parameters and report what holds up on leagues the search did not see. It is built together with walk-forward evaluation. |
-| Walk-forward evaluation | Built, wave 4 | We tune on earlier leagues and test on the next one. This needs several leagues on disk. |
-| Portfolio view | Build, wave 3 | Several strategies share one bankroll and compete for its capital. |
-| Inventory risk | Build, wave 3 | It shows what a plan stands to lose on what it holds, using the fair-value range from wave 1. |
-| Session simulator | Build, wave 1 | Backtests follow a play schedule, such as "3 hours on weekday evenings". Orders stand while you are away, as `attention` already does. |
+| Queue model | Built (#14); the default since #29 | A resting order waits in line behind the stock already on offer, and takes at most 10% of an hour. It has not been checked against real fills; your tracked orders (`fills`) are how to check it. |
+| Gold-aware backtests | Built (#7) | Each order pays Gold, and the run stops posting when the budget runs out. The fee is a setting, because the schedule is not published. |
+| Strategy search | Built (#20, page in #27) | Sweeps settings and reports results on leagues the search did not see. |
+| Walk-forward evaluation | Built (#20) | Tunes on earlier leagues and tests on the next one. |
+| Portfolio view | Built (#14) | Several strategies share one bankroll. |
+| Inventory risk | Built (#14) | What a plan stands to lose on what it holds, from the fair value range. |
+| Session simulator | Built (#7) | Backtests follow a play schedule, such as "3 hours on weekday evenings". Orders stand while you are away. |
 
 ## The hideout warrior's desk
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Order tracker | Build, wave 1 | You list the orders you post, and the desk says which to cancel, re-price or collect. Fill calibration in wave 3 builds on this. |
-| Session journal | Build, wave 1 | You start and stop a session. It reports profit, Gold used and Chaos per hour against the plan. |
-| Smarter alerts | Build, wave 3 | Alerts on plans, round trips and league precedents, not only on prices. |
-| Phone view | Not building (owner's decision) | The server answers only this computer, and that stays a promise in the README. Alerts reach you through browser notifications instead. |
-| Voice or toast overlay | Build, wave 3 | Browser notifications and spoken prompts from the hideout window. They need no new dependency and do nothing in the game. |
-| Stash valuation | Build, wave 2 | You enter what you hold. The desk values it at fair value, with a range, and says which market pays more for each item. |
-| Tax of time | Build, wave 2 | Each plan gets a count of orders and clicks, and a minutes estimate, next to its Chaos. |
+| Order tracker | Built (#5) | You list the orders you post, and the desk says which to keep, cancel, re-price or collect. |
+| Session journal | Built (#5) | Start and stop a session to see profit, Gold used and Chaos per hour against the plan. |
+| Smarter alerts | Built (#13, page in #18) | Alerts on flip plans, round trips, your orders and league precedents, not only on prices. |
+| Phone view | Not building (owner's decision) | The server answers only this computer, as the README promises. Alerts reach you through browser notifications. |
+| Voice or toast overlay | Built (#18) | Browser notifications and spoken prompts from the desk's window. No new dependency, and nothing touches the game. |
+| Stash valuation | Built (#8, page in #15) | Enter what you hold. Each line gets a value with a range, and which market pays more for it. |
+| Tax of time | Built (#9) | Each plan shows its count of orders and a minutes estimate next to its Chaos. |
 
 ## Data
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Shared snapshots | Not building (owner's decision) | Local `snapshot` and `restore` already exist. The desk collects public data but does not upload or publish anything. |
-| Finer data | Not possible | GGG's docs say the hourly digest is the only source, with no data from the current hour (see `data-sources.md`). |
-| Trade-site prices | Not through the trade site; built through poe.ninja for card rewards | GGG's terms forbid using the trade site's undocumented API, and the public stash API is closed to local tools. poe.ninja's API reference allows its economy endpoints. The desk now prices card sets whose reward is a unique, gem or base type from poe.ninja's stash listings (`ninja.py`), fetched at most hourly with conditional requests, cached, marked as listing prices and credited to poe.ninja. They never enter fair value. |
-| Kingsmarch and Gold income | Not now as a model, partly in wave 1 | No public data source exists. The session journal records the Gold you earned, so your own sessions give Gold a value. |
-| PoE 2 | Not now (owner's decision) | The desk and models are built and tested for PoE 1 only. We revisit this after the PoE 1 waves. |
+| Shared snapshots | Not building (owner's decision) | Local `snapshot` and `restore` exist. The desk does not upload or publish anything. |
+| Finer data | Not possible | GGG's hourly digest is the only source, with no data from the current hour (see `data-sources.md`). |
+| Trade-site prices | Not through the trade site; built through poe.ninja for card rewards (#24, table in #27) | GGG's terms forbid the trade site's undocumented API. poe.ninja's terms allow its economy endpoints. The desk prices card sets whose reward is a unique, gem or base type from poe.ninja's listings, fetched at most hourly and cached locally. They are listing prices, credited to poe.ninja, and never enter fair value. |
+| Kingsmarch and Gold income | Not built as a model; Gold earned is in the session journal (#5) | No public data source exists. Your own sessions record the Gold you earned. |
+| PoE 2 | Not now (owner's decision) | The desk and models are built and tested for PoE 1 only. |
 
 ## Community and sharing
 
 | Idea | Verdict | Why |
 | --- | --- | --- |
-| Strategy sharing | Build, wave 3 | You export a strategy file with its cross-league results to a local file, and import one. Nothing is uploaded. |
-| Public league report | Built, wave 5 | `vaalstreet report` writes a "state of the economy" page per league day to a local folder, using only data up to the end of that day. It has no icons, scripts or remote assets, and nothing from your ledger. Where to publish it is up to you. |
-| Anonymous fill data | Not building (owner's decision) | Pooling needs a server and uploads. The desk does not upload anything. |
+| Strategy sharing | Built (#14) | Export a strategy with its cross-league results to a local file, and import one. Nothing is uploaded. |
+| Public league report | Built (#23) | `vaalstreet report` writes a "state of the economy" page per league day to a local folder, from data up to the end of that day. It has no scripts and nothing from your ledger. Where to publish it is up to you. |
+| Anonymous fill data | Not building (owner's decision) | Pooling needs a server and uploads. |
+
+## Fixes along the way
+
+- **Ingest memory** (#16, based on `main`): ingest fits in memory on the full archive.
+- **Real-data fixes** (#17, #26, #28): joke-hour prices, garbage swaps, plans judged against holding Divines, each market's own flip levels, and crashes and memory limits found in the full-history run.
+
+## Results on the full history
+
+The archive runs from July 2024 to 22 November 2026. The challenge leagues in it are Settlers, Mercenaries, Keepers, Mirage, Allflame and Covens. Settlers only trains. Mercenaries, Keepers, Mirage and Allflame are the test leagues. Covens was live at day 8 and never counts, because it has under 14 days. The pass rules below were fixed before the run, and "fail" is a valid result.
+
+| Measurement | Command | Verdict | Key numbers | What it means for a player |
+| --- | --- | --- | --- | --- |
+| Fair value | `scorecard --league <L>` | Beats the last print | Cuts the error by 9 to 34% in every finished league. | Fair value is a better guide than the last trade. |
+| Two-market model | `research two-market`, `scorecard --two-market` | Fail | Loses to pricing each market on its own in every league: Chaos market −26% to −50%, Divine market −65% to −381%, on items that trade almost every hour. | Not used on the desk; it stays a scorecard experiment. |
+| Premium forecasting | `research premium` | Fail | −79% against the trailing premium. | The desk keeps the trailing premium. |
+| Order-book inference | `research orderbook` | Fail | −0.03% against fair value, better in 1 of 4 leagues. | The stock on offer does not predict the price. Nothing shipped. |
+| Spread estimation | `research spread` | Report only | Median spread 0.37 to 0.50 in the Chaos market, 0.16 to 0.21 in the Divine market. Steady from week to week (rank correlation 0.71 to 0.84). | Spreads are wide. Check them in game with the trade check. |
+| Regime detection | `research regime` | Not enough data | The Covens crash was flagged 1 hour after it happened, but Covens does not count. 0.215 false alarms per quiet item-week, against a ceiling of 0.1. | Not shipped as an alert. |
+| Item relationships | `research relationships` | Candidates | 140 pairs, all expected ones, such as Mirror of Kalandra with Mirror Shard. | Nothing to trade on. |
+| Recipe discovery | `research recipes` | Candidates | 1: History against The Slumbering Beast at 2:1, in 2 of 2 leagues. | Check it in game. The desk does not trade on it. |
+| Strategy search with walk-forward | `search <strategy> --fill-model queue` | Swing: a lead. Reversion and momentum: fail | With the wait-in-line fill model, the chosen swing settings beat holding Divines on Mercenaries and Keepers, and are about level on Mirage and Allflame. Reversion −79% and momentum −82% against holding Divines. Under the old share fill model, swing showed +600 to +2,500%, which came from the fill model. | The wait-in-line model was chosen after the share result was seen, so treat swing as a lead, not proof. |
+| Waiting in line against a share of volume | `research queue-vs-share`, `backtest swing --fill-model share\|queue` | Report only | Swing on Mirage against holding Divines: +960% with a share of volume, −5.4% waiting in line (with the 10% cap). | Waiting in line is now the default (#29). Neither model has been checked against real fills; `fills` is how to check it. |
+| Bankroll ladder | `research ladder-rates` | Report only | Last week's replay delivers only 3 to 26% of the "promised" rate. | The desk shows the replay first. Trust it. |
+| League start | `playbook`, `divine-timing`, `meta`, `cross-league` | Checked | Every analysis uses the 5 earlier challenge leagues as precedents, and no event league. In 5 of 5 leagues the Divine was cheapest on day 0. | The Divine has been cheapest at launch every time so far. |
 
 ## How a measurement passes
 
@@ -137,3 +156,10 @@ The "Measure first" ideas are claims about the market. We test seven or more of 
 - *Baskets.* The daily changes in fair value of two items are correlated at 0.6 or more.
 
 **Report-only measurements** (`spread`, `queue-vs-share`, `ladder-rates`) describe the data and the desk's own models. They do not claim that a signal predicts anything, so they have no pass rule and print "report only". The spread estimate still needs checks in game before it is trusted.
+
+## What the owner still has to do
+
+- **Merge the pull requests.** Start with #16, the ingest memory fix, which is based on `main`. Then merge the stack from #4 to #29 in order.
+- **Index the archive.** After merging #16, run `python -m vaalstreet ingest`. The archive is downloaded but not yet indexed in `data/`.
+- **Check the screen check in game.** Its window layout has not been tested against the live game. It needs Windows and Python 3.10 to 3.12.
+- **poe.ninja dumps (optional).** The leagues before July 2024 could go into `data/ninja/`.
