@@ -54,7 +54,7 @@ def test_api_serves_every_desk_page(server):
     status, body = call(f"{server}/api/status")
     assert status == 200 and body["ready"] and body["league"] == NEW, "the live challenge league is the default"
     status, desk = call(f"{server}/api/desk")
-    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 6  # the Test Lure is the sixth
+    assert status == 200 and desk["summary"]["league_day"] == 7 and len(desk["market"]) == 7  # with the Test Lure and the Test Blade card
     assert call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
     arb = call(f"{server}/api/arbitrage")[1]
     assert arb["conversions"][0]["reward"] == "Test Orb" and arb["loops"] and not arb["chaos_only"]
@@ -134,9 +134,21 @@ def test_api_orders_sessions_and_recipe_checks(server):
     assert after["recipe_checks"][0]["label"] != key
 
 
-def test_api_gold_fields_settings_and_session_plan(server):
+def test_api_flips_filters_by_market_before_it_cuts_the_list(server):
+    """The Flips page re-ranks and searches the list it gets, so the server must not cut it to the most
+    profitable plans first, and a market filter must apply before any cut a caller asks for."""
+    every = call(f"{server}/api/flips?min_margin=0.01")[1]["flips"]
+    kinds = [p["kind"] for p in every]
+    assert len(set(kinds)) > 1 and kinds[0] != "divine", "the archive ranks another kind of plan first"
+    divine = call(f"{server}/api/flips?min_margin=0.01&kind=divine&limit=1")[1]["flips"]
+    assert [p["kind"] for p in divine] == ["divine"]
+    assert len(call(f"{server}/api/flips?min_margin=0.01&limit=1")[1]["flips"]) == 1
+
+
+def test_api_gold_fields_settings_and_session_plan(flat_server):
+    server = flat_server  # a flat Divine, so some flip beats holding Divines and makes the session plan
     flips = call(f"{server}/api/flips?min_margin=0.01")[1]
-    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0}
+    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
     assert all(p["gold"] is None and p["minutes"] == 2 for p in flips["flips"]), "no fee until you give one"
     assert "session" not in flips, "no bankroll, no session plan"
 
@@ -193,6 +205,10 @@ def test_api_your_recipes_and_vendor_prices_with_their_checks(server):
     for f in arb["fixed"]:
         assert call(f"{server}/api/recipe", {"delete": f["id"]})[0] == 200
     assert call(f"{server}/api/arbitrage")[1]["fixed"] == []
+    # The checks outlive the recipes; they are named from their keys, never shown as raw keys.
+    checks = {c["key"]: c["label"] for c in call(f"{server}/api/ledger")[1]["recipe_checks"]}
+    assert checks[yours["recipe_key"]] == "2 Test Card + 1 Test Shard → 1 Test Orb"
+    assert all(":" not in label for label in checks.values())
 
 
 def test_api_recipe_takes_names_or_ids(server):
@@ -242,3 +258,20 @@ def test_market_change_is_blank_when_the_window_starts_before_the_item_traded(co
     desk = Desk.build(con, NEW, root=archive_root)
     desk.panel["price"][:141, desk.panel.index(ITEM)] = float("nan")
     assert row(desk)["change_24h"] is not None
+
+
+def test_the_sync_thread_warms_the_slow_answers(flat_root, tmp_path):
+    """After a rebuild the flip replays and the ladder's replays at the stake are already computed:
+    the pages' first requests add nothing to the desk's replay cache."""
+    from vaalstreet.ledger import Ledger
+    from vaalstreet.server import App
+
+    app = App(flat_root, sync=False)
+    app.ledger = Ledger(tmp_path)
+    app._warm()
+    desk = app.desk()
+    warmed = set(desk._replays)
+    assert (0.1, 7) in warmed and any(k[0] == "at" for k in warmed if isinstance(k, tuple) and k)
+    app.api_flips({})
+    app.api_ladder({})
+    assert set(app.desk()._replays) == warmed and app.desk() is desk
