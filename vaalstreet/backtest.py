@@ -11,20 +11,32 @@ published per market and hour - the average traded price (VWAP) and the volume:
   the extreme do not count. It never gets a better price than L.
 * A market order (no limit) pays the hour's VWAP plus `slippage`, the taker's
   cost of crossing the spread.
-* A fill takes at most `participation` of the hour's volume in that market.
+* A fill takes at most `participation` of the hour's volume in that market. With
+  `fill_model="queue"`, the default, a resting order also waits behind the stock published on its
+  side when it was posted (see `Simulation._queue_at`), and fills from the volume that trades
+  through its level after that queue is gone, still at most `participation` of it. So queue
+  never fills more than share in an hour.
 * No leverage, no shorting: buys are scaled to cash, sells to inventory.
 
 Orders live in one of two markets per item: "r" (against Chaos) or "b" (against
 Divine). Divine proceeds are converted to Chaos at that hour's Divine price, so
 the account is kept in Chaos throughout.
 
+A run loaded from the archive trades only the items that have joined its universe, the most
+traded items by value traded so far (see `listed`); before an item joins, a strategy can
+neither see nor trade it, so the choice of items is as causal as the prices.
+
 A strategy is any object with `step(ctx)`; see `Hold`, `Swing`, `Reversion`,
-`Momentum` below, or pass your own class to `run`.
+`Momentum` below, or pass your own class to `run`. `run_portfolio` runs several on one
+bankroll (see `Portfolio`). Every result also records the holdings at fair value and what
+they would lose on a bad day for those items (see `drop_per_unit`): the inventory risk.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib.util
+import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,10 +46,90 @@ import duckdb
 import numpy as np
 
 from vaalstreet import pricing
-from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling_weighted_quantile
+from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling, rolling_weighted_quantile
 
 LEG_KEYS = ("r", "b")
-MAX_SWING = math.log(1.5)
+RISK_Z = 1.645  # one-sided 95%: a bad day, about 1 in 20
+RISK_WINDOW = 168  # hours of fair-value moves the volatility is measured over
+
+
+def drop_per_unit(mark: np.ndarray, horizon: float = 24, window: int = RISK_WINDOW, z: float = RISK_Z) -> np.ndarray:
+    """[T, N] Chaos per unit an item loses on a bad `horizon` hours: the inventory risk per item.
+
+    The volatility is the standard deviation of the item's hourly log fair-value changes over
+    the trailing `window` hours, so it measures how the market moves, not how sure the model is
+    of the value. It is scaled to the holding horizon by sqrt(horizon) (moves taken as
+    independent hour to hour) and the bad day is `z` deviations down: mark * (1 - exp(-z s sqrt(H))).
+    Row t uses fair values up to t only. Before 12 hourly changes are known it is 0.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        moves = np.diff(np.log(mark), axis=0, prepend=np.nan)
+    sigma = rolling(moves, window, np.nanstd, min_count=12)
+    return mark * (1 - np.exp(-z * np.nan_to_num(sigma) * math.sqrt(max(horizon, 0))))
+FILL_MODELS = ("share", "queue")
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def parse_schedule(spec: str) -> np.ndarray:
+    """A play schedule as a [7, 24] mask of the hours you are at the desk (Monday first, UTC).
+
+    `spec` is one or more windows separated by ";" or ",", each "[days] start-end":
+    "mon-fri 19-22", "sat,sun 10-14; wed 20-23", or "18-20" for every day. Days take
+    ranges that wrap ("fri-mon"). Hours are whole UTC hours and the end is exclusive, so
+    "19-22" is three hours of play; "22-2" runs past midnight into the next day.
+    """
+    mask = np.zeros((7, 24), dtype=bool)
+    windows = [w.strip().lower() for w in spec.replace(";", "\n").splitlines() if w.strip()]
+    if not windows:
+        raise ValueError("Empty schedule; write it like 'mon-fri 19-22'.")
+    days: list[int] = []
+    for window in windows:
+        # Commas separate both day lists ("sat,sun 10-14") and windows ("mon 19-22, sun 10-14").
+        for part in [p.strip() for p in window.split(",") if p.strip()]:
+            words = part.split()
+            if len(words) > 2:
+                raise ValueError(f"Cannot read schedule window {part!r}; write it like 'mon-fri 19-22'.")
+            if len(words) == 2 or not any(c.isdigit() for c in words[0]):
+                days += _days(words[0])
+            if any(c.isdigit() for c in words[-1]):
+                start, end = _hours(words[-1])
+                for day in days or range(7):
+                    for h in range(start, end if end > start else end + 24):  # "22-2" wraps
+                        mask[(day + h // 24) % 7, h % 24] = True
+                days = []
+    if days:
+        raise ValueError(f"Schedule {spec!r} names days without hours; write it like 'mon-fri 19-22'.")
+    return mask
+
+
+def _days(text: str) -> list[int]:
+    first, _, last = text.partition("-")
+    try:
+        a = DAYS.index(first[:3])
+        b = DAYS.index(last[:3]) if last else a
+    except ValueError:
+        raise ValueError(f"Unknown day {text!r}; use mon, tue, wed, thu, fri, sat, sun.") from None
+    return [(a + i) % 7 for i in range((b - a) % 7 + 1)]
+
+
+def _hours(text: str) -> tuple[int, int]:
+    try:
+        start, end = (int(x) for x in text.split("-"))
+    except ValueError:
+        raise ValueError(f"Cannot read hours {text!r}; write them like 19-22 (UTC, end not included).") from None
+    if not (0 <= start <= 23 and 0 <= end <= 24) or start == end:
+        raise ValueError(f"Hours {text!r} must lie between 0 and 24 and not be empty.")
+    return start, end
+
+
+def in_schedule(mask: np.ndarray, hours: np.ndarray) -> np.ndarray:
+    """Whether each panel hour's visit falls inside the schedule.
+
+    Hour stamps are the start of the hour in unix seconds (UTC). An hour's prices are published
+    when it ends, so the visit that acts on row t happens at hours[t] + 1h. 1970-01-01 was a Thursday.
+    """
+    clock = (np.asarray(hours, dtype=np.int64) + HOUR) // HOUR
+    return mask[(clock // 24 + 3) % 7, clock % 24]
 
 
 class Strategy(Protocol):
@@ -52,10 +144,57 @@ class Book:
     buy_units: np.ndarray
     sell_limit: np.ndarray
     sell_units: np.ndarray
+    # With whole lots: the price each order states, in its own market's currency (Chaos or
+    # Divine), and its lot size in items. NaN / 1 for market orders and outside whole-lot runs.
+    buy_ratio: np.ndarray | None = None
+    buy_lot: np.ndarray | None = None
+    sell_ratio: np.ndarray | None = None
+    sell_lot: np.ndarray | None = None
+    # With the queue fill model: units still resting ahead of each order at its level.
+    buy_queue: np.ndarray | None = None
+    sell_queue: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        n = len(self.buy_limit)
+        for side in ("buy", "sell"):
+            if getattr(self, f"{side}_ratio") is None:
+                setattr(self, f"{side}_ratio", np.full(n, np.nan))
+            if getattr(self, f"{side}_lot") is None:
+                setattr(self, f"{side}_lot", np.ones(n))
+            if getattr(self, f"{side}_queue") is None:
+                setattr(self, f"{side}_queue", np.zeros(n))
 
     @classmethod
     def empty(cls, n: int) -> "Book":
         return cls(np.full(n, np.nan), np.zeros(n), np.full(n, np.nan), np.zeros(n))
+
+    def copy(self) -> "Book":
+        return Book(*(np.array(getattr(self, f), dtype=float) for f in (
+            "buy_limit", "buy_units", "sell_limit", "sell_units", "buy_ratio", "buy_lot", "sell_ratio", "sell_lot",
+            "buy_queue", "sell_queue")))
+
+
+class Wallet:
+    """The cash and Gold that strategies draw on. One strategy has a wallet to itself; in a
+    portfolio every strategy shares one, so they compete for the same Chaos and Gold.
+
+    It also counts the units already filled in each market and hour, so that two strategies
+    in the same market cannot both take the full share of that hour's flow.
+    """
+
+    def __init__(self, cash: float) -> None:
+        self.cash = float(cash)
+        self.gold = 0.0
+        self._hour = -1
+        self._taken: dict[tuple[str, str], np.ndarray] = {}
+
+    def taken(self, t: int, key: str, side: str, n: int) -> np.ndarray:
+        if t != self._hour:
+            self._hour, self._taken = t, {}
+        return self._taken.get((key, side), np.zeros(n))
+
+    def take(self, t: int, key: str, side: str, units: np.ndarray) -> None:
+        self._taken[(key, side)] = self.taken(t, key, side, len(units)) + units
 
 
 class Context:
@@ -82,29 +221,37 @@ class Context:
     def league_hour(self) -> int:
         return self.t + self._sim.offset
 
+    def _seen(self, rows: np.ndarray) -> np.ndarray:
+        """Hide the items that have not joined the universe yet (see `listed`) as NaN.
+
+        Which columns exist was decided with the whole run in view, so an item that only joins later
+        must not be visible before it does: a strategy would otherwise rank it now."""
+        listed = self._sim.listed
+        return rows if listed is None else np.where(listed[self.t], rows, np.nan)
+
     def history(self, column: str, hours: int | None = None) -> np.ndarray:
         """Rows up to and including the current hour of a panel column ([t+1, N] or the last `hours`)."""
         data = self._sim.panel[column]
         start = 0 if hours is None else max(0, self.t + 1 - hours)
-        return data[start : self.t + 1]
+        return self._seen(data[start : self.t + 1])
 
     @property
     def fair(self) -> np.ndarray:
         """Causal fair value per item at the current hour."""
-        return self._sim.fair[self.t]
+        return self._seen(self._sim.fair[self.t])
 
     def fair_history(self, hours: int | None = None) -> np.ndarray:
         start = 0 if hours is None else max(0, self.t + 1 - hours)
-        return self._sim.fair[start : self.t + 1]
+        return self._seen(self._sim.fair[start : self.t + 1])
 
     @property
     def z(self) -> np.ndarray:
         """Surprise of this hour's print against the model's forecast (NaN if no print)."""
-        return self._sim.z[self.t]
+        return self._seen(self._sim.z[self.t])
 
     def swing(self, leg: str, reach: float) -> np.ndarray:
         """Log distance from fair value below which `reach` of the leg's recent volume traded."""
-        return self._sim.swing(leg, reach)[self.t]
+        return self._seen(self._sim.swing(leg, reach)[self.t])
 
     @property
     def bridge(self) -> float:
@@ -133,6 +280,15 @@ class Context:
         """What each unit currently held was bought for, per item (NaN where nothing is held)."""
         with np.errstate(divide="ignore", invalid="ignore"):
             return np.where(self._sim.position > 0, self._sim.cost / self._sim.position, np.nan)
+
+    @property
+    def gold_spent(self) -> float:
+        return self._sim.gold_spent
+
+    @property
+    def gold_left(self) -> float:
+        """Gold still in the budget (infinite without one)."""
+        return self._sim.gold_budget - self._sim.wallet.gold
 
     @property
     def state(self) -> dict:
@@ -197,6 +353,27 @@ class Result:
     names: list[str]
     params: dict[str, Any] = field(default_factory=dict)
     divine: np.ndarray | None = None  # [T] Divine price relative to hour 24: the "just hold Divines" line
+    gold: np.ndarray | None = None  # [T] Gold spent on posting orders so far
+    holdings: np.ndarray | None = None  # [T] what is held, at fair value, in Chaos
+    risk: np.ndarray | None = None  # [T] what the holdings lose on a bad day (about 1 in 20) for these items
+    capital: np.ndarray | None = None  # [T] Chaos tied up in holdings, at what they cost
+    members: list[dict] | None = None  # a portfolio's strategies, each with its share
+
+    @property
+    def peak_holdings(self) -> float:
+        return float(np.max(self.holdings)) if self.holdings is not None and len(self.holdings) else 0.0
+
+    @property
+    def peak_risk(self) -> float:
+        return float(np.max(self.risk)) if self.risk is not None and len(self.risk) else 0.0
+
+    @property
+    def average_risk(self) -> float:
+        return float(np.mean(self.risk)) if self.risk is not None and len(self.risk) else 0.0
+
+    @property
+    def gold_spent(self) -> float:
+        return float(self.gold[-1]) if self.gold is not None and len(self.gold) else 0.0
 
     @property
     def total_return(self) -> float:
@@ -233,11 +410,21 @@ class Result:
             "end": round(float(self.equity[-1]), 2),
             "return": round(self.total_return, 4),
             "divine_return": None if math.isnan(self.divine_return) else round(self.divine_return, 4),
+            # The figure to judge a strategy by: a league start's rising Divine flatters every Chaos return.
+            "vs_divine": None if math.isnan(self.divine_return)
+            else round((1 + self.total_return) / (1 + self.divine_return) - 1, 4),
             "per_day": round(float((self.equity[-1] - self.start_capital) / days), 2),
             "max_drawdown": round(self.max_drawdown, 4),
             "daily_sharpe": None if math.isnan(self.daily_sharpe) else round(self.daily_sharpe, 3),
             "fills": self.fills,
             "turnover": round(float((self.bought + self.sold) / 2 / self.start_capital), 2),
+            "gold_spent": round(self.gold_spent),
+            "chaos_per_1000_gold": round(float((self.equity[-1] - self.start_capital) / self.gold_spent * 1000), 2)
+            if self.gold_spent > 0 else None,
+            "peak_holdings": round(self.peak_holdings, 2),
+            "peak_risk": round(self.peak_risk, 2),
+            "average_risk": round(self.average_risk, 2),
+            **({"strategies": self.members} if self.members is not None else {}),
             "top_items": [
                 {"name": self.names[i], "profit": round(float(self.realized[i]), 2)} for i in order if self.realized[i]
             ],
@@ -255,29 +442,72 @@ class Simulation:
         offset: int = 0,
         attention: int = 1,
         compound: bool = False,
+        whole_lots: bool = False,
+        gold_per_unit: float | np.ndarray = 0.0,
+        gold_budget: float | None = None,
+        schedule: str | np.ndarray | None = None,
+        fill_model: str = "queue",
+        wallet: Wallet | None = None,
+        model_from: "Simulation | None" = None,
+        risk_hours: float = 24,
     ) -> None:
+        if fill_model not in FILL_MODELS:
+            raise ValueError(f"Unknown fill model {fill_model!r}; use {' or '.join(FILL_MODELS)}.")
         self.panel = panel
+        self.fill_model = fill_model
         self.participation = participation
         self.slippage = slippage
         self.offset = offset
         self.attention = max(1, int(attention))
         self.compound = compound
+        self.whole_lots = whole_lots
+        n_items = len(panel.items)
+        fee = np.nan_to_num(np.broadcast_to(np.asarray(gold_per_unit, dtype=float), (n_items,)).copy())
+        if (fee < 0).any():
+            raise ValueError("Gold per unit cannot be negative.")
+        self.gold_fee = fee
+        self.gold_budget = math.inf if gold_budget is None else float(gold_budget)
+        self.gold_spent = 0.0
+        if isinstance(schedule, str):
+            schedule = parse_schedule(schedule)
+        self.playing = None if schedule is None else in_schedule(schedule, panel.hours)
+        # [T, N] which items may be traded at each hour, from `_load`; without it, every item may.
+        self.listed = panel.data.get("listed")
         self.start_capital = capital
-        self.cash = capital
+        self.wallet = Wallet(capital) if wallet is None else wallet
         n = len(panel.items)
         self.position = np.zeros(n)
         self.cost = np.zeros(n)  # total cost of the current position, for average-cost P&L
         self.realized = np.zeros(n)
         self.books = {key: Book.empty(n) for key in LEG_KEYS}
         self.state: dict = {}
-        fv = pricing.fair_value(panel["price"], panel["value"])
-        self.fair, self.z = fv.fair, fv.z
-        self._mark = ffill(self.fair)
-        self._swing: dict[tuple[str, float], np.ndarray] = {}
+        if model_from is not None:  # a portfolio fits the model once and shares it
+            self.fair, self.z, self._mark, self._drop = model_from.fair, model_from.z, model_from._mark, model_from._drop
+            self._swing = model_from._swing
+            self._leg_fair = model_from._leg_fair
+            self._resting = model_from._resting
+        else:
+            fv = pricing.fair_value(panel["price"], panel["value"])
+            self.fair, self.z = fv.fair, fv.z
+            self._mark = ffill(self.fair)
+            self._drop = drop_per_unit(self._mark, risk_hours)
+            self._swing: dict[tuple[str, float], np.ndarray] = {}
+            self._leg_fair: dict[str, np.ndarray] = {}
+            self._resting: dict[tuple[str, str], np.ndarray] = {}
         self.fills = 0
         self.sales = np.zeros(n, dtype=np.int64)  # hours in which each item sold
+        self.peak_cost = np.zeros(n)  # the most Chaos each item ever had tied up at cost
         self.bought = 0.0
         self.sold = 0.0
+        self._session = 0  # first hour of the current play session
+
+    @property
+    def cash(self) -> float:
+        return self.wallet.cash
+
+    @cash.setter
+    def cash(self, value: float) -> None:
+        self.wallet.cash = value
 
     def profit(self, t: int = -1) -> np.ndarray:
         """Profit per item so far: realised, plus what is still held marked at fair value."""
@@ -289,85 +519,345 @@ class Simulation:
         The level below which `reach` of the leg's units traded over the trailing window."""
         key = (leg, reach)
         if key not in self._swing:
-            prior = np.vstack([self.fair[:1], self.fair[:-1]])
-            with np.errstate(divide="ignore", invalid="ignore"):
-                dev = np.log(self.panel[f"{leg}_price"] / prior)
-            # Never place a level more than ~1.5x from fair value: beyond that the print was an empty book.
-            dev = np.where(np.isfinite(dev), np.clip(dev, -MAX_SWING, MAX_SWING), np.nan)
+            # Never more than ~1.5x from that market's own fair value: beyond that the print was an empty book.
+            dev = pricing.leg_deviation(self.panel[f"{leg}_price"], self.fair, self.leg_fair(leg))
             self._swing[key] = rolling_weighted_quantile(dev, self.panel[f"{leg}_volume"], window, reach, min_count=12)
         return self._swing[key]
+
+    def leg_fair(self, leg: str) -> np.ndarray:
+        """[T, N] one market's own causal fair value (the same model as the item's, on that market's prints)."""
+        if leg not in self._leg_fair:
+            price = self.panel[f"{leg}_price"]
+            self._leg_fair[leg] = pricing.fair_value(price, self.panel[f"{leg}_volume"] * price).fair
+        return self._leg_fair[leg]
 
     def equity_now(self, t: int) -> float:
         return float(self.cash + np.nansum(self.position * np.nan_to_num(self._mark[t])))
 
     def _execute(self, t: int) -> None:
         """Match the standing orders against hour t's markets."""
+        if self.whole_lots:
+            return self._execute_whole(t)
         for key in LEG_KEYS:
             book = self.books[key]
             vwap = self.panel[f"{key}_price"][t]
-            cap = self.participation * np.nan_to_num(self.panel[f"{key}_volume"][t])
-            traded = np.isfinite(vwap) & (cap > 0)
+            volume = np.nan_to_num(self.panel[f"{key}_volume"][t])
+            traded = np.isfinite(vwap) & (self.participation * volume > 0)
 
             # Sells first: they free up cash for this hour's buys.
-            want = np.minimum(np.minimum(book.sell_units, self.position), cap)
             with np.errstate(invalid="ignore"):
-                hit = traded & (want > 0) & ~np.isnan(book.sell_limit) & (vwap >= book.sell_limit)
+                through = traded & ~np.isnan(book.sell_limit) & (vwap >= book.sell_limit)
+            market = book.sell_limit <= 0
+            cap = self._capacity(t, key, "sell", book, volume, through, market)
+            want = np.minimum(np.minimum(book.sell_units, self.position), cap)
+            hit = through & (want > 0)
             if hit.any():
-                market = book.sell_limit <= 0
                 price = np.where(hit, np.where(market, vwap * (1 - self.slippage), book.sell_limit), 0.0)
                 units = np.where(hit, want, 0.0)
-                proceeds = units * price
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    avg_cost = np.where(self.position > 0, self.cost / self.position, 0.0)
-                self.realized += proceeds - units * avg_cost
-                self.cost -= units * avg_cost
-                self.position -= units
-                self.cash += float(proceeds.sum())
-                self.sold += float(proceeds.sum())
-                self.fills += int(hit.sum())
-                self.sales += hit
+                self._sold(units, price, hit)
                 book.sell_units = book.sell_units - units
+                self.wallet.take(t, key, "sell", units)
 
-            want = np.minimum(book.buy_units, cap)
             with np.errstate(invalid="ignore"):
-                hit = traded & (want > 0) & ~np.isnan(book.buy_limit) & (vwap <= book.buy_limit)
+                through = traded & ~np.isnan(book.buy_limit) & (vwap <= book.buy_limit)
+            market = np.isinf(book.buy_limit)
+            cap = self._capacity(t, key, "buy", book, volume, through, market)
+            want = np.minimum(book.buy_units, cap)
+            hit = through & (want > 0)
             if hit.any():
-                market = np.isinf(book.buy_limit)
                 price = np.where(hit, np.where(market, vwap * (1 + self.slippage), book.buy_limit), 0.0)
                 cost = np.where(hit, want, 0.0) * price
                 total = float(cost.sum())
                 scale = min(1.0, self.cash / total) if total > 0 else 0.0
                 units = np.where(hit, want, 0.0) * scale
-                cost = cost * scale
-                self.position += units
-                self.cost += cost
-                self.cash -= float(cost.sum())
-                self.bought += float(cost.sum())
-                self.fills += int(hit.sum())
+                hit &= units > 0  # an order that found no cash left did not fill
+                self._bought(units, cost * scale, hit)
                 book.buy_units = book.buy_units - units
+                self.wallet.take(t, key, "buy", units)
+
+    def _capacity(
+        self, t: int, key: str, side: str, book: Book, volume: np.ndarray, through: np.ndarray, market: np.ndarray
+    ) -> np.ndarray:
+        """Units one side of one market can fill this hour, per item.
+
+        With the "share" model, a fill takes at most `participation` of the hour's volume. With the
+        "queue" model, a resting order first waits for the stock that rested ahead of it when it
+        was posted (see `_queue_at`): only volume that traded through its level counts, and the
+        order fills from what trades after the queue is gone, still at most `participation` of the
+        hour's volume. Market orders do not queue and keep the same cap. Either way, units already taken in this market and hour
+        by another strategy of the same portfolio are not there to take again.
+        """
+        taken = self.wallet.taken(t, key, side, len(volume))
+        share = np.maximum(self.participation * volume - taken, 0)
+        if self.fill_model == "share":
+            return share
+        queue = getattr(book, f"{side}_queue")
+        flow = np.maximum(volume - taken, 0)
+        resting = through & ~market & (getattr(book, f"{side}_units") > 0)
+        # Past the queue an order still takes at most the share: in a thin market with little
+        # resting stock, the queue alone would let it take the whole hour's volume.
+        room = np.where(market, share, np.where(resting, np.minimum(np.maximum(flow - queue, 0), share), 0.0))
+        setattr(book, f"{side}_queue", np.where(resting, np.maximum(queue - flow, 0), queue))
+        return room
+
+    def _queue_at(self, t: int, key: str, side: str, item: int, limit: float) -> float:
+        """Units resting ahead of an order posted at hour t: the queue it joins at the back of.
+
+        The digest publishes, per market and hour, `lowest_stock` and `highest_stock` for each of
+        the two currencies. `ingest` keeps them as `*_stock_lo/_hi`, the item on offer (the
+        sellers you queue behind with a sell), and `*_bid_lo/_hi`, the Chaos on offer for it (the
+        buyers you queue behind with a buy; divided by your limit to count it in items).
+
+        GGG does not document the fields beyond their names, so two readings here are
+        assumptions: that they are the least and the most stock seen on offer during the hour,
+        and that they count the whole side of the book, at every price. We take the lowest: on
+        that reading it rested through the whole hour, so it was there when you posted, while the
+        highest adds orders that came and went. The desk's own displays show the geometric mean
+        of the two as a typical level; a queue wants what certainly stood ahead of you.
+
+        Where the guess errs: if the stock spans every price, the queue is too long for an order
+        at a sharp price; taking the hour's lowest, and counting unknown stock as empty, can make
+        it too short. It is read at hour t (forward-filled up to six hours when the market printed
+        nothing), so it is known when the order goes up. Once the queue is gone, the order fills
+        like the "share" model: at most `participation` of the hour's volume.
+        """
+        if (side == "buy" and math.isinf(limit)) or (side == "sell" and limit <= 0):
+            return 0.0  # market orders take liquidity; they do not queue
+        column = f"{key}_stock_lo" if side == "sell" else f"{key}_bid_lo"
+        if (key, column) not in self._resting:
+            self._resting[(key, column)] = ffill(self.panel[column], limit=6)
+        stock = float(self._resting[(key, column)][t, item])
+        if side == "buy":
+            stock = stock / limit if limit > 0 else math.nan
+        return stock if math.isfinite(stock) and stock > 0 else 0.0
+
+    def _sold(self, units: np.ndarray, price: np.ndarray, hit: np.ndarray) -> None:
+        proceeds = units * price
+        with np.errstate(divide="ignore", invalid="ignore"):
+            avg_cost = np.where(self.position > 0, self.cost / self.position, 0.0)
+        self.realized += proceeds - units * avg_cost
+        self.cost -= units * avg_cost
+        self.position -= units
+        self.cash += float(proceeds.sum())
+        self.sold += float(proceeds.sum())
+        self.fills += int(hit.sum())
+        self.sales += hit
+
+    def _bought(self, units: np.ndarray, cost: np.ndarray, hit: np.ndarray) -> None:
+        self.position += units
+        self.cost += cost
+        self.peak_cost = np.maximum(self.peak_cost, self.cost)
+        self.cash -= float(cost.sum())
+        self.bought += float(cost.sum())
+        self.fills += int(hit.sum())
+
+    def _execute_whole(self, t: int) -> None:
+        """Hour t's fills when the exchange's whole-lot rules apply.
+
+        A limit order fills in whole lots at the ratio it states. A Divine-market order states
+        Divines, so it is tested and paid at this hour's Divine price, the way the order really
+        stands while the Divine moves. Market orders fill whole units. Buys take cash order by
+        order rather than pro rata, because scaling every order down would leave each one short
+        of a whole lot.
+        """
+        bridge = float(self.panel.bridge[t])
+        for key in LEG_KEYS:
+            book = self.books[key]
+            unit = bridge if key == "b" else 1.0
+            vwap = self.panel[f"{key}_price"][t]
+            volume = np.nan_to_num(self.panel[f"{key}_volume"][t])
+            traded = np.isfinite(vwap) & (self.participation * volume > 0)
+
+            stated = np.isfinite(book.sell_ratio)
+            limit = np.where(stated, book.sell_ratio * unit, book.sell_limit)
+            with np.errstate(invalid="ignore"):
+                through = traded & ~np.isnan(limit) & (vwap >= limit)
+            market = ~stated & (book.sell_limit <= 0)
+            cap = self._capacity(t, key, "sell", book, volume, through, market)
+            want = _whole(np.minimum(np.minimum(book.sell_units, self.position), cap), book.sell_lot)
+            hit = through & (want > 0)
+            if hit.any():
+                price = np.where(hit, np.where(market, vwap * (1 - self.slippage), limit), 0.0)
+                units = np.where(hit, want, 0.0)
+                self._sold(units, price, hit)
+                book.sell_units = book.sell_units - units
+                self.wallet.take(t, key, "sell", units)
+
+            stated = np.isfinite(book.buy_ratio)
+            limit = np.where(stated, book.buy_ratio * unit, book.buy_limit)
+            with np.errstate(invalid="ignore"):
+                through = traded & ~np.isnan(limit) & (vwap <= limit)
+            market = ~stated & np.isinf(book.buy_limit)
+            cap = self._capacity(t, key, "buy", book, volume, through, market)
+            want = _whole(np.minimum(book.buy_units, cap), book.buy_lot)
+            hit = through & (want > 0)
+            if hit.any():
+                price = np.where(market, vwap * (1 + self.slippage), limit)
+                units = np.zeros_like(want)
+                for i in np.flatnonzero(hit):
+                    lot = book.buy_lot[i]
+                    lots = min(want[i] / lot, math.floor(self.cash / (price[i] * lot) + 1e-9))
+                    units[i] = max(lots, 0) * lot
+                    self.cash -= units[i] * price[i]  # reserved here, booked by _bought below
+                hit &= units > 0
+                cost = np.where(hit, units * price, 0.0)
+                self.cash += float(cost.sum())
+                self._bought(units, cost, hit)
+                book.buy_units = book.buy_units - units
+                self.wallet.take(t, key, "buy", units)
+
+    def _post(self, t: int, before: dict[str, Book]) -> None:
+        """Turn what the strategy just quoted into orders the exchange would take, and charge Gold.
+
+        An order counts as posted when its limit changed or its size grew; an order left as it
+        stood, or one that only shrank, costs nothing. Gold is not refunded on cancel (confirmed in
+        game): a cancelled order's Gold stays spent, and posting it again pays in full. With whole
+        lots, a posted order is re-cut to a whole-number ratio the purse can pay for (the same fit the Flips page makes for a
+        bankroll), and dropped if not even one lot fits. Gold is charged per unit posted; an order
+        the remaining budget cannot pay for is not posted, and whatever stood before stays.
+        """
+        cash = self.cash
+        unit_b = float(self.panel.bridge[t])
+        for key in LEG_KEYS:
+            book, old = self.books[key], before[key]
+            unit = unit_b if key == "b" else 1.0
+            for side in ("sell", "buy"):
+                limit, units = getattr(book, f"{side}_limit"), getattr(book, f"{side}_units")
+                ratio, lot = getattr(book, f"{side}_ratio"), getattr(book, f"{side}_lot")
+                old_limit, old_units = getattr(old, f"{side}_limit"), getattr(old, f"{side}_units")
+                # quote() may hand over fresh arrays; take writable copies before changing them.
+                limit, units, ratio, lot = (np.array(a, dtype=float) for a in (limit, units, ratio, lot))
+                old_ratio, old_lot = getattr(old, f"{side}_ratio"), getattr(old, f"{side}_lot")
+                queue = np.array(getattr(old, f"{side}_queue"), dtype=float)
+                live = ~np.isnan(limit) & (units > 0)
+                same_limit = (limit == old_limit) | (np.isnan(limit) & np.isnan(old_limit))
+                untouched = live & same_limit & (units == old_units)
+                ratio[untouched], lot[untouched] = old_ratio[untouched], old_lot[untouched]
+                ratio[~live], lot[~live] = np.nan, 1.0
+                queue[~live] = 0.0
+                for i in np.flatnonzero(live & ~untouched):
+                    if self.whole_lots:
+                        fitted = self._fit(side, float(limit[i]), float(units[i]), unit, cash, i)
+                        if fitted is None:
+                            limit[i], units[i], ratio[i], lot[i], queue[i] = np.nan, 0.0, np.nan, 1.0, 0.0
+                            continue
+                        limit[i], units[i], ratio[i], lot[i] = fitted
+                    # Judge "the same order" on what would really stand: a re-quote that rounds to the
+                    # standing ratio is no new post, and only units beyond the standing ones pay again.
+                    if np.isfinite(ratio[i]) or np.isfinite(old_ratio[i]):
+                        same = ratio[i] == old_ratio[i] and lot[i] == old_lot[i]
+                    else:
+                        same = bool(same_limit[i])
+                    if same:
+                        limit[i] = old_limit[i]  # keep the standing order's price as it was posted
+                    fee = self.gold_fee[i] * (max(units[i] - old_units[i], 0.0) if same else units[i])
+                    if fee > 0 and self.wallet.gold + fee > self.gold_budget + 1e-9:
+                        limit[i], units[i], ratio[i], lot[i] = old_limit[i], old_units[i], old_ratio[i], old_lot[i]
+                        continue
+                    self.gold_spent += fee
+                    self.wallet.gold += fee
+                    # A new price is a new order at the back of the queue. The same order made bigger
+                    # keeps its place: the game may well send the extra units to the back, so this flatters.
+                    if not same and self.fill_model == "queue":
+                        queue[i] = self._queue_at(t, key, side, i, float(limit[i]))
+                    if side == "buy" and self.whole_lots and np.isfinite(ratio[i]):
+                        cash -= units[i] * ratio[i] * unit  # the next buy is cut to what is left
+                setattr(book, f"{side}_limit", limit)
+                setattr(book, f"{side}_units", units)
+                setattr(book, f"{side}_ratio", ratio)
+                setattr(book, f"{side}_lot", lot)
+                setattr(book, f"{side}_queue", queue)
+
+    def _fit(
+        self, side: str, limit: float, units: float, unit: float, cash: float, item: int
+    ) -> tuple[float, float, float, float] | None:
+        """(limit, units, stated ratio, lot) for one whole-lot order, or None if it cannot be posted."""
+        if side == "buy" and math.isinf(limit) or side == "sell" and limit <= 0:  # market order
+            whole = math.floor(min(units, self.position[item] if side == "sell" else units) + 1e-9)
+            return (limit, float(whole), math.nan, 1.0) if whole >= 1 else None
+        if not math.isfinite(unit) or unit <= 0:
+            return None
+        if side == "buy":
+            pair = _fit_ratio(limit / unit, "buy", cash / unit)
+        else:
+            pair = _fit_ratio(limit / unit, "sell", 400.0, math.floor(self.position[item] + 1e-9))
+        if pair is None:
+            return None
+        currency, items = pair
+        held = units if side == "buy" else min(units, self.position[item])
+        lots = math.floor(held / items + 1e-9)
+        if side == "buy":
+            lots = min(lots, math.floor(cash / (currency * unit) + 1e-9))
+        if lots < 1:
+            return None
+        ratio = currency / items
+        return ratio * unit, float(lots * items), ratio, float(items)
+
+    def _visit(self, t: int) -> bool:
+        """Whether you are at the desk to re-post orders after hour t's prices come out."""
+        if self.playing is None:
+            return t % self.attention == 0  # between visits the standing orders just sit there
+        if self.playing[t]:
+            if t == 0 or not self.playing[t - 1]:
+                self._session = t
+            return (t - self._session) % self.attention == 0
+        return False  # away from the game: orders stand until the next session
+
+    def _act(self, t: int, strategy: Strategy, ctx: Context) -> None:
+        ctx.t = t
+        if self._visit(t):
+            posting = self.whole_lots or bool(self.gold_fee.any()) or self.fill_model == "queue"
+            before = {k: b.copy() for k, b in self.books.items()} if posting else None
+            strategy.step(ctx)
+            if self.listed is not None:
+                self._unlisted(t)
+            if posting:
+                self._post(t, before)
+
+    def _unlisted(self, t: int) -> None:
+        """Drop orders for items not yet in the universe, before any Gold is charged for them.
+
+        New arrays, not writes into the ones the strategy handed over, which it may keep."""
+        ok = self.listed[t]
+        for book in self.books.values():
+            for side in ("buy", "sell"):
+                limit, units = getattr(book, f"{side}_limit"), getattr(book, f"{side}_units")
+                setattr(book, f"{side}_limit", np.where(ok, limit, np.nan))
+                setattr(book, f"{side}_units", np.where(ok, units, 0.0))
+
+    def _tape(self, T: int) -> dict[str, np.ndarray]:
+        return {k: np.empty(T) for k in ("equity", "cash", "gold", "holdings", "risk", "capital")}
+
+    def _log(self, tape: dict[str, np.ndarray], t: int) -> None:
+        tape["equity"][t] = self.equity_now(t)
+        tape["cash"][t] = self.cash
+        tape["gold"][t] = self.gold_spent
+        tape["holdings"][t] = float(np.sum(self.position * np.nan_to_num(self._mark[t])))
+        tape["risk"][t] = float(np.sum(self.position * np.nan_to_num(self._drop[t])))
+        tape["capital"][t] = float(np.sum(self.cost))
 
     def run(self, strategy: Strategy, name: str | None = None, params: dict | None = None) -> Result:
         T = len(self.panel.hours)
         ctx = Context(self)
-        equity = np.empty(T)
-        cash = np.empty(T)
+        tape = self._tape(T)
         for t in range(T):
             if t > 0:
                 self._execute(t)
-            ctx.t = t
-            if t % self.attention == 0:  # between visits the standing orders just sit there
-                strategy.step(ctx)
-            equity[t] = self.equity_now(t)
-            cash[t] = self.cash
+            self._act(t, strategy, ctx)
+            self._log(tape, t)
+        return Result(
+            self.panel.league, name or type(strategy).__name__, self.panel.hours, tape["equity"], tape["cash"],
+            self.start_capital, self.fills, self.bought, self.sold, self.realized, self.panel.names, params or {},
+            self.benchmark(), tape["gold"], holdings=tape["holdings"], risk=tape["risk"], capital=tape["capital"],
+        )
+
+    def benchmark(self) -> np.ndarray:
         bridge = self.panel.bridge
+        T = len(bridge)
         # The first hours of a league print wild Divine prices; anchor the benchmark a day in.
         known = np.flatnonzero(np.isfinite(bridge))
         first = bridge[known[known >= min(24, T - 1)][0]] if len(known) and (known >= min(24, T - 1)).any() else np.nan
-        return Result(
-            self.panel.league, name or type(strategy).__name__, self.panel.hours, equity, cash,
-            self.start_capital, self.fills, self.bought, self.sold, self.realized, self.panel.names, params or {},
-            self._benchmark(bridge, first, known),
-        )
+        return self._benchmark(bridge, first, known)
 
     @staticmethod
     def _benchmark(bridge: np.ndarray, first: float, known: np.ndarray) -> np.ndarray:
@@ -378,6 +868,28 @@ class Simulation:
         line = np.where(np.isfinite(bridge), bridge, first) / first
         line[:anchor] = 1.0
         return line
+
+
+def _whole(units: np.ndarray, lot: np.ndarray) -> np.ndarray:
+    """Round down to whole lots (the epsilon keeps 2.9999999 lots from becoming 2)."""
+    return np.floor(np.maximum(units, 0) / lot + 1e-9) * lot
+
+
+@functools.lru_cache(maxsize=65536)
+def _fit_cached(price: float, max_currency: int, max_items: int, side: str) -> tuple[int, int] | None:
+    return pricing.fit_ratio(price, max_currency, max_items, side=side)
+
+
+def _fit_ratio(price: float, side: str, max_currency: float, max_items: float = 5000) -> tuple[int, int] | None:
+    """pricing.fit_ratio, cached: strategies re-quote the same levels hour after hour.
+
+    The caps only matter as whole numbers, and prices are keyed to 7 significant digits."""
+    if not math.isfinite(price) or price <= 0:
+        return None
+    # Round the key in the order's favour, so caching can never move the ratio past the limit.
+    key = float(f"{price:.7g}")
+    key = min(key, price) if side == "buy" else max(key, price)
+    return _fit_cached(key, int(min(max_currency, 1e12)), int(min(max_items, 1e12)), side)
 
 
 # ------------------------------------------------------------------ strategies
@@ -432,7 +944,7 @@ class Swing:
     sell_leg: str = "b"
     buy_leg: str = "r"
     min_margin: float = 0.03
-    per_item: float = 0.05  # max share of the bankroll held in one item
+    per_item: float | np.ndarray = 0.05  # max share of the bankroll held in one item (or one share per item)
     stop_days: float = 2.0
     warmup: int = 48
 
@@ -542,6 +1054,61 @@ def load_strategy(spec: str, params: dict | None = None) -> tuple[Strategy, str]
     return cls(**params), cls.__name__
 
 
+def listed(so_far: np.ndarray, universe: int, chunk: int = 512) -> np.ndarray:
+    """[T, N] whether each item is in the backtest's universe at each hour.
+
+    An item joins at the first hour its traded value so far (`so_far`, cumulative from the league's
+    start) ranks among the `universe` largest, and stays: an item you hold must stay sellable. Each
+    row uses only hours up to its own, so what a strategy may trade at hour t never depends on later
+    hours. Rows are ranked in chunks to bound memory on a full league.
+    """
+    T, N = so_far.shape
+    top = so_far > 0
+    if N > universe:
+        for a in range(0, T, chunk):
+            rows = so_far[a : a + chunk]
+            kth = -np.partition(-rows, universe - 1, axis=1)[:, universe - 1]
+            top[a : a + chunk] &= rows >= kth[:, None]
+    return np.logical_or.accumulate(top, axis=0)
+
+
+def _load(con: duckdb.DuckDBPyConnection, league: str, start_day: float, days: float | None,
+          universe: int) -> tuple[Panel, int]:
+    """The league's panel for the chosen days and the league hour it starts at.
+
+    Its columns are the items that join the `universe` most traded items at some hour of the run
+    (see `listed`); the panel's "listed" column says from which hour each one may be traded."""
+    first, last = con.execute(
+        "SELECT epoch(min(hour))::BIGINT, epoch(max(hour))::BIGINT FROM prices WHERE league = ?", [league]
+    ).fetchall()[0]
+    if first is None:
+        raise LookupError(f"No prices for league {league!r}")
+    since = first + int(start_day * 24) * HOUR
+    until = last if days is None else min(last, since + int(days * 24) * HOUR)
+    panel = Panel.load(con, league, CORE + LEGS, since=since, until=until)
+    # Keep the items that carry the league's trade; thousands of dead columns only cost time. Ranking
+    # by value over the whole run would pick, on day one, items that only matter in week three.
+    before = dict(con.execute(
+        "SELECT item, sum(value) FROM prices WHERE league = ? AND hour < to_timestamp(?) GROUP BY item", [league, since]
+    ).fetchall())
+    prior = np.array([before.get(i) or 0.0 for i in panel.items])
+    member = listed(prior + np.cumsum(np.nan_to_num(panel["value"]), axis=0), universe)
+    keep = np.flatnonzero(member[-1])
+    data = {k: v[:, keep] for k, v in panel.data.items()}
+    data["listed"] = member[:, keep]
+    panel = Panel(
+        panel.league, panel.hours, [panel.items[i] for i in keep], [panel.names[i] for i in keep],
+        [panel.categories[i] for i in keep], panel.bridge, data,
+    )
+    return panel, (since - first) // HOUR
+
+
+def _options(panel: Panel, gold_per_unit: float | dict[str, float], **options) -> dict:
+    if isinstance(gold_per_unit, dict):
+        gold_per_unit = np.array([float(gold_per_unit.get(item, 0.0)) for item in panel.items])
+    return dict(options, gold_per_unit=gold_per_unit)
+
+
 def run(
     con: duckdb.DuckDBPyConnection,
     league: str,
@@ -556,33 +1123,144 @@ def run(
     universe: int = 150,
     attention: int = 1,
     compound: bool = False,
+    whole_lots: bool = False,
+    gold_per_unit: float | dict[str, float] = 0.0,
+    gold_budget: float | None = None,
+    schedule: str | None = None,
+    fill_model: str = "queue",
+    risk_hours: float = 24,
 ) -> Result:
     """Backtest one strategy on one league.
 
     `start_day`/`days` select a window by league day. `attention` is how often (in hours) you
     come back to re-post orders. With `compound=False` orders are sized against the starting
     stake, so the result reads as income on a fixed bankroll.
+
+    `whole_lots` makes orders whole-number ratios the purse can post, filled in whole items.
+    `gold_per_unit` is the Gold paid per unit posted: one number for every item, or a mapping
+    from item id to fee (items it leaves out cost nothing). `gold_budget` caps the Gold spent
+    on new orders. `schedule` (e.g. "mon-fri 19-22", UTC) limits visits to your play hours.
+    `fill_model` is "queue" (the default: a resting order first waits behind the stock published
+    on its side when it went up, then takes at most `participation` of the hour's volume) or
+    "share" (a fill takes at most `participation` of the hour's volume from the hour it goes up).
+    `risk_hours` is how long you expect to hold items, for the inventory risk (`drop_per_unit`).
     """
-    first, last = con.execute(
-        "SELECT epoch(min(hour))::BIGINT, epoch(max(hour))::BIGINT FROM prices WHERE league = ?", [league]
-    ).fetchall()[0]
-    if first is None:
-        raise LookupError(f"No prices for league {league!r}")
-    since = first + int(start_day * 24) * HOUR
-    until = last if days is None else min(last, since + int(days * 24) * HOUR)
-    panel = Panel.load(con, league, CORE + LEGS, since=since, until=until)
-    # Keep the items that carry the league's trade; thousands of dead columns only cost time.
-    totals = np.nansum(panel["value"], axis=0)
-    keep = np.argsort(-totals)[:universe]
-    keep.sort()
-    panel = Panel(
-        panel.league, panel.hours, [panel.items[i] for i in keep], [panel.names[i] for i in keep],
-        [panel.categories[i] for i in keep], panel.bridge, {k: v[:, keep] for k, v in panel.data.items()},
-    )
+    panel, offset = _load(con, league, start_day, days, universe)
     if isinstance(strategy, str):
         instance, name = load_strategy(strategy, params)
     else:
         instance, name = strategy, type(strategy).__name__
-    sim = Simulation(panel, capital=capital, participation=participation, slippage=slippage,
-                     offset=(since - first) // HOUR, attention=attention, compound=compound)
+    sim = Simulation(panel, offset=offset, **_options(
+        panel, gold_per_unit, capital=capital, participation=participation, slippage=slippage, attention=attention,
+        compound=compound, whole_lots=whole_lots, gold_budget=gold_budget, schedule=schedule, fill_model=fill_model,
+        risk_hours=risk_hours))
     return sim.run(instance, name, params)
+
+
+class Portfolio:
+    """Several strategies trading one bankroll at once.
+
+    Each strategy keeps its own positions, orders, `ctx.state` and Gold count, and sees only
+    those through `ctx`: its `ctx.equity` is the shared cash plus its own holdings, so it sizes
+    its orders as if the bankroll were its own. The cash, the Gold budget and each hour's
+    tradeable volume are shared, and that is where the strategies compete.
+
+    Conflicts are settled in the order the strategies are given. Every hour, the first
+    strategy's orders fill first and take what cash and volume they need; the next one fills
+    from what is left, and so on. Then each strategy visits in the same order, so the first also
+    gets the first claim on the Gold budget and, with whole lots, on the cash a new buy reserves.
+    List the strategy you trust most first.
+    """
+
+    def __init__(self, panel: Panel, *, capital: float = 10_000.0, **options) -> None:
+        self.wallet = Wallet(capital)
+        self.panel = panel
+        self.capital = capital
+        self.options = options
+        self.sims: list[Simulation] = []
+
+    def _sim(self) -> Simulation:
+        sim = Simulation(self.panel, capital=self.capital, wallet=self.wallet,
+                         model_from=self.sims[0] if self.sims else None, **self.options)
+        self.sims.append(sim)
+        return sim
+
+    def run(self, strategies: list[tuple[Strategy, str, dict]]) -> Result:
+        if not strategies:
+            raise ValueError("A portfolio needs at least one strategy.")
+        sims = [self._sim() for _ in strategies]
+        T = len(self.panel.hours)
+        ctxs = [Context(sim) for sim in sims]
+        tapes = [sim._tape(T) for sim in sims]
+        equity, cash = np.empty(T), np.empty(T)
+        for t in range(T):
+            if t > 0:
+                for sim in sims:
+                    sim._execute(t)
+            for sim, (strategy, _, _), ctx in zip(sims, strategies, ctxs):
+                sim._act(t, strategy, ctx)
+            for sim, tape in zip(sims, tapes):
+                sim._log(tape, t)
+            cash[t] = self.wallet.cash
+            equity[t] = cash[t] + sum(tape["holdings"][t] for tape in tapes)
+        total = lambda key: np.sum([tape[key] for tape in tapes], axis=0)  # noqa: E731
+        profit = [float(np.sum(sim.profit(-1))) for sim in sims]
+        whole = float(sum(profit))
+        members = [{
+            "strategy": name,
+            "params": params,
+            "profit": round(p, 2),
+            "profit_share": round(p / whole, 4) if whole else None,
+            "gold_spent": round(sim.gold_spent),
+            "peak_capital": round(float(tape["capital"].max()), 2),
+            "average_capital": round(float(tape["capital"].mean()), 2),
+            "peak_risk": round(float(tape["risk"].max()), 2),
+            "fills": sim.fills,
+        } for sim, tape, p, (_, name, params) in zip(sims, tapes, profit, strategies)]
+        return Result(
+            self.panel.league, " + ".join(name for _, name, _ in strategies), self.panel.hours, equity, cash,
+            self.capital, sum(s.fills for s in sims), sum(s.bought for s in sims), sum(s.sold for s in sims),
+            np.sum([s.realized for s in sims], axis=0), self.panel.names, {}, sims[0].benchmark(), total("gold"),
+            holdings=total("holdings"), risk=total("risk"), capital=total("capital"), members=members,
+        )
+
+
+def parse_spec(spec: str) -> tuple[str, dict]:
+    """"reversion" or 'reversion:{"entry_z": -2.5}' or 'file.py:Class:{...}': the strategy and its
+    parameters. The JSON starts at the first ':{', so a file path with a colon still works."""
+    head, sep, tail = spec.partition(":{")
+    if not sep:
+        return spec, {}
+    try:
+        params = json.loads("{" + tail)
+    except json.JSONDecodeError as err:
+        raise ValueError(f"Cannot read the parameters in {spec!r}: {err.msg}") from None
+    if not isinstance(params, dict):
+        raise ValueError(f"Parameters in {spec!r} must be a JSON object.")
+    return head, params
+
+
+def run_portfolio(
+    con: duckdb.DuckDBPyConnection,
+    league: str,
+    strategies: list[str | tuple[str, dict]],
+    *,
+    capital: float = 10_000.0,
+    start_day: float = 0.0,
+    days: float | None = None,
+    universe: int = 150,
+    gold_per_unit: float | dict[str, float] = 0.0,
+    **options,
+) -> Result:
+    """Backtest several strategies on one shared bankroll (see `Portfolio` for who fills first).
+
+    `strategies` are specs such as "swing" or 'reversion:{"entry_z": -2.5}', or (spec, params)
+    pairs. The other options are those of `run`, and apply to every strategy.
+    """
+    panel, offset = _load(con, league, start_day, days, universe)
+    loaded = []
+    for entry in strategies:
+        spec, params = parse_spec(entry) if isinstance(entry, str) else entry
+        instance, name = load_strategy(spec, params)
+        loaded.append((instance, name, params))
+    return Portfolio(panel, capital=capital, offset=offset, **_options(panel, gold_per_unit, **options)).run(loaded)

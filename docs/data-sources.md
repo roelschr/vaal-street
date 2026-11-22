@@ -2,7 +2,7 @@
 
 Researched 2026-11-21 from primary sources. Pages that could not be read are named as gaps, not filled from memory.
 
-Unreachable during this research: pathofexile.com/trade (HTTP 403), poe.ninja and poe.ninja/about (HTTP 403), and every poewiki.net page tried (Anubis bot-block page). I did not find GGG's forum "third-party tool policy" thread (forum thread 2077338 is an unrelated bug report).
+Unreachable during this research: pathofexile.com/trade (HTTP 403), poe.ninja and poe.ninja/about (HTTP 403; the owner later saved poe.ninja's API reference from a browser, see section 2), and every poewiki.net page tried (Anubis bot-block page). I did not find GGG's forum "third-party tool policy" thread (forum thread 2077338 is an unrelated bug report).
 
 Core sources:
 - GGG developer docs, section "API Policies and Third-Party Requirements": https://www.pathofexile.com/developer/docs
@@ -40,7 +40,7 @@ Conditions for an implementation:
 
 ## 2. Trade-site prices (uniques, gems, bases)
 
-**Verdict: pathofexile.com/trade automation is not allowed. The Public Stash API is out of reach for a local tool. poe.ninja's rules are unclear (its site could not be read).**
+**Verdict: pathofexile.com/trade automation is not allowed. The Public Stash API is out of reach for a local tool. poe.ninja's economy endpoints are allowed under its usage rules, and the desk uses them for card rewards (see "poe.ninja" below).**
 
 Evidence:
 - The trade site's API is not documented. The docs say: "Requests for access to any other internal website APIs or in-game resources will be denied." and "It is against our Terms of Use (section 7i) to reverse-engineer endpoints outside of this documentation." (https://www.pathofexile.com/developer/docs). The trade page itself returned 403, so I could not read its own terms.
@@ -49,13 +49,34 @@ Evidence:
 - Rate limits (all GGG APIs, https://www.pathofexile.com/developer/docs): limits "are dynamic and can change at any time". Headers: `X-Rate-Limit-Policy`, `X-Rate-Limit-Rules` (e.g. ip, account, client), `X-Rate-Limit-{rule}` = hits:period:restriction seconds, `X-Rate-Limit-{rule}-State` = current state, and `Retry-After` on 429. Responses in the 4xx range count towards an invalid-request threshold; "Exceeding these limits frequently will result in your application access being revoked."
 - User-Agent: "Any application that interacts with our API must set an identifiable User Agent header prefixed using the following format: `OAuth {$clientId}/{$version} (contact: {$contact}) ...`".
 - Bulk/scheduled polling: the docs give no polling frequency. The stash stream is read by following `next_change_id`.
-- poe.ninja: the site and /about returned 403, so I could not read any official API documentation or terms. The only document I found is an unofficial community write-up (https://github.com/ayberkgezer/poe.ninja-API-Document). It lists `https://poe.ninja/api/data/currencyoverview?league=…&type=…` and `itemoverview` endpoints for uniques, gems, base types, scarabs, fossils, maps and more, and says nothing about caching, frequency or attribution. Its terms of use are **unknown**.
+- Earlier research could not read poe.ninja (HTTP 403) and found only an unofficial write-up (https://github.com/ayberkgezer/poe.ninja-API-Document). That is superseded by poe.ninja's own API reference, below.
 
-Conditions, if poe.ninja is used once its terms are confirmed:
-- Read poe.ninja's own terms first (from a browser) and follow them.
-- Fetch at most once per hour per league and type, cache locally, and send the desk's identifying User-Agent.
-- Credit poe.ninja in the UI next to prices that come from it.
+Conditions that still hold:
 - Never call pathofexile.com/trade endpoints.
+
+### poe.ninja
+
+Source: poe.ninja's API reference, https://poe.ninja/docs/api, saved by the owner from a browser on 2026-11-21 (the site still refuses automated reads).
+
+What their docs allow:
+- "The economy overview endpoints documented on this page are the supported public surface of the poe.ninja API." For PoE 1 these are `GET /poe1/api/economy/leagues`, `/poe1/api/economy/exchange/current/overview?league=…&type=…`, `/poe1/api/economy/stash/current/item/overview?league=…&type=…` and `/poe1/api/economy/stash/current/currency/overview?league=…&type=…`. The league parameter is an id from the leagues endpoint.
+- Not allowed: "The builds / profiles API, and every other non-economy endpoint (character, Path of Building, authentication), are internal … not available for third-party use." "Clients that misbehave against these endpoints, or make excessive use of the economy endpoints, will be blocked."
+- No stability guarantee: "There is no versioning and no SLA, and breaking changes can happen to the economy endpoints without notice."
+- Usage guidelines: responses are "HTTP-cached (roughly 5 minutes, ETag-based). Use conditional requests and respect the cache headers"; "PoE 1 overviews roughly every 15 minutes, PoE 2 roughly hourly"; "Send a descriptive User-Agent that identifies your app and a contact"; "Be reasonable with concurrency and volume"; "Don't use the API to directly replicate the site."
+- Apps: "Desktop apps and other clients should proxy these requests through their own backend rather than calling the endpoints directly from end-user machines. That lets you cache responses, set a proper User-Agent, and control request volume."
+
+How the desk uses it (`vaalstreet/ninja.py`):
+- Only the economy endpoints above, and in practice only the stash item overview lists that the card rewards need (the six unique lists, `SkillGem`, `BaseType`) plus the leagues list. The client can read the exchange and stash currency overviews too, but the desk does not ask for them today.
+- At most one request per list per hour (`MIN_INTERVAL`), counted from every attempt, success or failure, and kept on disk, so restarts and an unreachable poe.ninja do not cause extra requests. Every repeat request is conditional (`If-None-Match` with the last ETag); a 304 keeps the cached body.
+- One request at a time, with a two-second pause between requests. On 429 or 5xx it backs off, honouring `Retry-After`; a wait longer than a minute is not slept out. After a refusal or an outage the desk pauses every list, for the `Retry-After` time or at least 15 minutes, so a rate limit on one list does not lead to requests for the others. Other 4xx answers are not retried until the next hour.
+- User-Agent: `vaal-street/2.0 (+https://github.com/roelschr/vaal-street)`, the same string as every other request the desk makes, overridable with `POE_USER_AGENT`.
+- The league id comes from poe.ninja's leagues list, matched to our league name. If there is no match, the desk asks for no prices and shows none; it never falls back to their first entry.
+- If poe.ninja cannot be reached, the last answer is used and marked stale. Answers live in `ninja.sqlite` in the data directory, which can be deleted at any time.
+- Credit: every row priced this way carries "prices from poe.ninja" and "reward priced by poe.ninja (stash listings, not the exchange)", with the listing count and the age of the price. The README's license and credits section names poe.ninja.
+- Not replicating the site: the desk shows a price only next to the card set it values, never a poe.ninja price list. The arbitrage API returns these rows as `ninja_conversions`, apart from the exchange-priced `conversions`.
+- It can be turned off with `python -m vaalstreet ninja off` (the `ninja_prices` setting). It is on by default, as the owner decided.
+
+The proxy note, honestly: the desk's own local server acts as the backend their docs ask for. It caches responses, sets the User-Agent and controls the volume, and its API handlers read only the cache. But the desk runs on each player's machine, so **each install still calls poe.ninja itself**, at most once an hour per list (about nine conditional requests an hour while the desk runs), not through one shared server. The owner accepted this. If poe.ninja objects, the setting turns it off, and a shared backend would be the next step.
 
 ## 3. Other public game data
 
