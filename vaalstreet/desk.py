@@ -774,7 +774,8 @@ class Desk:
         """How each kind of plan, at each patience level, would have done on each item over the last `days` days.
 
         The flip rule is replayed through the backtest simulator with the same stake on every item,
-        visiting every four hours, at the same patience (`reach`) a plan on the board uses. Returns
+        visiting every four hours, with orders waiting behind the stock already on offer (the
+        simulator's default "queue" fill model), at the same patience (`reach`) a plan on the board uses. Returns
         {(kind, item id, reach): entry}. An entry holds:
 
         - `return`: profit as a share of the stake, unsold inventory marked at fair value;

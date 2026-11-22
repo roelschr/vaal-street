@@ -732,11 +732,43 @@ def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
 def _research(args: argparse.Namespace) -> None:
     from vaalstreet import research
 
+    if args.name == "all":
+        _research_all(research.MEASUREMENTS, args.league or [])
+        return
     con = connect()
-    names = research.MEASUREMENTS if args.name == "all" else (args.name,)
+    print("\n".join(research.run(con, args.name, args.league).lines()))
+    print()
+
+
+def _research_all(names: tuple[str, ...], leagues: list[str]) -> None:
+    """Each measurement in its own child process, printed in order.
+
+    On the full archive one measurement alone peaks near 6.4 GB, and memory a process has used is
+    not handed back to the system, so running them one after another in one process gets killed.
+    A child gives all of its memory back when it exits.
+    """
+    import subprocess
+    from pathlib import Path
+
+    env = dict(os.environ)
+    # The child imports this same copy of the package, even when it is not installed.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH")) if p)
+    failed = []
     for name in names:
-        print("\n".join(research.run(con, name, args.league).lines()))
-        print()
+        command = [sys.executable, "-m", "vaalstreet", "research", name]
+        for league in leagues:
+            command += ["--league", league]
+        child = subprocess.run(command, capture_output=True, text=True, env=env)
+        sys.stdout.write(child.stdout)
+        sys.stdout.flush()
+        if child.stderr:
+            sys.stderr.write(child.stderr)
+        if child.returncode != 0:
+            failed.append(name)
+            print(f"{name}: did not finish (exit code {child.returncode})\n")
+    if failed:
+        sys.exit(f"Measurements that did not finish: {', '.join(failed)}")
 
 
 def _report(args: argparse.Namespace) -> None:
@@ -952,9 +984,10 @@ def main(argv: list[str] | None = None) -> None:
                    "'reversion:{\"entry_z\": -2.5}'. Give several with --portfolio")
     p.add_argument("--portfolio", action="store_true",
                    help="run the strategies together on one bankroll; the first one listed fills first")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
-                   help="share: a fill takes at most --participation of the hour's volume (default). "
-                   "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue",
+                   help="queue: an order first waits until the stock already on offer at your side has "
+                   "traded, then takes at most --participation of the hour's volume (default). "
+                   "share: it takes that share from the start, as if no one were ahead of you")
     p.add_argument("--risk-hours", type=float, default=24,
                    help="how long you expect to hold items, for the Worst drop column (default 24)")
     p.add_argument("--export", metavar="FILE.json",
@@ -999,7 +1032,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--whole-lots", action="store_true")
     p.add_argument("--gold-per-unit", type=float, default=0.0)
     p.add_argument("--schedule")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_search)
 
@@ -1021,7 +1054,7 @@ def main(argv: list[str] | None = None) -> None:
     p = commands.add_parser(
         "research", help="experiments: test a claim about the market against pass rules fixed in advance",
         description="Each measurement prints pass, fail or not enough data, its numbers, and how many settings "
-                    "were tried. The rules are in docs/ideas.md under 'How a measurement passes'.")
+                    "were tried. The rules are in docs/measurements.md.")
     from vaalstreet.research import MEASUREMENTS
     p.add_argument("name", choices=MEASUREMENTS + ("all",))
     p.add_argument("--league", action="append",

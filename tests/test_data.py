@@ -208,3 +208,24 @@ def test_tests_never_reach_the_default_data_directory():
     checkout = Path(__file__).resolve().parent.parent
     assert not data_dir().resolve().is_relative_to(checkout), "conftest points VAAL_DATA_DIR at an empty temp dir"
     assert not data_dir().resolve().is_relative_to(Path.home() / ".vaalstreet")
+
+
+def test_ingest_bounds_duckdb_memory(monkeypatch, tmp_path):
+    """DuckDB reserves JSON buffers per thread; ingest must cap both, or many-core machines run out of memory."""
+    import duckdb
+
+    from vaalstreet import ingest as ingest_mod
+
+    seen = {}
+    real_connect = duckdb.connect
+
+    def spy(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        seen["threads"] = con.execute("SELECT current_setting('threads')").fetchone()[0]
+        return con
+
+    monkeypatch.setattr(ingest_mod.duckdb, "connect", spy)
+    ingest(tmp_path, log=None)
+    assert 1 <= seen["threads"] <= 4
+    assert "maximum_object_size = 268435456" not in ingest_mod._PARSE
+    assert ingest_mod._MAX_DIGEST_BYTES * 2 * seen["threads"] <= 512 * 1024 * 1024
