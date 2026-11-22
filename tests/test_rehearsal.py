@@ -12,7 +12,7 @@ import shutil
 
 import pytest
 
-from conftest import BLITZ, H0, HOUR, ITEM, NEW, NEW_HOURS, NEW_START, OLD, all_hours, call, write_raw
+from conftest import BLITZ, H0, HOUR, ITEM, NEW, NEW_HOURS, NEW_START, OLD, OTHER, all_hours, call, write_raw
 from vaalstreet import ladder
 from vaalstreet.db import connect
 from vaalstreet.desk import Desk
@@ -179,6 +179,12 @@ def test_practice_trades_never_reach_the_real_ledger(archive_root, tmp_path):
     assert real.watchlist(NEW) == [ITEM]
     assert app.ledger.positions(NEW) == {}, "practice starts empty"
     app.api_post("/api/trade", {"league": NEW, "item": ITEM, "side": "buy", "units": 100, "price": 10.0})
+    # Made and sold inside the same practice hour, so all three records carry one time.
+    app.api_post("/api/made", {"league": NEW, "inputs": [[ITEM, 10]], "output": OTHER, "gives": 2})
+    app.api_post("/api/trade", {"league": NEW, "item": OTHER, "side": "sell", "units": 2, "price": 60.0})
+    assert app.ledger.positions(NEW)[OTHER]["realized"] == pytest.approx(2 * 60 - 10 * 10)
+    app.api_post("/api/trade", {"delete": app.ledger.trades(NEW)[-1]["id"]})
+    app.api_post("/api/made", {"delete": app.ledger.made(NEW)[0]["id"]})
     app.api_post("/api/alert", {"league": NEW, "item": ITEM, "field": "price", "op": "above", "threshold": 1})
     app.api_post("/api/session", {"league": NEW})
     [practice_trade] = app.ledger.trades(NEW)
@@ -188,6 +194,7 @@ def test_practice_trades_never_reach_the_real_ledger(archive_root, tmp_path):
     assert result["trades"] == 1
     # The real ledger: only the trade made before, no alert, no session.
     assert [t["units"] for t in real.trades(NEW)] == [1] and real.alerts(NEW) == [] and real.sessions(NEW) == []
+    assert real.made(NEW) == []
     assert Ledger(tmp_path).trades(NEW)[0]["units"] == 1
     # A new rehearsal starts from an empty practice ledger.
     app.start_rehearsal({"league": NEW})

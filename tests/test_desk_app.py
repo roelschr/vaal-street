@@ -92,6 +92,27 @@ def test_api_backtest_and_ledger_round_trip(server):
 
 
 
+def test_api_records_an_item_you_made_so_it_can_be_sold(server):
+    # 6 cards bought at 5 make 2 orbs that cost 15 each; one sold at 20 realises 5.
+    assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 6, "price": 5})[0] == 200
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
+    assert status == 400 and "Record items you made" in answer["error"]
+    status, answer = call(f"{server}/api/made", {"inputs": [["Test Card", 7]], "output": "Test Orb"})
+    assert status == 400 and "Cannot use 7 Test Card: the ledger holds 6" in answer["error"]
+    assert call(f"{server}/api/made", {"inputs": [["No Such Thing", 1]], "output": ITEM})[0] == 400
+    assert call(f"{server}/api/made", {"inputs": [["test card", 6]], "output": ITEM, "gives": 2, "note": "set"})[0] == 200
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})[0] == 200
+    ledger = call(f"{server}/api/ledger")[1]
+    [made] = ledger["made"]
+    assert made["name"] == "Test Orb" and made["gives"] == 2 and made["note"] == "set"
+    assert made["inputs"] == [{"id": CARD, "name": "Test Card", "units": 6}]
+    orb = next(p for p in ledger["positions"] if p["id"] == ITEM)
+    assert orb["units"] == 1 and orb["average"] == pytest.approx(15) and orb["realized"] == pytest.approx(5)
+    assert ledger["totals"]["cost"] == pytest.approx(15) and ledger["totals"]["realized"] == pytest.approx(5)
+    assert call(f"{server}/api/made", {"delete": made["id"]})[0] == 200
+    assert call(f"{server}/api/ledger")[1]["made"] == []
+
+
 def test_api_edits_a_trade(server):
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9})[0] == 200
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 4, "price": 11})[0] == 200

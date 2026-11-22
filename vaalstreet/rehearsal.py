@@ -48,7 +48,7 @@ def league_hours(con: duckdb.DuckDBPyConnection, league: str) -> tuple[int, int]
 class PracticeLedger:
     """The ledger the server uses during a rehearsal: practice activity in one file, game facts in the other.
 
-    Trades, orders, fills, sessions, alerts and their events, and the stash are practice: they go to
+    Trades, items you made, orders, fills, sessions, alerts and their events, and the stash are practice: they go to
     `rehearsal.sqlite`. Your settings, the Gold fees your real trades taught the desk, your own recipes and
     vendor prices, recipe checks and the watchlist are facts about the game and about you, not practice: they
     are read from the real ledger, and a change to them made during a rehearsal is written there too.
