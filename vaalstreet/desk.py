@@ -628,8 +628,14 @@ class Desk:
         margin = sell_price / buy_price - 1
         if margin < min_margin:
             return None
+        # The re-cut prices move the smallest lot a little, so its time is worked out again (see `flips`).
+        lot = max(1.0, buy_unit / buy_price, sell_unit / sell_price)
+        hours_per_lot = lot / plan["units_per_hour"] if plan["units_per_hour"] else math.inf
+        if hours_per_lot > LOT_WINDOW:
+            return None
         flow_value = plan["units_per_hour"] * buy_price
-        return plan | {
+        fitted = {"lot_units": _num(lot, 4), "hours_per_lot": _num(hours_per_lot, 3)}
+        return plan | fitted | {"slow": self._slow(plan | fitted)} | {
             "buy": _num(buy_price), "sell": _num(sell_price), "margin": _num(margin, 4),
             "buy_order": {"currency": "Divine" if buy_unit != 1 else "Chaos", "currency_units": buy[0],
                           "item_units": buy[1], "price": _num(buy_price)},
@@ -780,7 +786,9 @@ class Desk:
         amount = value / self.bridge if market == "Divine" else value
         traded = f"{amount:,.0f}" if amount >= 9.95 else f"{amount:.2g}"
         unit = "Chaos" if market == "Chaos" else "Divine" if traded == "1" else "Divines"
-        return (f"Slow: at your share of the trade, one lot fills about every {hours:.0f} hours. "
+        # Just past a sitting must not read "every 6 hours"; one decimal place under ten hours.
+        every = f"{hours:.0f}" if hours >= 9.95 else f"{hours:.1f}"
+        return (f"Slow: at your share of the trade, one lot fills about every {every} hours. "
                 f"Its {market} market traded about {traded} {unit} in the last day.")
 
     def _shares(self, share: float, share_by_item: dict | None,

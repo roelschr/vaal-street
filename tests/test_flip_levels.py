@@ -133,6 +133,23 @@ def test_a_slow_plan_names_its_market_in_plain_words(desk):
     assert "traded about 9.7 Divines in" in desk._slow(slow | {"slow_market": "Divine", "slow_market_value_24h": 9.7 * desk.bridge})
     assert "traded about 0.5 Divines in" in desk._slow(slow | {"slow_market": "Divine", "slow_market_value_24h": 0.5 * desk.bridge})
     assert desk._slow(slow | {"hours_per_lot": 6.0}) is None, "one lot within a sitting is not slow"
+    # Just past a sitting says so, not "every 6 hours".
+    assert "one lot fills about every 6.4 hours" in desk._slow(slow | {"hours_per_lot": 6.4})
+
+
+def test_a_plan_cut_to_a_bankroll_times_its_own_lot(desk):
+    """With a bankroll the orders are re-cut to whole numbers at slightly different prices; the lot and
+    its time follow those prices, not the uncut plan's."""
+    plans = desk.flips(min_margin=0.0, bankroll=500.0)
+    assert plans
+    for plan in plans:
+        buy_unit = desk.bridge if plan["kind"] == "divine" else 1.0
+        sell_unit = desk.bridge if plan["kind"] != "chaos" else 1.0
+        lot = max(1.0, buy_unit / plan["buy"], sell_unit / plan["sell"])
+        assert plan["lot_units"] == pytest.approx(lot, rel=1e-3)
+        assert plan["hours_per_lot"] == pytest.approx(lot / plan["units_per_hour"], rel=1e-2)
+        assert plan["hours_per_lot"] <= LOT_WINDOW
+        assert (plan["slow"] is None) == (plan["hours_per_lot"] <= 6)
 
 
 def test_a_divine_market_far_above_the_chaos_market_is_flagged_not_dropped(desk):
