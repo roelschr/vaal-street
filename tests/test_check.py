@@ -166,3 +166,11 @@ def test_cli_check_and_stash(archive_root, tmp_path, monkeypatch, capsys):
     assert "Test Orb" in out and "Divine +" in out
     cli.main(["stash", "clear"])
     assert "Nothing held" in capsys.readouterr().out
+
+
+def test_check_reasons_use_plain_words(desk):
+    # The synthetic orb has a cross plan; its name must reach the player as words, not the code's "cross".
+    r = check.check(desk, "Test Orb", "chaos", "buy", 10, 100)
+    text = " ".join(r["reasons"])
+    assert "cross" not in text and "flip plan" not in text
+    assert "The flip that buys for Chaos and sells for Divines buys at" in text or "Chaos-market flip" in text
