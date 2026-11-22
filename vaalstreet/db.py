@@ -87,6 +87,8 @@ def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None 
     known = pa.Table.from_pylist(rows, schema=schema)  # noqa: F841 (read by DuckDB)
     con.execute("CREATE TABLE known_items AS SELECT * FROM known")
 
+    # The items table is cut too, so a bounded connection does not even name items first traded later.
+    bound = "" if until is None else f" AND hour <= to_timestamp({int(until)})"
     markets = (markets_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     prices = (prices_dir(root) / "realm=*" / "month=*" / "data.parquet").as_posix()
     # Names for every traded item, falling back to one derived from the ID.
@@ -97,7 +99,7 @@ def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None 
                coalesce(k.name, regexp_replace(regexp_replace(split_part(t.item, '/', -1),
                         '^(Currency|DivinationCard)', ''), '([a-z0-9])([A-Z])', '\\1 \\2', 'g')) AS name,
                coalesce(k.category, 'Currency') AS category, k.stack
-        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'
+        FROM (SELECT DISTINCT item FROM read_parquet('{prices}', hive_partitioning = true) WHERE realm = '{realm}'{bound}
               UNION SELECT '{ref}') t
         LEFT JOIN known_items k USING (item)
         """
@@ -106,7 +108,7 @@ def connect(root: Path | None = None, realm: str = "poe1", *, until: int | None 
         _VIEWS.format(
             markets=markets, prices=prices, realm=realm, permanent=PERMANENT_LEAGUES,
             legs=LEGS_SQL.format(markets="markets"),
-            until="" if until is None else f" AND hour <= to_timestamp({int(until)})",
+            until=bound,
         )
     )
     _add_families(con)

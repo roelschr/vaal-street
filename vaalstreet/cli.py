@@ -171,6 +171,49 @@ def _flips(args: argparse.Namespace) -> None:
                    ("capital", "Capital", ",.0f")], args.rows)
 
 
+def _rehearse(args: argparse.Namespace) -> None:
+    """Step through a past league hour by hour, seeing only what was published by then."""
+    from vaalstreet.desk import Desk
+    from vaalstreet.rehearsal import league_hours
+
+    con = connect()
+    try:
+        first, last = league_hours(con, args.league)
+    except LookupError as err:
+        sys.exit(str(err))
+    hour = first + int(args.start_day * 24) * HOUR
+    if not first <= hour <= last:
+        sys.exit(f"{args.league} has {(last - first) // HOUR // 24 + 1} days on disk; pick a start day inside them.")
+    print(f"Rehearsing {args.league}: each step is one hour later. Enter for the next hour, a number to jump "
+          "that many hours, q to quit. Nothing after the hour shown is used.")
+    import warnings
+
+    warnings.simplefilter("ignore", RuntimeWarning)  # empty early-league columns; the table shows "-" for them
+    while True:
+        desk = Desk.build(con, args.league, as_of=hour)
+        h = (hour - first) // HOUR
+        when = time.strftime("%Y-%m-%d %H:00 UTC", time.gmtime(hour))
+        print(f"\n== {args.league}  day {h // 24}, hour {h % 24}  ({when})  Divine {desk.bridge:.1f}c ==")
+        plans = desk.flips(min_margin=args.min_margin)
+        print("Top flips:")
+        _table(plans, [("name", "Item", ""), ("kind", "Plan", ""), ("buy", "Buy", ".4g"), ("sell", "Sell", ".4g"),
+                       ("margin", "Margin", ".1%"), ("profit_per_hour", "c/hour", ",.0f")], args.rows)
+        movers = sorted((r for r in desk.market() if r.get("change_24h") is not None),
+                        key=lambda r: -abs(r["change_24h"]))
+        print("Movers over 24 hours:")
+        _table(movers, [("name", "Item", ""), ("price", "Price", ".4g"), ("change_24h", "24h", "+.1%")], args.rows)
+        if hour >= last:
+            print(f"\nThat was the last hour of {args.league} on disk.")
+            return
+        try:
+            answer = input("> ").strip().lower()
+        except EOFError:
+            return
+        if answer in ("q", "quit", "exit"):
+            return
+        hour = min(last, hour + (int(answer) if answer.isdigit() and int(answer) > 0 else 1) * HOUR)
+
+
 def _fills(args: argparse.Namespace) -> None:
     from vaalstreet import calibrate
     from vaalstreet.desk import Desk
@@ -209,11 +252,17 @@ def _ladder(args: argparse.Namespace) -> None:
     for r in out["ladder"]:
         s = r["session"]
         rows.append({"label": r["label"], "chaos": r["chaos"], "can_run": r["can_run"],
-                     "promised": s["expected_per_hour"], "replayed": s["replayed_per_hour"],
-                     "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
+                     "against": s["replayed_vs_divine_per_hour"], "replayed": s["replayed_per_hour"],
+                     "promised": s["expected_per_hour"], "hours": r["hours_to_next"], "gold": s["gold_per_hour"]})
     _table(rows, [("label", "Purse", ""), ("chaos", "Chaos", ",.0f"), ("can_run", "Can run", ""),
-                  ("promised", "c/hour now", ",.2f"), ("replayed", "c/hour last week", ",.2f"),
+                  ("against", "Last week vs Divines", ",.2f"), ("replayed", "Last week", ",.2f"),
+                  ("promised", "Promised", ",.2f"),
                   ("hours", "Hours to next", ",.1f"), ("gold", "Gold/hour", ",.0f")], len(rows))
+    divines = next((r["session"]["divines"] for r in out["ladder"] if r["session"].get("divines") is not None), None)
+    print("Chaos an hour. Last week: what each step's plans made over the last week at their own stakes. "
+          "Vs Divines: the same, less what holding Divines would have made"
+          + (f" ({divines:+.0%} over those hours)." if divines is not None else ".")
+          + " Promised: what today's levels earn if the last two days repeat; it has run well ahead of last week.")
     print("Gold/hour is blank until you record the Gold your trades cost, or set an assumed fee in the desk.")
     print("\nWhat opens up at each step:")
     for r in out["ladder"]:
@@ -578,12 +627,13 @@ def _backtest(args: argparse.Namespace) -> None:
         print(json.dumps(summaries, indent=1))
         return
     _table(summaries, [("league", "League", ""), ("strategy", "Strategy", ""), ("days", "Days", ""),
-                       ("return", "Return", "+.1%"), ("divine_return", "Hold Divine", "+.1%"),
-                       ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
+                       ("vs_divine", "Vs Divines", "+.1%"), ("return", "Return", "+.1%"),
+                       ("divine_return", "Hold Divine", "+.1%"), ("per_day", "c/day", ",.0f"), ("max_drawdown", "Max DD", ".1%"),
                        ("daily_sharpe", "Sharpe/d", ".2f"), ("fills", "Fills", ","), ("turnover", "Turnover", ".1f"),
                        ("gold_spent", "Gold", ","), ("chaos_per_1000_gold", "c/1k Gold", ",.1f"),
                        ("peak_holdings", "Most held", ",.0f"), ("peak_risk", "Worst drop", ",.0f"),
                        ("average_risk", "Avg drop", ",.0f")])
+    print("  Vs Divines: the return measured in Divines, so beating simply holding Divines is above zero.")
     print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
           f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
     for s in summaries:
@@ -682,11 +732,43 @@ def _two_market_scorecard(con, league: str, args: argparse.Namespace) -> None:
 def _research(args: argparse.Namespace) -> None:
     from vaalstreet import research
 
+    if args.name == "all":
+        _research_all(research.MEASUREMENTS, args.league or [])
+        return
     con = connect()
-    names = research.MEASUREMENTS if args.name == "all" else (args.name,)
+    print("\n".join(research.run(con, args.name, args.league).lines()))
+    print()
+
+
+def _research_all(names: tuple[str, ...], leagues: list[str]) -> None:
+    """Each measurement in its own child process, printed in order.
+
+    On the full archive one measurement alone peaks near 6.4 GB, and memory a process has used is
+    not handed back to the system, so running them one after another in one process gets killed.
+    A child gives all of its memory back when it exits.
+    """
+    import subprocess
+    from pathlib import Path
+
+    env = dict(os.environ)
+    # The child imports this same copy of the package, even when it is not installed.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (package_root, env.get("PYTHONPATH")) if p)
+    failed = []
     for name in names:
-        print("\n".join(research.run(con, name, args.league).lines()))
-        print()
+        command = [sys.executable, "-m", "vaalstreet", "research", name]
+        for league in leagues:
+            command += ["--league", league]
+        child = subprocess.run(command, capture_output=True, text=True, env=env)
+        sys.stdout.write(child.stdout)
+        sys.stdout.flush()
+        if child.stderr:
+            sys.stderr.write(child.stderr)
+        if child.returncode != 0:
+            failed.append(name)
+            print(f"{name}: did not finish (exit code {child.returncode})\n")
+    if failed:
+        sys.exit(f"Measurements that did not finish: {', '.join(failed)}")
 
 
 def _report(args: argparse.Namespace) -> None:
@@ -763,6 +845,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--min-margin", type=float, default=0.02)
     p.add_argument("--rows", type=int, default=25)
     p.set_defaults(run=_flips)
+
+    p = commands.add_parser("rehearse", help="practise on a past league: step through it hour by hour, "
+                                             "seeing only what the desk knew at each hour")
+    p.add_argument("league")
+    p.add_argument("--start-day", type=float, default=0, help="league day to start on (default: its first hour)")
+    p.add_argument("--min-margin", type=float, default=0.02)
+    p.add_argument("--rows", type=int, default=5)
+    p.set_defaults(run=_rehearse)
 
     p = commands.add_parser("fills", help="how fast your tracked orders filled, and the share of the flow plans now use")
     p.add_argument("--league")
@@ -894,9 +984,10 @@ def main(argv: list[str] | None = None) -> None:
                    "'reversion:{\"entry_z\": -2.5}'. Give several with --portfolio")
     p.add_argument("--portfolio", action="store_true",
                    help="run the strategies together on one bankroll; the first one listed fills first")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share",
-                   help="share: a fill takes at most --participation of the hour's volume (default). "
-                   "queue: an order first waits until the stock already on offer at your side has traded")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue",
+                   help="queue: an order first waits until the stock already on offer at your side has "
+                   "traded, then takes at most --participation of the hour's volume (default). "
+                   "share: it takes that share from the start, as if no one were ahead of you")
     p.add_argument("--risk-hours", type=float, default=24,
                    help="how long you expect to hold items, for the Worst drop column (default 24)")
     p.add_argument("--export", metavar="FILE.json",
@@ -941,7 +1032,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--whole-lots", action="store_true")
     p.add_argument("--gold-per-unit", type=float, default=0.0)
     p.add_argument("--schedule")
-    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="share")
+    p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue")
     p.add_argument("--json", action="store_true")
     p.set_defaults(run=_search)
 
@@ -963,7 +1054,7 @@ def main(argv: list[str] | None = None) -> None:
     p = commands.add_parser(
         "research", help="experiments: test a claim about the market against pass rules fixed in advance",
         description="Each measurement prints pass, fail or not enough data, its numbers, and how many settings "
-                    "were tried. The rules are in docs/ideas.md under 'How a measurement passes'.")
+                    "were tried. The rules are in docs/measurements.md.")
     from vaalstreet.research import MEASUREMENTS
     p.add_argument("name", choices=MEASUREMENTS + ("all",))
     p.add_argument("--league", action="append",

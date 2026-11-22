@@ -29,6 +29,7 @@ import statistics
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from vaalstreet.paths import ledger_file
 
@@ -85,6 +86,9 @@ ORDER_STATUSES = ("open", "part-filled", "filled", "cancelled", "closed")
 REPRICE_TOLERANCE = 0.04
 # An order is on the wrong side of the market only when it is past that market's price by more than this.
 WRONG_SIDE_TOLERANCE = 0.01
+# Gold is not refunded on cancel (confirmed in game), so a re-price pays the full fee again. When that
+# fee is known, an order is re-priced only when it is this far from the plan; nearer, it is kept.
+REPRICE_WITH_GOLD = 0.08
 
 
 def recipe_key(kind: str, item_ids: list[str]) -> str:
@@ -104,19 +108,49 @@ def fixed_key(kind: str, inputs: list[tuple[str, float]], output: str, gives: fl
     """
     left = "+".join(f"{float(n):g}*{item}" for item, n in inputs)
     return f"{kind}:{left}>{float(gives):g}*{output}"
+
+
+def describe_key(key: str, name: Callable[[str], str]) -> str:
+    """A recipe key in words, for a check whose recipe is no longer listed (you deleted it, or it stopped
+    trading): "3 Some Card + 1 Some Shard → 2 Some Orb", "5 Chaos Orb buys 1 Some Shard", "A → B → C".
+    `name` turns an item id into its name. A key that cannot be read is "a recipe you deleted"."""
+    kind, _, body = key.partition(":")
+    try:
+        if kind in ("recipe", "vendor"):
+            left, right = body.split(">")
+
+            def side(text: str) -> str:
+                return " + ".join(f"{float(n):g} {name(item)}" for n, item in (part.split("*", 1) for part in text.split("+")))
+
+            return f"{side(left)} {'buys' if kind == 'vendor' else '→'} {side(right)}"
+        if kind in ("set", "loop") and body:
+            return " → ".join(name(item) for item in body.split(">"))
+    except ValueError:
+        pass
+    return "a recipe you deleted"
+
+
 ALERT_FIELDS = {"price": "Price", "chaos": "Chaos-market price", "divine": "Divine-market price",
                 "premium": "Divine premium", "change_24h": "24h change", "z": "Surprise (z)"}
 
 
 class Ledger:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, path: Path | None = None, clock: Callable[[], float] | None = None) -> None:
+        """The ledger in `root` (desk.sqlite), or in `path`. `clock` stamps new rows: a rehearsal's
+        practice ledger runs on the rehearsal's hour, not the wall clock."""
         root.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(ledger_file(root), check_same_thread=False)
+        self.clock = clock or time.time
+        self.path = path or ledger_file(root)
+        self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock, self._db:
             self._db.executescript(_SCHEMA)
             self._migrate()
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
 
     def _migrate(self) -> None:
         for table, columns in _COLUMNS.items():
@@ -156,7 +190,7 @@ class Ledger:
                 raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}.")
         return self._run(
             "INSERT INTO trades(t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?)",
-            (int(t or time.time()), league, item, side, units, price, str(note)[:200], gold, order_id),
+            (int(t or self.clock()), league, item, side, units, price, str(note)[:200], gold, order_id),
         )
 
     def delete_trade(self, trade_id: int) -> None:
@@ -224,7 +258,7 @@ class Ledger:
             raise ValueError("The exchange only takes whole-number ratios.")
         if not int(currency_units) > 0 or not int(item_units) > 0 or not float(units) > 0:
             raise ValueError("An order needs a positive ratio and positive units.")
-        now = int(t or time.time())
+        now = int(t or self.clock())
         return self._run(
             "INSERT INTO orders(league, item, side, market, currency_units, item_units, units, gold, created, updated)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -249,7 +283,7 @@ class Ledger:
         The trade is written first: if it is refused (selling more than the ledger holds), the order
         is left as it was.
         """
-        order, units, now = self.order(order_id), float(units), int(t or time.time())
+        order, units, now = self.order(order_id), float(units), int(t or self.clock())
         if order["status"] not in ("open", "part-filled"):
             raise ValueError("Only an open order can fill.")
         left = order["units"] - order["filled"]
@@ -274,7 +308,7 @@ class Ledger:
         if status not in ("cancelled", "closed"):
             raise ValueError("An order can only be cancelled or closed by hand; fills go through fill_order.")
         self.order(order_id)
-        self._run("UPDATE orders SET status = ?, updated = ? WHERE id = ?", (status, int(t or time.time()), int(order_id)))
+        self._run("UPDATE orders SET status = ?, updated = ? WHERE id = ?", (status, int(t or self.clock()), int(order_id)))
 
     def delete_order(self, order_id: int) -> None:
         self._run("DELETE FROM orders WHERE id = ?", (int(order_id),))
@@ -291,7 +325,15 @@ class Ledger:
         The two markets of an item are different prices, so an order is judged against its own
         market's price, never the combined fair value when the market's own price is known.
         Filled orders say "collect" until you close them.
+
+        Gold is not refunded on cancel (confirmed in game): re-pricing means cancelling and posting
+        again, which pays the Gold fee on every unit still open once more. So an order more than
+        `REPRICE_TOLERANCE` from the plan is re-priced only when the fee is unknown or free, or when
+        it is more than `REPRICE_WITH_GOLD` off; in between it is kept, and the reason says what a
+        re-post would cost. An order on the wrong side of its market is cancelled whatever the Gold:
+        every fill would lose money, and the Gold it cost is gone either way.
         """
+        costs = self.costs(league)
         out = []
         for order in self.orders(league):
             price = order["currency_units"] / order["item_units"] * (bridge if order["market"] == "divine" else 1.0)
@@ -311,16 +353,29 @@ class Ledger:
                 continue
             buying = order["side"] == "buy"
             past = price / market - 1 if buying else 1 - price / market
+            fee, _ = costs.fee(order["item"])
+            open_units = max(float(order["units"]) - float(order["filled"] or 0), 0.0)
+            repost = None if fee is None else fee * open_units
             if past > WRONG_SIDE_TOLERANCE and not near_plan:
                 row["advice"] = "cancel"
                 row["reason"] = (f"You are {'paying' if buying else 'asking'} {abs(past):.0%} "
-                                 f"{'more' if buying else 'less'} than the {market_name} market's price now.")
+                                 f"{'more' if buying else 'less'} than the {market_name} market's price now. "
+                                 "The Gold it cost to post is not refunded, but every fill would lose money.")
                 continue
             if level and not near_plan:
+                off = abs(price / level["price"] - 1)
+                row["repost_gold"] = repost
+                if repost and off <= REPRICE_WITH_GOLD:
+                    row["reason"] = (f"Re-pricing costs about {repost:,.0f} Gold again (Gold is not refunded on "
+                                     f"cancel); the order is only {off:.0%} off the plan, so keep it.")
+                    continue
                 row["advice"], row["suggest"] = "re-price", level
+                cost = ("Gold unknown for a re-post" if repost is None
+                        else "a re-post costs no Gold" if repost == 0
+                        else f"worth the {repost:,.0f} Gold a re-post costs again")
                 row["reason"] = (f"The plan would now post {level['item_units']} for {level['currency_units']} "
-                                 f"{market_name}, {abs(price / level['price'] - 1):.0%} "
-                                 f"{'below' if price > level['price'] else 'above'} your price.")
+                                 f"{market_name}, {off:.0%} "
+                                 f"{'below' if price > level['price'] else 'above'} your price ({cost}).")
             elif level:
                 row["reason"] = "Your price is where the plan would post it."
             else:
@@ -335,11 +390,11 @@ class Ledger:
             raise ValueError("A session is already running in this league.")
         expected = float(expected_per_hour) if expected_per_hour not in (None, "") else None
         return self._run("INSERT INTO sessions(league, started, expected_per_hour, plan) VALUES (?,?,?,?)",
-                         (league, int(t or time.time()), expected, json.dumps(plan or {})))
+                         (league, int(t or self.clock()), expected, json.dumps(plan or {})))
 
     def stop_session(self, session_id: int, gold_earned: float | None = None, t: int | None = None) -> None:
         self._run("UPDATE sessions SET stopped = ?, gold_earned = ? WHERE id = ? AND stopped IS NULL",
-                  (int(t or time.time()), _gold(gold_earned), int(session_id)))
+                  (int(t or self.clock()), _gold(gold_earned), int(session_id)))
 
     def delete_session(self, session_id: int) -> None:
         self._run("DELETE FROM sessions WHERE id = ?", (int(session_id),))
@@ -356,7 +411,7 @@ class Ledger:
         bought before, so stock carried in from earlier counts at what you paid for it.
         Gold spent is the Gold on trades made and orders posted inside the session.
         """
-        now = int(now or time.time())
+        now = int(now or self.clock())
         _, sales = self._replay(league)
         out = []
         for s in self._all("SELECT * FROM sessions WHERE league = ? ORDER BY id DESC LIMIT ?", (league, limit)):
@@ -378,7 +433,7 @@ class Ledger:
         if status not in ("confirmed", "failed") or not key:
             raise ValueError("A recipe check needs a recipe and confirmed or failed.")
         return self._run("INSERT INTO recipe_checks(key, status, note, t) VALUES (?,?,?,?)",
-                         (str(key)[:300], status, str(note)[:200], int(t or time.time())))
+                         (str(key)[:300], status, str(note)[:200], int(t or self.clock())))
 
     def delete_recipe_check(self, check_id: int) -> None:
         self._run("DELETE FROM recipe_checks WHERE id = ?", (int(check_id),))
@@ -405,7 +460,7 @@ class Ledger:
             self._run("DELETE FROM stash WHERE league = ? AND item = ?", (league, item))
             return
         self._run("INSERT INTO stash VALUES (?, ?, ?, ?) ON CONFLICT(league, item) DO UPDATE SET "
-                  "units = excluded.units, updated = excluded.updated", (league, item, units, int(t or time.time())))
+                  "units = excluded.units, updated = excluded.updated", (league, item, units, int(t or self.clock())))
 
     def clear_stash(self, league: str) -> None:
         self._run("DELETE FROM stash WHERE league = ?", (league,))
@@ -433,7 +488,7 @@ class Ledger:
         if any(item == output for item, _ in clean):
             raise ValueError("The output cannot also be an input.")
         return self._run("INSERT INTO fixed_conversions(kind, inputs, output, gives, note, t) VALUES (?,?,?,?,?,?)",
-                         (kind, json.dumps(clean), str(output), gives, str(note)[:200], int(t or time.time())))
+                         (kind, json.dumps(clean), str(output), gives, str(note)[:200], int(t or self.clock())))
 
     def delete_fixed(self, fixed_id: int) -> None:
         self._run("DELETE FROM fixed_conversions WHERE id = ?", (int(fixed_id),))
