@@ -319,15 +319,27 @@ def queue_panel(prices, volume=100.0, bid=2375.0, ask=250.0):
 def test_a_queued_buy_waits_for_the_stock_ahead_of_it():
     # 2375 Chaos bid at a 9.5 limit is 250 items ahead. Only hours that trade through 9.5 eat into
     # the queue: hour 1 (100 left 150), hour 3 (50 left), hour 4 fills 50 of 80, hour 5 the last 30.
-    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue")
+    # participation=1.0 lifts the share cap so that only the queue limits the fills.
+    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue", participation=1.0)
     result = sim.run(Script({0: [("buy", 80, 9.5)]}))
     assert list(result.cash) == [1000, 1000, 1000, 1000, 1000 - 50 * 9.5, 1000 - 80 * 9.5]
     share = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000).run(Script({0: [("buy", 80, 9.5)]}))
-    assert share.cash[1] == 1000 - 10 * 9.5, "the default model fills 10% of the hour at once"
+    assert share.cash[1] == 1000 - 10 * 9.5, "the share model fills 10% of the hour at once"
+
+
+def test_a_queued_order_in_a_thin_market_still_takes_at_most_the_share():
+    # No stock rests ahead (ask=bid=0), so the queue is empty from the start. Uncapped, the buy
+    # would take all 100 items traded through 9.5 in hour 1; capped, it takes 10 an hour, like share.
+    runs = {}
+    for model in ("share", "queue"):
+        sim = backtest.Simulation(queue_panel([10, 9, 9, 9], bid=0.0, ask=0.0), capital=1000, fill_model=model)
+        sim.run(Script({0: [("buy", 80, 9.5)]}))
+        runs[model] = sim.position[0]
+    assert runs["queue"] == pytest.approx(30) and runs["queue"] <= runs["share"]
 
 
 def test_a_new_price_goes_to_the_back_of_the_queue_and_market_orders_do_not_queue():
-    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue")
+    sim = backtest.Simulation(queue_panel([10, 9, 10, 9, 9, 9]), capital=1000, fill_model="queue", participation=1.0)
     sim.run(Script({0: [("buy", 80, 9.5)], 2: [("buy", 80, 9.6)]}))
     # Re-posted at 9.6 after hour 2: 2375 / 9.6 = 247.4 ahead again, 47.4 left after hours 3 and 4.
     assert sim.position[0] == pytest.approx(100 - (2375 / 9.6 - 200))

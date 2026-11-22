@@ -14,7 +14,8 @@ published per market and hour - the average traded price (VWAP) and the volume:
 * A fill takes at most `participation` of the hour's volume in that market. With
   `fill_model="queue"`, a resting order instead waits behind the stock published on its
   side when it was posted (see `Simulation._queue_at`), and fills from the volume that trades
-  through its level after that queue is gone.
+  through its level after that queue is gone, still at most `participation` of it. So queue
+  never fills more than share in an hour.
 * No leverage, no shorting: buys are scaled to cash, sells to inventory.
 
 Orders live in one of two markets per item: "r" (against Chaos) or "b" (against
@@ -568,8 +569,8 @@ class Simulation:
         With the "share" model, a fill takes at most `participation` of the hour's volume. With the
         "queue" model, a resting order first waits for the stock that rested ahead of it when it
         was posted (see `_queue_at`): only volume that traded through its level counts, and the
-        order fills from whatever trades after the queue is gone. Market orders do not queue, so
-        they keep the `participation` cap. Either way, units already taken in this market and hour
+        order fills from what trades after the queue is gone, still at most `participation` of the
+        hour's volume. Market orders do not queue and keep the same cap. Either way, units already taken in this market and hour
         by another strategy of the same portfolio are not there to take again.
         """
         taken = self.wallet.taken(t, key, side, len(volume))
@@ -579,7 +580,9 @@ class Simulation:
         queue = getattr(book, f"{side}_queue")
         flow = np.maximum(volume - taken, 0)
         resting = through & ~market & (getattr(book, f"{side}_units") > 0)
-        room = np.where(market, share, np.where(resting, np.maximum(flow - queue, 0), 0.0))
+        # Past the queue an order still takes at most the share: in a thin market with little
+        # resting stock, the queue alone would let it take the whole hour's volume.
+        room = np.where(market, share, np.where(resting, np.minimum(np.maximum(flow - queue, 0), share), 0.0))
         setattr(book, f"{side}_queue", np.where(resting, np.maximum(queue - flow, 0), queue))
         return room
 
@@ -601,8 +604,8 @@ class Simulation:
         Where the guess errs: if the stock spans every price, the queue is too long for an order
         at a sharp price; taking the hour's lowest, and counting unknown stock as empty, can make
         it too short. It is read at hour t (forward-filled up to six hours when the market printed
-        nothing), so it is known when the order goes up. Once the queue is gone, nothing else caps
-        the order: at the front it can take the whole hour's volume through its level.
+        nothing), so it is known when the order goes up. Once the queue is gone, the order fills
+        like the "share" model: at most `participation` of the hour's volume.
         """
         if (side == "buy" and math.isinf(limit)) or (side == "sell" and limit <= 0):
             return 0.0  # market orders take liquidity; they do not queue
