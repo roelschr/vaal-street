@@ -24,7 +24,7 @@ from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, se
 from vaalstreet.desk import Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
-from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert, describe_key
+from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert, describe_key, recipe_key
 from vaalstreet.paths import data_dir, icons_dir
 from vaalstreet.rehearsal import PRACTICE_FILE, PracticeLedger, Rehearsal, league_hours
 
@@ -621,10 +621,17 @@ class App:
             })
         positions.sort(key=lambda r: -(r["value"] or 0))
         trades = self.ledger.trades(desk.league)
+        uncovered = self.ledger.uncovered(desk.league)
+        made = [self._made_row(desk, m) for m in self.ledger.made(desk.league)]
+        merges: dict[int, list] = {}
+        for m in made:
+            if m.get("sale") is not None:
+                merges.setdefault(m["sale"], []).append(m)
         for tr in trades:
             tr["name"] = desk._name(tr["item"])
-        made = [dict(m, inputs=[{"id": item, "name": desk._name(item), "units": units} for item, units in m["inputs"]],
-                     name=desk._name(m["output"])) for m in self.ledger.made(desk.league)]
+            tr["merges"], tr["uncovered"] = merges.get(tr["id"], []), _num(uncovered.get(("trade", tr["id"])))
+        for m in made:
+            m["uncovered"] = _num(uncovered.get(("made", m["id"])))
         fees = self.ledger.gold_fees(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
@@ -636,8 +643,56 @@ class App:
             "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,
             "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
             "orders": self._advise(desk), "sessions": self.ledger.sessions(desk.league),
+            # For the "Record items you made" form: what each item is made from, by name.
+            "made_from": {desk._name(out): [{"inputs": [[desk._name(i), n] for i, n in r["inputs"]], "gives": r["gives"]}
+                                            for r in rs] for out, rs in self._merge_recipes(desk, for_sale=False).items()},
             **self._recipes(desk),
         }
+
+    @staticmethod
+    def _made_row(desk, m: dict) -> dict:
+        return dict(m, inputs=[{"id": item, "name": desk._name(item), "units": units} for item, units in m["inputs"]],
+                    name=desk._name(m["output"]))
+
+    def _merge_recipes(self, desk, for_sale: bool = True) -> dict[str, list[dict]]:
+        """What each item can be made from, for a sale the ledger's holdings do not cover (`Ledger.add_trade`).
+
+        The game data's recipes (essences and oils three for one, card sets, shards and splinters) and the
+        recipes you entered. A recipe you marked as not working in game is left out, and so is any that
+        makes or takes Chaos Orbs, which the ledger does not hold. For a sale, nothing makes Divine Orbs
+        either: they are money, and selling ones you looted must not turn in a card set you bought to trade.
+        """
+        chaos = ANCHORS[desk.realm][0]
+        money = set(ANCHORS[desk.realm]) if for_sale else {chaos}
+        failed = {k for k, c in self.ledger.recipe_checks().items() if c["status"] == "failed"}
+        by_name: dict[str, str] = {}
+        for item_id, m in desk.meta.items():
+            by_name.setdefault(m.get("name"), item_id)
+        by_name.update(zip(desk.panel.names, desk.panel.items))  # the league's own market first, as for trades
+        out: dict[str, list[dict]] = {}
+
+        def add(output: str, inputs: list, gives: float) -> None:
+            recipe = {"inputs": [(i, float(n)) for i, n in inputs], "gives": float(gives)}
+            if output not in money and all(i != chaos for i, _ in recipe["inputs"]) and recipe not in out.get(output, []):
+                out.setdefault(output, []).append(recipe)
+
+        for item_id, m in desk.meta.items():
+            recipe = m.get("set") or {}
+            reward = by_name.get(recipe.get("reward"))
+            if reward and recipe.get("gives") and recipe_key("set", [item_id, reward]) not in failed:
+                add(reward, [(item_id, recipe["need"])], recipe["gives"])
+        for f in self.ledger.fixed_conversions():
+            if f["kind"] == "recipe" and f["key"] not in failed:
+                add(f["output"], f["inputs"], f["gives"])
+        return out
+
+    def _sale_answer(self, desk, trade_id: int | None) -> dict:
+        """What a new sale took beyond the holdings: the merges recorded for it and the units with no cost."""
+        if trade_id is None:
+            return {}
+        return {"trade": {"id": trade_id,
+                          "merges": [self._made_row(desk, m) for m in self.ledger.merges_for(trade_id)],
+                          "uncovered": _num(self.ledger.uncovered(desk.league).get(("trade", trade_id)))}}
 
     def api_check(self, body: dict) -> dict:
         """Go / no-go for an offer typed from the order window. The ratio is items first."""
@@ -737,6 +792,7 @@ class App:
 
     def api_post(self, path: str, body: dict) -> dict:
         league = body.get("league") or self.default_league()
+        answer: dict = {}
         try:
             if path == "/api/trade":
                 if body.get("delete"):
@@ -745,8 +801,12 @@ class App:
                     fields = ("item", "side", "units", "price", "gold", "note")
                     self.ledger.edit_trade(body["edit"], **{k: body[k] for k in fields if k in body})
                 else:
-                    self.ledger.add_trade(league, body["item"], body["side"], body["units"], body["price"],
-                                          body.get("note", ""), gold=body.get("gold"))
+                    desk = self.desk(league)
+                    # "merge": false records the sale as it is, with nothing worked out from what the ledger holds.
+                    recipes = self._merge_recipes(desk) if body["side"] == "sell" and body.get("merge", True) else None
+                    answer = self._sale_answer(desk, self.ledger.add_trade(
+                        league, body["item"], body["side"], body["units"], body["price"], body.get("note", ""),
+                        gold=body.get("gold"), recipes=recipes))
             elif path == "/api/made":
                 if body.get("delete"):
                     self.ledger.delete_made(body["delete"])
@@ -772,9 +832,12 @@ class App:
                 if body.get("delete"):
                     self.ledger.delete_order(body["delete"])
                 elif body.get("fill"):
-                    bridge = self.desk(league).bridge if self.ledger.order(body["fill"])["market"] == "divine" else None
-                    self.ledger.fill_order(body["fill"], body["units"], bridge=bridge,
-                                           record_trade=bool(body.get("record_trade", True)))
+                    desk, order = self.desk(league), self.ledger.order(body["fill"])
+                    bridge = desk.bridge if order["market"] == "divine" else None
+                    recipes = self._merge_recipes(desk) if order["side"] == "sell" else None
+                    answer = self._sale_answer(desk, self.ledger.fill_order(
+                        body["fill"], body["units"], bridge=bridge, record_trade=bool(body.get("record_trade", True)),
+                        recipes=recipes))
                 elif body.get("status"):
                     self.ledger.set_order_status(body["id"], body["status"])
                 else:
@@ -835,7 +898,7 @@ class App:
                 raise ApiError("Unknown endpoint.", 404)
         except (KeyError, ValueError, TypeError) as err:
             raise ApiError(f"Bad request: {err}") from err
-        return {"ok": True}
+        return {"ok": True, **answer}
 
     # ------------------------------------------------------------- rehearsal
     def rehearsal_banner(self) -> dict | None:
