@@ -29,6 +29,15 @@ function toast(message, bad) {
   el.className = 'toast' + (bad ? ' err' : ''); el.textContent = message;
   $('#toasts').append(el); setTimeout(() => el.remove(), 5000);
 }
+// A count of items in words: 1, 2.5, not 1.000.
+const count = v => String(+(+v).toFixed(2));
+// What a sale took beyond the ledger's holdings: the merges it recorded, and the units with no recorded cost.
+function saleToast(trade) {
+  if (!trade) return;
+  const merged = (trade.merges || []).map(m => `${m.inputs.map(x => `${+x.units} ${x.name}`).join(' + ')} into ${+m.gives} ${m.name}`);
+  if (merged.length) toast(`Recorded the merge${merged.length > 1 ? 's' : ''} for this sale: ${merged.join('; then ')}.`);
+  if (trade.uncovered) toast(`${count(trade.uncovered)} sold had no recorded cost, so their whole price counts as profit.`);
+}
 
 // --------------------------------------------------------------- formatting
 function fmt(v) {
@@ -1097,12 +1106,14 @@ async function viewLedger(main) {
       <label class="f">Price each (c)<input type="number" id="tp" min="0" step="any"></label>
       <label class="f">Gold paid<input type="number" id="tg" min="0" step="any" placeholder="optional" title="The Gold this trade cost. The desk learns each item's fee from these."></label>
       <label class="f">Note<input type="text" id="tn" style="width:160px"></label>
+      <label class="f" id="tmerge" hidden style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px" title="Sold more than the ledger holds? It records the merges that made the rest from items it holds: three essences into one of the next tier, a card set into its reward, shards into their orb, or a recipe of yours. Untick it for items you looted."><input type="checkbox" id="tm" checked> Made from what I hold</label>
       <button class="btn primary" id="add">Add</button><button class="btn" id="tcancel" hidden>Cancel</button></div></section>
     <section class="panel" style="margin-bottom:14px"><header><h2>Record items you made</h2></header><form class="body" id="mform" autocomplete="off">
-      <p class="muted small" style="margin:0 0 8px">Merged items into another one, such as 3 essences into 1 of the next tier, or a card set into its reward? Record it here. What you paid for the items you used becomes the cost of the item you made, and you can then record its sale.</p>
+      <p class="muted small" style="margin:0 0 8px">Merged items into another one, such as 3 essences into 1 of the next tier, or a card set into its reward? If you sell what you made, just record the sale: the ledger works out the merges from what it holds. Record a merge here when you keep the item. What you paid for the items you used becomes the cost of the item you made.</p>
       <div class="muted small" style="margin-bottom:4px">You used</div><div id="mins"></div>
       <button type="button" class="btn ghost" id="mmore" style="margin-bottom:8px">+ another item</button>
       <div class="bar" style="margin:0"><label class="f">You got<span style="display:flex;gap:6px"><input type="number" id="mg" min="0" step="any" value="1" style="width:70px"><input type="text" id="mo" list="items" placeholder="Start typing…" style="width:240px"></span></label>
+      <span class="muted small" id="mfrom" style="align-self:center"></span>
       <label class="f">Note<input type="text" id="mn" placeholder="optional" style="width:160px"></label>
       <button class="btn primary">Add</button></div></form></section>
     <section class="panel" style="margin-bottom:14px"><header><h2>Record an order you posted</h2></header><div class="body bar" style="margin:0">
@@ -1116,20 +1127,28 @@ async function viewLedger(main) {
       <button class="btn primary" id="oadd">Add</button></div></section>
     <div class="grid" id="g"></div>`;
   let side = 'buy', editing = null;  // editing: the trade loaded into the form by its ✎ button
-  const setSide = s => { side = s; main.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s)); };
+  const setSide = s => {
+    side = s; main.querySelectorAll('#side button').forEach(b => b.classList.toggle('on', b.dataset.s === s));
+    $('#tmerge', main).hidden = s !== 'sell' || !!editing;  // an edit keeps the merges its sale was recorded with
+  };
   $('#side', main).onclick = e => { const s = e.target.dataset.s; if (s) setSide(s); };
   $('#ti', main).onchange = e => { const row = state.market.find(r => r.name === e.target.value); if (row && !$('#tp', main).value) $('#tp', main).value = row.price; };
   const editTrade = tr => {
     editing = tr;
+    $('#tmerge', main).hidden = true;
     $('#thead', main).textContent = `Edit the trade from ${new Date(tr.t * 1000).toLocaleString()}`;
     $('#ti', main).value = tr.name; setSide(tr.side);
     $('#tu', main).value = tr.units; $('#tp', main).value = tr.price; $('#tg', main).value = tr.gold ?? ''; $('#tn', main).value = tr.note || '';
-    const fromOrder = tr.order_id != null;
-    [$('#ti', main), $('#tu', main), $('#tg', main), ...main.querySelectorAll('#side button')].forEach(el => { el.disabled = fromOrder; });
-    $('#tlock', main).hidden = !fromOrder;
+    const fromOrder = tr.order_id != null, merged = !!tr.merges?.length;
+    [$('#ti', main), $('#tu', main), ...main.querySelectorAll('#side button')].forEach(el => { el.disabled = fromOrder || merged; });
+    $('#tg', main).disabled = fromOrder;
+    $('#tlock', main).hidden = !(fromOrder || merged);
+    $('#tlock', main).textContent = fromOrder
+      ? 'Filled from an order: its item, side and units follow the order, and the order holds the Gold.'
+      : 'The ledger recorded merges for this sale: its item, side and units stay. To change them, delete the sale and record it again.';
     $('#add', main).textContent = 'Save changes'; $('#tcancel', main).hidden = false;
     $('#tform', main).scrollIntoView({ block: 'start', behavior: 'smooth' });
-    $(fromOrder ? '#tp' : '#tu', main).focus();
+    $(fromOrder || merged ? '#tp' : '#tu', main).focus();
   };
   $('#tcancel', main).onclick = () => route();
   $('#add', main).onclick = async () => {
@@ -1139,12 +1158,42 @@ async function viewLedger(main) {
     if (!item) return toast('Pick an item from the list.', true);
     const fields = { price: +$('#tp', main).value, note: $('#tn', main).value };
     if (!editing || editing.order_id == null) Object.assign(fields, { item, side, units: +$('#tu', main).value, gold: optional($('#tg', main).value) });
-    try { await api('/api/trade', { league: state.league, ...(editing ? { edit: editing.id } : {}), ...fields }); if (editing) toast('Trade updated.'); route(); }
-    catch (err) { toast(err.message, true); }
+    if (editing?.merges?.length) Object.assign(fields, { item: editing.item, side: editing.side, units: editing.units });
+    if (!editing && side === 'sell') fields.merge = $('#tm', main).checked;
+    try {
+      const answer = await api('/api/trade', { league: state.league, ...(editing ? { edit: editing.id } : {}), ...fields });
+      if (editing) toast('Trade updated.');
+      saleToast(answer.trade);
+      route();
+    } catch (err) { toast(err.message, true); }
   };
   const usedRow = () => `<div class="bar" style="margin:0 0 6px" data-in><label class="f">Count<input type="number" class="n" min="0" step="any" style="width:70px"></label><label class="f">Item<input type="text" class="it" list="items" placeholder="Start typing…" style="width:240px"></label></div>`;
   $('#mins', main).innerHTML = usedRow();
   $('#mmore', main).onclick = () => $('#mins', main).insertAdjacentHTML('beforeend', usedRow());
+  // Prefill "You used" from what the item is made of. Rows you typed yourself are never overwritten.
+  let chosen = null;  // the recipe the rows were filled from, so a new count refills them
+  const fillUsed = recipe => {
+    chosen = recipe;
+    const wanted = +$('#mg', main).value || 1, rows = $('#mins', main);
+    rows.innerHTML = recipe.inputs.map(() => usedRow()).join('');
+    [...rows.querySelectorAll('[data-in]')].forEach((row, k) => {
+      const [name, n] = recipe.inputs[k];
+      row.dataset.auto = '1'; $('.it', row).value = name; $('.n', row).value = +(n * wanted / recipe.gives).toFixed(4);
+    });
+  };
+  const typed = () => [...main.querySelectorAll('#mins [data-in]')].some(r => !r.dataset.auto && ($('.it', r).value || $('.n', r).value));
+  const prefill = () => {
+    chosen = null;
+    const options = (d.made_from || {})[$('#mo', main).value.trim()] || [], hint = $('#mfrom', main);
+    hint.innerHTML = options.length > 1
+      ? 'Made from: ' + options.map((r, k) => `<button type="button" class="btn ghost" data-recipe="${k}">${esc(r.inputs.map(([name, n]) => `${+n} ${name}`).join(' + '))}</button>`).join(' or ')
+      : '';
+    hint.onclick = e => { const b = e.target.closest('[data-recipe]'); if (b) fillUsed(options[+b.dataset.recipe]); };
+    if (options.length === 1 && !typed()) fillUsed(options[0]);
+  };
+  $('#mo', main).onchange = prefill;
+  $('#mg', main).oninput = () => { if (chosen && main.querySelector('#mins [data-auto]') && !typed()) fillUsed(chosen); };
+  $('#mins', main).oninput = e => { e.target.closest('[data-in]')?.removeAttribute('data-auto'); };
   $('#mform', main).onsubmit = async e => {
     e.preventDefault();
     // The market's own id where the name is in the list, as the trade form sends it; the server looks up any other name.
@@ -1165,7 +1214,9 @@ async function viewLedger(main) {
   };
   const post = async (path, body) => { try { await api(path, { league: state.league, ...body }); route(); } catch (err) { toast(err.message, true); } };
   const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
-  const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>');
+  const selling = d.orders.some(r => r.side === 'sell' && r.status !== 'filled');
+  const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>'
+    + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
@@ -1174,13 +1225,17 @@ async function viewLedger(main) {
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
-      : `<button class="btn ghost" data-fill="${r.id}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
+      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
   ot.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.close) post('/api/order', { id: +b.dataset.close, status: 'closed' });
     if (b.dataset.cancel) post('/api/order', { id: +b.dataset.cancel, status: 'cancelled' });
-    if (b.dataset.fill) { const n = prompt('How many items filled?', b.dataset.left); if (n) post('/api/order', { fill: +b.dataset.fill, units: +n }); }
+    if (b.dataset.fill) {
+      const n = prompt('How many items filled?', b.dataset.left);
+      const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
+      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => { saleToast(a.trade); route(); }, err => toast(err.message, true));
+    }
   };
   ord.append(ot);
   const running = d.sessions.find(s => s.running), plan = state.sessionPlan && state.sessionPlan.league === d.league ? state.sessionPlan : null;
@@ -1228,8 +1283,10 @@ async function viewLedger(main) {
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() }, { h: 'Item', l: 1, f: r => esc(r.name) },
     { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Bought' : 'Sold' }, { h: 'Units', f: r => fmt(r.units) }, { h: 'Price', f: r => money(r.price) },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
-    { h: 'Note', l: 1, f: r => esc(r.note) },
-    { h: '', f: r => `<button class="btn ghost" data-edit="${r.id}" title="Edit this trade">✎</button><button class="btn ghost" data-del="${r.id}" title="Delete this trade">✕</button>` },
+    { h: 'Note', l: 1, f: r => esc(r.note)
+      + (r.merges || []).map(m => `<div class="muted small" title="The ledger recorded this merge for the sale. Deleting the sale undoes it">merged ${esc(m.inputs.map(x => `${+x.units} ${x.name}`).join(' + '))} into ${+m.gives} ${esc(m.name)}</div>`).join('')
+      + (r.uncovered ? `<div class="muted small" title="Neither bought nor made in the ledger, so they cost nothing here and their whole price counts as profit">${count(r.uncovered)} had no recorded cost</div>` : '') },
+    { h: '', f: r => `<button class="btn ghost" data-edit="${r.id}" title="Edit this trade">✎</button><button class="btn ghost" data-del="${r.id}" title="${r.merges?.length ? 'Delete this trade and the merges recorded for it' : 'Delete this trade'}">✕</button>` },
   ], d.trades, { empty: 'Nothing recorded.' });
   tt.onclick = async e => {
     const ed = e.target.closest('[data-edit]');
@@ -1239,14 +1296,14 @@ async function viewLedger(main) {
     try { await api('/api/trade', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
   };
   tr.append(tt);
-  const mk = panel('Items you made', 'c12', '<span class="muted small">Merges and turn-ins you recorded. The item made carries what the items used cost you.</span>');
+  const mk = panel('Items you made', 'c12', '<span class="muted small">Merges and turn-ins, recorded by you or worked out for a sale. The item made carries what the items used cost you.</span>');
   const mt = table([
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() },
-    { h: 'Used', l: 1, f: r => r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') },
+    { h: 'Used', l: 1, f: r => r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') + (r.uncovered ? `<div class="muted small">${count(r.uncovered)} had no recorded cost</div>` : '') },
     { h: 'Got', l: 1, f: r => `${+r.gives} ${esc(r.name)}` },
-    { h: 'Note', l: 1, f: r => esc(r.note) },
-    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this entry">✕</button>` },
-  ], d.made, { empty: 'Nothing recorded. Use "Record items you made" above when you merge or turn in items.' });
+    { h: 'Note', l: 1, f: r => (r.sale != null ? '<span class="tag" title="Worked out by the ledger when you recorded the sale. Delete the sale to undo it">with a sale</span> ' : '') + esc(r.note) },
+    { h: '', f: r => r.sale != null ? '' : `<button class="btn ghost" data-del="${r.id}" title="Delete this entry">✕</button>` },
+  ], d.made, { empty: 'Nothing recorded. A sale records the merges it needs; record a merge you keep under "Record items you made" above.' });
   mt.onclick = e => { const b = e.target.closest('[data-del]'); if (b) post('/api/made', { delete: +b.dataset.del }); };
   mk.append(mt);
   const al = alertsPanel(d, names);
@@ -1436,7 +1493,7 @@ const TOUR = [
     <p>Mark ✓ or ✗ once you tried one in game, and add your own recipes and vendor prices at the bottom.</p>` },
   { page: 'ledger', title: 'Ledger', body: `<p>Record the trades you make and the orders you post, with the Gold they cost. This is what makes the desk yours:</p>
     <ul><li>It learns each item’s Gold fee from your records.</li><li>It learns how much of the market your orders really get, and flips get more realistic.</li>
-    <li>It tells you when an order should be re-priced, cancelled or collected.</li></ul><p>Fix a mistake with ✎, set alerts, and start a session to see what you made per hour.</p>` },
+    <li>It tells you when an order should be re-priced, cancelled or collected.</li></ul><p>Sold essences you merged? Just record the sale: the ledger works out the merges from what it holds. Fix a mistake with ✎, set alerts, and start a session to see what you made per hour.</p>` },
   { page: 'league', title: 'Planning and practice', body: `<ul><li><b>Ladder</b>: what a small purse can run at each size, and when to switch plans.</li>
     <li><b>League start</b> (this page): what past leagues did from today’s league day, and when Divines were cheapest. You can also <b>rehearse a past league</b> here, hour by hour, without touching your real ledger.</li>
     <li><b>Backtest lab</b>: replay a strategy over past leagues and compare it with holding Divines.</li></ul>` },
