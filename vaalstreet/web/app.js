@@ -146,12 +146,20 @@ function renderNav(page) {
   $('#tourLink').onclick = e => { e.preventDefault(); openTour(); };
   $('#railBtn').onclick = () => { try { localStorage.navRail = rail ? '0' : '1'; } catch { /* stays as it is */ } renderNav(page); };
 }
+// The Divine price flashes green or red when a new hour moves it.
+let lastBridge = { key: null, v: null };
+function bridgeFlash(sm) {
+  const key = `${state.league}|${state.practice ? 'practice' : 'live'}`, prev = lastBridge;
+  lastBridge = { key, v: sm?.bridge ?? null };
+  if (!sm || prev.key !== key || prev.v == null || sm.bridge == null || sm.bridge === prev.v) return '';
+  return sm.bridge > prev.v ? 'flash-up' : 'flash-down';
+}
 function renderTop() {
-  const s = state.status, sync = s.sync, sm = state.summary;
+  const s = state.status, sync = s.sync, sm = state.summary, flash = bridgeFlash(sm);
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
     <select id="leagueSel" title="${state.practice ? 'Stop the practice to change league' : 'League'}" ${state.practice ? 'disabled' : ''}>${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
-    ${sm ? `<div class="stat orb"><i class="ci d big"></i><div><b>${fmt(sm.bridge)}${CUR.c} ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div></div>
+    ${sm ? `<div class="stat orb"><i class="ci d big"></i><div><b${flash ? ` class="${flash}"` : ''}>${fmt(sm.bridge)}${CUR.c} ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
     ${state.practice ? `<div class="stat"><b class="violet">${esc(practiceTime(state.practice))}</b><span>practice hour</span></div>` : `<div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>`}` : ''}
@@ -267,7 +275,7 @@ async function viewMarkets(main) {
     ], rows, { sort: 8, onRow: r => openItem(r.id), empty: 'No item matches these filters.' });
     t.addEventListener('click', async e => {
       const b = e.target.closest('[data-watch]'); if (!b) return;
-      const row = d.market.find(r => r.id === b.dataset.watch); row.watched = !row.watched; b.classList.toggle('on', row.watched);
+      const row = d.market.find(r => r.id === b.dataset.watch); row.watched = !row.watched; b.classList.toggle('on', row.watched); if (row.watched) { b.classList.add('pop'); b.onanimationend = () => b.classList.remove('pop'); }
       await api('/api/watch', { league: state.league, item: row.id, on: row.watched });
     });
     $('#tbl', main).replaceChildren(t);
@@ -1592,6 +1600,8 @@ async function route() {
   const scroll = main.scrollTop;
   try { await view(main); if (turn === routing) main.scrollTop = scroll; }
   catch (err) { if (turn === routing) main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+  // Elements made while "enter" is on play their entrance; drop it once this page has had time to.
+  if (turn === routing && main.classList.contains('enter')) setTimeout(() => { if (turn === routing) main.classList.remove('enter'); }, 700);
 }
 async function poll(first) {
   try {
@@ -1614,7 +1624,8 @@ function announce(event) {
   // The hideout window rings for itself, only if you turned that on there.
   if (!state.hideout && window.Notification?.permission === 'granted') new Notification(event.title, { body: event.body, icon: '/mark.svg' });
 }
-window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; route(); });
+// A new page fades in; refreshes and actions re-render in place without replaying it (see route).
+window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; if (!state.hideout) $('#main').classList.add('enter'); route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
@@ -1625,6 +1636,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
 });
 showIcons();
+if (!state.hideout) $('#main').classList.add('enter');
 poll(true);
 setInterval(poll, state.hideout ? 60000 : 20000);
 if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
