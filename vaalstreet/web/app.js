@@ -45,15 +45,15 @@ function fmt(v) {
 const tick = unit => v => (Math.abs(v) >= 1e4 ? compact(v) : String(parseFloat(v.toPrecision(3)))) + ' ' + unit;
 const compact = v => v == null ? '–' : Math.abs(v) >= 1e9 ? (v / 1e9).toFixed(1) + 'B' : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v.toFixed(0);
 // A big Chaos amount, short ("8.4M c" or "57K d"), in the unit the trader chose.
-const compactMoney = (v, bridge = state.bridge) => state.unit === 'divine' && bridge ? `${compact(v / bridge)} d` : `${compact(v)} c`;
+const compactMoney = (v, bridge = state.bridge) => state.unit === 'divine' && bridge ? `${compact(v / bridge)}${CUR.d}` : `${compact(v)}${CUR.c}`;
 // A reference-currency amount in the unit the trader chose.
 function money(v, unit = state.unit) {
   if (v == null) return '<span class="dim">–</span>';
-  return unit === 'divine' && state.bridge ? `${fmt(v / state.bridge)}<span class="dim"> d</span>` : `${fmt(v)}<span class="dim"> c</span>`;
+  return unit === 'divine' && state.bridge ? `${fmt(v / state.bridge)}${CUR.d}` : `${fmt(v)}${CUR.c}`;
 }
 // What a replay made per hour, with the stake it was measured on: "9.8 c / h on 1,000 c". A plan's
 // "Est. / hour" is at whatever capital its markets absorb, so the stake has to be said.
-const replayRate = rp => rp.per_hour == null || rp.stake == null ? '' : `${money(rp.per_hour)} / h on ${Math.round(rp.stake).toLocaleString('en-US')} c`;
+const replayRate = rp => rp.per_hour == null || rp.stake == null ? '' : `${money(rp.per_hour)} / h on ${Math.round(rp.stake).toLocaleString('en-US')}${CUR.c}`;
 const pct = (v, digits = 1) => v == null ? '<span class="dim">–</span>' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : 'muted'}">${v > 0 ? '+' : ''}${(v * 100).toFixed(digits)}%</span>`;
 const dur = h => h == null ? '–' : h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? h.toFixed(1) + ' h' : Math.round(h / 24) + ' d';
 // Minutes as people say them: "2 min", "1.5 min", never "2.000".
@@ -67,9 +67,25 @@ const icon = id => `<img loading="lazy" alt="" src="/icon?id=${encodeURIComponen
 const itemCell = (r, sub) => `<div class="item">${icon(r.id)}<div style="min-width:0"><b>${esc(r.name)}</b>${sub ? `<span class="sub">${sub}</span>` : ''}</div></div>`;
 // "29 Chaos for 9" (what you pay for how many) / "64 for 1 Divine" (how many you give for what).
 const order = (o, buying) => buying
-  ? `${o.currency_units} ${o.currency} <span class="dim">for</span> ${o.item_units}`
-  : `${o.item_units} <span class="dim">for</span> ${o.currency_units} ${o.currency}`;
+  ? `${o.currency_units} ${curWord(o.currency)} <span class="dim">for</span> ${o.item_units}`
+  : `${o.item_units} <span class="dim">for</span> ${o.currency_units} ${curWord(o.currency)}`;
 const KIND = { chaos: 'Chaos market', divine: 'Divine market', cross: 'Chaos → Divine' };
+// Currency icons in place of unit words. The letter or word stays in the page, so copying a price keeps
+// its unit and the page still reads right if the icons cannot be fetched: style.css shows the icons
+// only once <html> carries "icons", which it gets after both images have loaded (see showIcons).
+const CUR = { c: '<span class="cur c" title="Chaos Orb"> c</span>', d: '<span class="cur d" title="Divine Orb"> d</span>' };
+const curWord = name => name === 'Divine' ? `<span class="cur d word" title="Divine Orb">Divine</span>` : name === 'Chaos' ? `<span class="cur c word" title="Chaos Orb">Chaos</span>` : esc(name);
+// A market as a badge: the Chaos market, the Divine market, or buying in one and selling in the other.
+const marketTag = kind => {
+  const ic = k => `<i class="ci ${k}"></i>`;
+  const icons = kind === 'cross' ? `${ic('c')}<i class="ia">→</i>${ic('d')}` : kind === 'divine' ? ic('d') : kind === 'chaos' ? ic('c') : '';
+  return `<span class="tag ${kind}" title="${esc(KIND[kind] || kind)}">${icons}<span class="kt">${esc(KIND[kind] || kind)}</span></span>`;
+};
+function showIcons() {
+  const urls = ['Metadata/Items/Currency/CurrencyRerollRare', 'Metadata/Items/Currency/CurrencyModValues'].map(id => `/icon?id=${encodeURIComponent(id)}`);
+  Promise.all(urls.map(u => new Promise((ok, no) => { const im = new Image(); im.onload = ok; im.onerror = no; im.src = u; })))
+    .then(() => document.documentElement.classList.add('icons'), () => { /* letters stay */ });
+}
 
 // A sortable table. cols: [{h, f(row)->html, s(row)->sortable value, l: left-aligned, title}]
 function table(cols, rows, { sort = null, desc = true, onRow = null, limit = 200, empty = 'Nothing to show.' } = {}) {
@@ -126,16 +142,16 @@ function renderTop() {
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
     <select id="leagueSel" title="${state.practice ? 'Stop the practice to change league' : 'League'}" ${state.practice ? 'disabled' : ''}>${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
-    ${sm ? `<div class="stat"><b>${fmt(sm.bridge)} c ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div>
+    ${sm ? `<div class="stat orb"><i class="ci d big"></i><div><b>${fmt(sm.bridge)}${CUR.c} ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
     ${state.practice ? `<div class="stat"><b class="violet">${esc(practiceTime(state.practice))}</b><span>practice hour</span></div>` : `<div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>`}` : ''}
     <span class="grow"></span>
     <div class="sync" title="${esc(sync.error || '')}"><span class="dot ${sync.error ? 'err' : sync.running ? 'busy' : ''}"></span>${esc(sync.error ? 'Sync failed' : sync.message)}</div>
-    <div class="seg" id="unitSeg" title="Show prices in Chaos or Divine"><button class="${state.unit === 'chaos' ? 'on' : ''}" data-u="chaos">Chaos</button><button class="${state.unit === 'divine' ? 'on' : ''}" data-u="divine">Divine</button></div>
+    <div class="seg" id="unitSeg" title="Show prices in Chaos or Divine"><button class="${state.unit === 'chaos' ? 'on' : ''}" data-u="chaos" title="Prices in Chaos"><i class="ci c"></i><span class="kt">Chaos</span></button><button class="${state.unit === 'divine' ? 'on' : ''}" data-u="divine" title="Prices in Divine"><i class="ci d"></i><span class="kt">Divine</span></button></div>
     <button class="btn" id="hideoutBtn" title="Compact always-on-top view (H)">Hideout</button>`;
   $('#leagueSel').onchange = async e => { state.league = e.target.value; await api('/api/league', { league: state.league }); state.summary = null; route(); };
-  $('#unitSeg').onclick = e => { const u = e.target.dataset.u; if (u) { state.unit = localStorage.unit = u; route(); } };
+  $('#unitSeg').onclick = e => { const u = e.target.closest('[data-u]')?.dataset.u; if (u) { state.unit = localStorage.unit = u; route(); } };
   $('#hideoutBtn').onclick = openHideout;
 }
 
@@ -153,7 +169,7 @@ async function viewDesk(main) {
   const movers = [...liquid].sort((x, y) => y.change_24h - x.change_24h);
   main.innerHTML = `<div class="head"><div><h1>${esc(s.league)} desk</h1><p>What is worth doing this hour, from the exchange's latest published prices.</p></div></div>
     <div class="kpis">
-      <div class="kpi"><span>Divine Orb</span><b>${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+      <div class="kpi"><span>Divine Orb</span><b><i class="ci d big"></i>${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
       <div class="kpi"><span>League day</span><b>${s.league_day ?? '–'}</b></div>
       <div class="kpi"><span>Traded in 24h</span><b>${compactMoney(s.value_24h, s.bridge)}</b></div>
       <div class="kpi"><span>Items trading</span><b>${s.items}</b></div>
@@ -161,9 +177,9 @@ async function viewDesk(main) {
     </div><div class="grid" id="g"></div>`;
   const g = $('#g', main);
 
-  const flips = panel(+state.filters.capital > 0 ? `Best flips for ${fmt(+state.filters.capital)} c` : 'Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
+  const flips = panel(+state.filters.capital > 0 ? `Best flips for ${fmt(+state.filters.capital)}${CUR.c}` : 'Best flips right now', 'c7', '<a href="#/flips">All flips →</a>');
   flips.append(table([
-    { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
+    { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`) },
     { h: 'Buy order', f: r => order(r.buy_order, true), title: 'Currency you pay, for how many items' },
     { h: 'Sell order', f: r => order(r.sell_order, false), title: 'Items you give, for how much currency' },
     { h: 'Margin', f: r => pct(r.margin) },
@@ -171,7 +187,7 @@ async function viewDesk(main) {
   ], f.flips.slice(0, 8), { onRow: r => openItem(r.id), empty: 'No market is liquid enough for a plan yet.' }));
   g.append(flips);
 
-  const sets = panel(+state.filters.capital > 0 ? `Conversions within ${fmt(+state.filters.capital)} c` : 'Sets worth completing', 'c5', '<a href="#/arbitrage">All conversions →</a>');
+  const sets = panel(+state.filters.capital > 0 ? `Conversions within ${fmt(+state.filters.capital)}${CUR.c}` : 'Sets worth completing', 'c5', '<a href="#/arbitrage">All conversions →</a>');
   sets.append(table([
     { h: 'Set', l: 1, f: r => itemCell(r, `${r.need} → ${r.gives} ${esc(r.reward)}`) },
     { h: 'Cost', f: r => money(r.cost) }, { h: 'Worth', f: r => money(r.proceeds) }, { h: 'Margin', f: r => pct(r.margin) },
@@ -269,7 +285,7 @@ const goldCell = (r, value) => r.gold == null
   ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. Record the Gold of a trade in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
   : `${value}<div class="muted small">${feeSource(r)}</div>`;
 const flipCols = () => [
-  { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`), s: r => r.name },
+  { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`), s: r => r.name },
   { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
   { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
@@ -337,10 +353,10 @@ async function viewFlips(main) {
     const picks = sp.flips, total = sp.expected_per_hour;
     // Kept so the Ledger can start a session against this plan.
     state.sessionPlan = { league: state.league, bankroll: bank, expected_per_hour: total, flips: picks.map(r => ({ id: r.id, name: r.name, kind: r.kind, stake: r.stake, est: r.est })) };
-    const p = panel(`Session plan for ${fmt(bank)} c`, '', `<span class="muted small">last week: <b>${money(sp.replayed_vs_divine_per_hour)}</b> an hour against holding Divines, ${money(sp.replayed_per_hour)} an hour in Chaos · promised ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
+    const p = panel(`Session plan for ${fmt(bank)}${CUR.c}`, '', `<span class="muted small">last week: <b>${money(sp.replayed_vs_divine_per_hour)}</b> an hour against holding Divines, ${money(sp.replayed_per_hour)} an hour in Chaos · promised ${money(total)} an hour if every order fills as estimated · ${money(sp.deployed)} deployed${sp.gold_budget != null ? ` · ${fmt(sp.gold_used)} of ${fmt(sp.gold_budget)} Gold used` : ''} · about ${mins(sp.minutes)} to post</span>`);
     p.style.marginBottom = '14px';
     p.append(table([
-      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
+      { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`) },
       { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
       { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => `${money(r.stake)}${r.lot_share != null ? `<div class="gold small">one lot is ${plainPct(r.lot_share)} of your purse</div>` : ''}`, title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
       { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
@@ -570,7 +586,7 @@ async function leagueExtras(g, d) {
     const rows = [...(x.divine || []), ...(x.items || [])];
     cp.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0"><p class="note">Over the last ${x.days} days, compared with ${x.others.map(esc).join(', ') || 'no other league'}. “Steady” gaps held on most days with the same sign: trust them when you read prices from that league. “Noise” gaps flip or close.</p></div>`);
     cp.append(table([
-      { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.market}">${r.market === 'divine' ? 'Divine market' : 'Chaos market'}</span>`), s: r => r.name },
+      { h: 'Item', l: 1, f: r => itemCell(r, marketTag(r.market)), s: r => r.name },
       { h: 'Other league', l: 1, f: r => `${esc(r.other)}<div class="muted small">${esc(familyWord(r.family))}</div>`, s: r => r.other },
       { h: 'There it costs', f: r => pct(r.gap, 0), s: r => r.gap, title: 'How much more (or less) it costs in the other league, in that league’s Divines, typical day' },
       { h: 'Gap', l: 1, f: r => { const [c, w, t] = GAP[r.verdict] || ['dim', esc(r.verdict), '']; return `<span class="${c}" title="${t}">${w}</span>`; }, s: r => ({ structural: 2, noise: 1 })[r.verdict] || 0 },
@@ -601,7 +617,7 @@ async function viewLeague(main) {
   $('#lg', dv).innerHTML = leagueChart($('#dvc', dv), curves, d.league, 'price', x => fmt(x) + ' c');
   $('#dvf', dv).onclick = e => { const f = e.target.dataset.f; if (f) { v.allLeagues = f === 'all'; route(); } };
 
-  const moneyU = x => x == null ? '–' : v.unit === 'divine' ? `${fmt(x)}<span class="dim"> d</span>` : `${fmt(x)}<span class="dim"> c</span>`;
+  const moneyU = x => x == null ? '–' : v.unit === 'divine' ? `${fmt(x)}${CUR.d}` : `${fmt(x)}${CUR.c}`;
   const controls = `<div class="seg" id="hz">${[3, 7, 14, 30].map(h => `<button data-h="${h}" class="${v.horizon === h ? 'on' : ''}">${h} days</button>`).join('')}</div>
     <div class="seg" id="lu" style="margin-left:8px"><button data-u="divine" class="${v.unit === 'divine' ? 'on' : ''}">in Divine</button><button data-u="chaos" class="${v.unit === 'chaos' ? 'on' : ''}">in Chaos</button></div>`;
   const pbCols = [
@@ -804,7 +820,7 @@ async function viewLab(main) {
         mix.insertAdjacentHTML('beforeend', `<h2 style="margin-bottom:6px">Each strategy on ${esc(s.league)}</h2>`);
         mix.append(table([
           { h: 'Strategy', l: 1, f: m => esc(STRATS[m.strategy]?.label || m.strategy) },
-          { h: 'Profit', f: m => `<span class="${m.profit >= 0 ? 'up' : 'down'}">${fmt(m.profit)} c</span>` },
+          { h: 'Profit', f: m => `<span class="${m.profit >= 0 ? 'up' : 'down'}">${fmt(m.profit)}${CUR.c}</span>` },
           { h: 'Share of profit', f: m => plainPct(m.profit_share, 0) },
           { h: 'Gold spent', f: m => fmt(Math.round(m.gold_spent)) },
           { h: 'Most tied up', f: m => fmt(m.peak_capital) + ' c', title: 'The most Chaos this strategy had in items at once' },
@@ -882,8 +898,7 @@ async function stashPanel(names) {
     ${d.unpriced ? `<p class="note">${d.unpriced} item${d.unpriced === 1 ? ' has' : 's have'} no price in this league and ${d.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
   const better = r => {
     if (!r.best) return '<span class="dim">neither trades steadily</span>';
-    const word = r.best === 'divine' ? 'Divine' : 'Chaos';
-    return r.best_by == null ? `<span class="tag ${r.best}">${word}</span> <span class="dim">the only market trading steadily</span>` : `<span class="tag ${r.best}">${word}</span> pays ${plainPct(r.best_by, 1)} more`;
+    return r.best_by == null ? `${marketTag(r.best)} <span class="dim">the only market trading steadily</span>` : `${marketTag(r.best)} pays ${plainPct(r.best_by, 1)} more`;
   };
   const tbl = table([
     { h: 'Item', l: 1, f: r => itemCell(r, r.note ? esc(r.note) : ''), s: r => r.name },
@@ -1069,7 +1084,7 @@ async function viewLedger(main) {
   const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>');
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
-    { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${r.market === 'divine' ? 'Divine' : 'Chaos'}` },
+    { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
     { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
@@ -1153,7 +1168,7 @@ async function viewLedger(main) {
   const al = alertsPanel(d, names);
   const cal = panel('How much of the flow your orders got', 'c12', '<span class="muted small">From the orders you recorded and their fills, against the volume that traded through your price. Flips use these shares where they exist.</span>');
   cal.append(table([
-    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Market', l: 1, f: r => `<span class="tag ${r.market}">${r.market === 'divine' ? 'Divine' : 'Chaos'}</span>` },
+    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Market', l: 1, f: r => marketTag(r.market) },
     { h: 'Orders', f: r => `${r.orders}${r.complete ? ` <span class="dim">· ${r.complete} filled</span>` : ''}` },
     { h: 'Measured', f: r => plainPct(r.measured, 1), title: 'Units your orders filled, over the units that traded through your price while they stood' },
     { h: 'Share used', f: r => plainPct(r.share, 1), title: 'Blended with the default while you have few orders, so one lucky fill does not decide it' },
@@ -1178,22 +1193,22 @@ async function viewLadder(main) {
     <p class="note"><b>${esc(d.note)}</b></p>
     <div class="grid" id="g"></div>`;
   const g = $('#g', main);
-  const plan = panel(`From ${+d.start.toFixed(1)} c${d.target ? ` to ${+d.target.toFixed(1)} c` : ` over ${+d.hours.toFixed(1)} hours`}`, 'c12');
+  const plan = panel(`From ${+d.start.toFixed(1)}${CUR.c}${d.target ? ` to ${+d.target.toFixed(1)}${CUR.c}` : ` over ${+d.hours.toFixed(1)} hours`}`, 'c12');
   plan.insertAdjacentHTML('beforeend', `<div class="body" style="padding-bottom:0">${d.schedule_text.map(t => `<p style="margin:0 0 6px">${esc(t)}</p>`).join('') || '<p class="muted">Nothing this purse can run grows it.</p>'}</div>`);
   plan.append(table([
     { h: 'Hours', l: 1, f: r => r.to_hour == null ? `from ${+r.from_hour.toFixed(1)} h` : `${+r.from_hour.toFixed(1)}–${+r.to_hour.toFixed(1)} h` },
     { h: 'Purse', f: r => money(r.purse) },
-    { h: 'Run', l: 1, f: r => r.plans.map(p => `${esc(p.label)} <span class="dim">stake ${fmt(p.stake)} c</span>`).join('<br>') || '<span class="dim">nothing</span>' },
+    { h: 'Run', l: 1, f: r => r.plans.map(p => `${esc(p.label)} <span class="dim">stake ${fmt(p.stake)}${CUR.c}</span>`).join('<br>') || '<span class="dim">nothing</span>' },
     { h: 'Per hour', f: r => money(r.rate), title: 'The lower of what the plans promise now and what they made over the last week' },
     { h: 'You end near', f: r => r.end_purse == null ? '–' : money(r.end_purse) },
-    { h: 'Why it stops', l: 1, f: r => ({ 'session ends': 'your session ends', 'target reached': 'you reach your target', 'next rung': `the purse reaches ${fmt(r.switch_at)} c: switch to the next step’s plan`, 'nothing earns at this purse': 'nothing earns at this purse', 'top of the ladder': 'the top step: keep going' })[r.reason] || esc(r.reason) },
+    { h: 'Why it stops', l: 1, f: r => ({ 'session ends': 'your session ends', 'target reached': 'you reach your target', 'next rung': `the purse reaches ${fmt(r.switch_at)}${CUR.c}: switch to the next step’s plan`, 'nothing earns at this purse': 'nothing earns at this purse', 'top of the ladder': 'the top step: keep going' })[r.reason] || esc(r.reason) },
     { h: 'Next step', f: r => r.next_rung == null ? '–' : `${money(r.next_rung)}<div class="muted small">${r.hours_to_next == null ? '' : dur(r.hours_to_next) + ' away'}</div>` },
   ], d.schedule, { empty: 'Nothing this purse can run grows it.' }));
   const rungs = panel('What each purse size can run', 'c12', '<span class="muted small">Flips, conversions and round trips that purse can start, and what opens up that the step below could not run.</span>');
   rungs.append(table([
-    { h: 'Purse', l: 1, f: r => `<b>${esc(r.label)}</b><div class="muted small">${fmt(r.chaos)} c</div>` },
+    { h: 'Purse', l: 1, f: r => `<b>${esc(r.label)}</b><div class="muted small">${fmt(r.chaos)}${CUR.c}</div>` },
     { h: 'Can run', f: r => `${r.can_run}<div class="muted small">${esc(r.counts_text || '')}</div>` },
-    { h: 'What opens up here', l: 1, f: r => r.opens?.length ? r.opens.slice(0, 6).map(o => `${esc(o.label)} <span class="dim">· one lot ${fmt(o.lot_cost)} c</span>`).join('<br>') + (r.opens.length > 6 ? `<br><span class="dim">and ${r.opens.length - 6} more</span>` : '') : '<span class="dim">nothing new</span>' },
+    { h: 'What opens up here', l: 1, f: r => r.opens?.length ? r.opens.slice(0, 6).map(o => `${esc(o.label)} <span class="dim">· one lot ${fmt(o.lot_cost)}${CUR.c}</span>`).join('<br>') + (r.opens.length > 6 ? `<br><span class="dim">and ${r.opens.length - 6} more</span>` : '') : '<span class="dim">nothing new</span>' },
     { h: 'Session plan', l: 1, f: r => r.session?.picks?.length ? r.session.picks.map(p => `${esc(p.label)}${p.replay_at_stake ? ` <span class="dim">· last week at this stake ${p.replay_at_stake.vs_divine != null ? `${pct(p.replay_at_stake.vs_divine, 0)} vs Divines` : pct(p.replay_at_stake.return, 0)}</span>` : ''}`).join('<br>') : `<span class="dim">${r.session?.divines != null ? `nothing beat holding Divines (${pct(r.session.divines, 0)})` : 'no flip fits'}</span>` },
     { h: 'Last week vs Divines / hour', f: r => money(r.session?.replayed_vs_divine_per_hour), title: 'What the same plans made an hour over the last week, minus what the purse would have made held as Divines' },
     { h: 'Last week / hour', f: r => money(r.session?.replayed_per_hour), title: 'What the same plans made over the last week in Chaos, replayed on recent prices: a rough guide, small lots round worse' },
@@ -1246,7 +1261,7 @@ async function openItem(id, hours = 168) {
     ], band: { label: 'Model sure within', x: s.t, lo: conv(s.fair_low), hi: conv(s.fair_high), color: css('--fair') + '26' },
     bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
   });
-  $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
+  $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order">${marketTag(p.kind)}
       <div class="big">≈ ${money(p.profit_per_hour)} <span class="muted small">/ hour · ${pct(p.margin)} margin</span></div>
       <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
       <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour · one lot every ${dur(p.hours_per_lot)}<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos${replayRate(p.replay) ? ` (${replayRate(p.replay)})` : ''}, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}${p.slow ? `<br><span class="gold">⚠ ${esc(p.slow)}</span>` : ''}</div></div>`).join('')
@@ -1309,7 +1324,7 @@ function openCheck(item) {
     try {
       const r = await api('/api/check', { league: state.league, item: v('what'), market: pick('market'), side: pick('side'), item_units: Math.round(+v('iu')), currency_units: Math.round(+v('cu')), stock: v('stock') || null });
       const [cls, word] = VERDICT[r.verdict] || ['muted', r.verdict];
-      out.innerHTML = `<div class="verdict ${cls}">${word} <span class="muted small">${esc(r.name)} at ${fmt(r.price)} c each${r.trusted ? '' : ' · this market barely trades'}</span></div>
+      out.innerHTML = `<div class="verdict ${cls}">${word} <span class="muted small">${esc(r.name)} at ${fmt(r.price)}${CUR.c} each${r.trusted ? '' : ' · this market barely trades'}</span></div>
         <ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
     } catch (err) { out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
   };
@@ -1326,7 +1341,7 @@ const TOUR = [
     <li>The desk is one to two hours behind the game: an hour’s prices come out only after it ends. Check the live ratio in game before you commit.</li>
     <li>Flips are <b>resting orders</b>: you post a buy below the market and an offer above it, then wait for other players. A round usually takes hours, not minutes.</li></ul>` },
   { page: 'desk', title: 'Desk', body: `<p>The hour at a glance: the Divine price, the best flips, sets worth completing, what moved, your watchlist and alerts that fired.</p>
-    <p>The top bar shows the league, its day, and how old the latest hour is. Switch prices between Chaos and Divine there.</p>` },
+    <p>The top bar shows the league, its day, and how old the latest hour is. Switch prices between Chaos and Divine there. Every price shows its orb: a copper ring is Chaos, a blue ring is Divine.</p>` },
   { page: 'markets', title: 'Markets', body: `<p>Every traded item with its fair value and how sure the model is (±%). Most items have a Chaos market and a Divine market, and they pay different prices.</p>
     <p>Click an item for its chart and its flip plans. Star it to put it on your watchlist and in the hideout window. Press <kbd>/</kbd> to search.</p>` },
   { page: 'flips', title: 'Flips', body: `<p>Ranked plans with the exact orders to post. Enter your purse to get a session plan.</p>
@@ -1449,10 +1464,10 @@ function showPracticeEnd(r) {
   const box = document.createElement('div'); box.className = 'panel pend';
   box.innerHTML = `<header><h2>Practice over: ${esc(r.league)}, ${r.hours} hours</h2><span class="grow"></span><button class="btn ghost" data-x>✕</button></header>
     <div class="body"><div class="kpis" style="margin-bottom:8px">
-      <div class="kpi"><span>Practice profit</span><b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)} c</b><i class="muted">${pct(r.return)}</i></div>
-      <div class="kpi"><span>Holding Divines instead</span><b>${fmt(r.hold_divines)} c</b><i class="muted">${fmt(r.divine_then)} → ${fmt(r.divine_now)} c</i></div>
-      <div class="kpi"><span>Against holding Divines</span><b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)} c</b></div></div>
-      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)} c realised, ${fmt(r.unrealized)} c in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)} c. ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
+      <div class="kpi"><span>Practice profit</span><b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)}${CUR.c}</b><i class="muted">${pct(r.return)}</i></div>
+      <div class="kpi"><span>Holding Divines instead</span><b>${fmt(r.hold_divines)}${CUR.c}</b><i class="muted">${fmt(r.divine_then)} → ${fmt(r.divine_now)}${CUR.c}</i></div>
+      <div class="kpi"><span>Against holding Divines</span><b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)}${CUR.c}</b></div></div>
+      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)}${CUR.c} realised, ${fmt(r.unrealized)}${CUR.c} in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)}${CUR.c}. ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
   box.querySelector('[data-x]').onclick = () => box.remove();
   document.body.append(box);
 }
@@ -1522,7 +1537,7 @@ function ringControls() {
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)} c</b><i>${pct(s.bridge_change_24h)}</i></div>
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
     <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
   $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
@@ -1600,6 +1615,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'c' || e.key === 'C') { e.preventDefault(); openCheck(); }
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
 });
+showIcons();
 poll(true);
 setInterval(poll, state.hideout ? 60000 : 20000);
 if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
