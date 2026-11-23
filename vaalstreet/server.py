@@ -834,7 +834,8 @@ class App:
                 elif body.get("fill"):
                     desk, order = self.desk(league), self.ledger.order(body["fill"])
                     bridge = desk.bridge if order["market"] == "divine" else None
-                    recipes = self._merge_recipes(desk) if order["side"] == "sell" else None
+                    # As for a typed sale: "merge": false sells what the ledger lacks as looted, at no cost.
+                    recipes = self._merge_recipes(desk) if order["side"] == "sell" and body.get("merge", True) else None
                     answer = self._sale_answer(desk, self.ledger.fill_order(
                         body["fill"], body["units"], bridge=bridge, record_trade=bool(body.get("record_trade", True)),
                         recipes=recipes))

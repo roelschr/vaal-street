@@ -232,7 +232,7 @@ class Ledger:
                 self._db.executemany("DELETE FROM made WHERE id = ?", [(made_id,) for made_id in made_ids])
                 new = _newly_short(self._db, league, before) - {("trade", trade_id)}
             # Only for a sale dated before others: it takes units that a later sale or item you made needed.
-            _refuse_short("A sale at that time", new)
+            _refuse_short(self._db, "A sale at that time", new)
             return trade_id
 
     def merges_for(self, trade_id: int) -> list[dict]:
@@ -282,7 +282,7 @@ class Ledger:
             before = _history(self._db, row["league"])[2]
             self._db.execute("UPDATE trades SET item = ?, side = ?, units = ?, price = ?, gold = ?, note = ? WHERE id = ?",
                              (new["item"], new["side"], new["units"], new["price"], new["gold"], new["note"], int(trade_id)))
-            _refuse_short("That edit", _newly_short(self._db, row["league"], before) - {("trade", int(trade_id))})
+            _refuse_short(self._db, "That edit", _newly_short(self._db, row["league"], before) - {("trade", int(trade_id))})
 
     def delete_trade(self, trade_id: int) -> None:
         """Delete a trade, with the merges recorded for it. Refused when a later sale or an item you made
@@ -297,14 +297,17 @@ class Ledger:
         recorded for it along, so a merge the ledger worked out wrongly is undone by deleting its sale.
         """
         with self._lock, self._db:  # one transaction: a refused delete rolls back
-            row = self._db.execute(f"SELECT league FROM {table} WHERE id = ?", (int(row_id),)).fetchone()
+            row = self._db.execute(f"SELECT * FROM {table} WHERE id = ?", (int(row_id),)).fetchone()
             if row is None:
                 return
+            if table == "made" and row["sale"] is not None:
+                raise ValueError("The ledger recorded this merge for a sale. Delete the sale to undo it, "
+                                 "and record the sale again with \"Made from what I hold\" unticked.")
             before = _history(self._db, row["league"])[2]
             if table == "trades":
                 self._db.execute("DELETE FROM made WHERE sale = ?", (int(row_id),))
             self._db.execute(f"DELETE FROM {table} WHERE id = ?", (int(row_id),))
-            _refuse_short("Deleting this", _newly_short(self._db, row["league"], before))
+            _refuse_short(self._db, "Deleting this", _newly_short(self._db, row["league"], before))
 
     def trades(self, league: str) -> list[dict]:
         return self._all("SELECT * FROM trades WHERE league = ? ORDER BY t, id", (league,))
@@ -348,8 +351,7 @@ class Ledger:
             # before an earlier made entry whose newest trade was deleted since (see `_history`, `_next_trade_id`).
             made_id = self._insert_made(league, when, list(used.items()), output, gives, note,
                                         _next_trade_id(self._db) - 1)
-            if _newly_short(self._db, league, before) - {("made", made_id)}:
-                raise ValueError("At that time, that would leave a later sale or item you made short of what it used.")
+            _refuse_short(self._db, "An item made at that time", _newly_short(self._db, league, before) - {("made", made_id)})
             return made_id
 
     def _insert_made(self, league: str, t: int, inputs: list, output: str, gives: float, note: str,
@@ -361,7 +363,8 @@ class Ledger:
              output, float(gives), str(note)[:200], int(after_trade), sale)).lastrowid
 
     def delete_made(self, made_id: int) -> None:
-        """Delete a made entry. Refused when a later sale or made item needed the item it made."""
+        """Delete a made entry you recorded. Refused when a later sale or made item needed the item it made,
+        and for a merge the ledger recorded with a sale, which goes only with its sale."""
         self._delete("made", made_id)
 
     def made(self, league: str) -> list[dict]:
@@ -972,8 +975,12 @@ def _next_trade_id(db: sqlite3.Connection) -> int:
 
 
 def _newly_short(db: sqlite3.Connection, league: str, before: dict) -> set[tuple[str, int]]:
-    """The entries that take more than the ledger held now, but did not before a change (see `_history`)."""
-    return set(_history(db, league)[2]) - set(before)
+    """The entries a change leaves taking more beyond the holdings than before it (see `_history`).
+
+    By how much, not only whether: a sale that sold 2 looted units on top of 10 bought ones is short
+    already, and deleting the buy would make it 12 short and move its profit just the same.
+    """
+    return {entry for entry, units in _history(db, league)[2].items() if units > before.get(entry, 0.0) + 1e-9}
 
 
 def _plan_merges(positions: dict[str, dict], item: str, units: float, recipes: dict[str, list[dict]],
@@ -988,6 +995,9 @@ def _plan_merges(positions: dict[str, dict], item: str, units: float, recipes: d
     When the holdings cannot make all of it, the plan is made again for exactly what they can make,
     so the lower tiers merge only what that needs: 15 of the lowest tier make one of the tier two
     above from 9 of them, and 6 stay held, rather than all 15 merging into 5 of which 2 sit unused.
+
+    When the sold item cannot be made at all, nothing is merged: 3 of the lowest tier make one of the
+    tier above, but not the tier two above that the sale wanted, so they stay as they are.
 
     The ledger does not guess. An item that more than one recipe could make from what is held is not
     made at all, and nothing is made from the item being sold or from a step further up its chain.
@@ -1041,12 +1051,18 @@ def _plan_merges(positions: dict[str, dict], item: str, units: float, recipes: d
             break
         want = made
         steps, made = plan(want)
-    return steps
+    # Merges below an item that is not made at all would only turn items held into others nobody sold.
+    return steps if made > 1e-9 else []
 
 
-def _refuse_short(action: str, short: set[tuple[str, int]]) -> None:
+def _refuse_short(db: sqlite3.Connection, action: str, short: set[tuple[str, int]]) -> None:
     """Refuse a change that newly leaves these entries taking more than the ledger held (see `_history`)."""
-    if any(kind == "made" for kind, _ in short):
+    made = [row_id for kind, row_id in short if kind == "made"]
+    if made and db.execute(f"SELECT 1 FROM made WHERE sale IS NOT NULL AND id IN ({','.join('?' * len(made))})",
+                           made).fetchone():
+        raise ValueError(f"{action} would leave a merge the ledger recorded for a sale using more than it held at "
+                         "the time. Delete that sale first, and record it again afterwards.")
+    if made:
         raise ValueError(f"{action} would leave an item you made using more than the ledger held at the time. "
                          "Fix or delete that entry under \"Items you made\" first.")
     if short:

@@ -1084,12 +1084,16 @@ async function viewLedger(main) {
     $('#thead', main).textContent = `Edit the trade from ${new Date(tr.t * 1000).toLocaleString()}`;
     $('#ti', main).value = tr.name; setSide(tr.side);
     $('#tu', main).value = tr.units; $('#tp', main).value = tr.price; $('#tg', main).value = tr.gold ?? ''; $('#tn', main).value = tr.note || '';
-    const fromOrder = tr.order_id != null;
-    [$('#ti', main), $('#tu', main), $('#tg', main), ...main.querySelectorAll('#side button')].forEach(el => { el.disabled = fromOrder; });
-    $('#tlock', main).hidden = !fromOrder;
+    const fromOrder = tr.order_id != null, merged = !!tr.merges?.length;
+    [$('#ti', main), $('#tu', main), ...main.querySelectorAll('#side button')].forEach(el => { el.disabled = fromOrder || merged; });
+    $('#tg', main).disabled = fromOrder;
+    $('#tlock', main).hidden = !(fromOrder || merged);
+    $('#tlock', main).textContent = fromOrder
+      ? 'Filled from an order: its item, side and units follow the order, and the order holds the Gold.'
+      : 'The ledger recorded merges for this sale: its item, side and units stay. To change them, delete the sale and record it again.';
     $('#add', main).textContent = 'Save changes'; $('#tcancel', main).hidden = false;
     $('#tform', main).scrollIntoView({ block: 'start', behavior: 'smooth' });
-    $(fromOrder ? '#tp' : '#tu', main).focus();
+    $(fromOrder || merged ? '#tp' : '#tu', main).focus();
   };
   $('#tcancel', main).onclick = () => route();
   $('#add', main).onclick = async () => {
@@ -1099,6 +1103,7 @@ async function viewLedger(main) {
     if (!item) return toast('Pick an item from the list.', true);
     const fields = { price: +$('#tp', main).value, note: $('#tn', main).value };
     if (!editing || editing.order_id == null) Object.assign(fields, { item, side, units: +$('#tu', main).value, gold: optional($('#tg', main).value) });
+    if (editing?.merges?.length) Object.assign(fields, { item: editing.item, side: editing.side, units: editing.units });
     if (!editing && side === 'sell') fields.merge = $('#tm', main).checked;
     try {
       const answer = await api('/api/trade', { league: state.league, ...(editing ? { edit: editing.id } : {}), ...fields });
@@ -1154,7 +1159,9 @@ async function viewLedger(main) {
   };
   const post = async (path, body) => { try { await api(path, { league: state.league, ...body }); route(); } catch (err) { toast(err.message, true); } };
   const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
-  const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>');
+  const selling = d.orders.some(r => r.side === 'sell' && r.status !== 'filled');
+  const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>'
+    + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
@@ -1163,7 +1170,7 @@ async function viewLedger(main) {
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
-      : `<button class="btn ghost" data-fill="${r.id}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
+      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
   ot.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -1171,7 +1178,8 @@ async function viewLedger(main) {
     if (b.dataset.cancel) post('/api/order', { id: +b.dataset.cancel, status: 'cancelled' });
     if (b.dataset.fill) {
       const n = prompt('How many items filled?', b.dataset.left);
-      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n }).then(a => { saleToast(a.trade); route(); }, err => toast(err.message, true));
+      const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
+      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => { saleToast(a.trade); route(); }, err => toast(err.message, true));
     }
   };
   ord.append(ot);

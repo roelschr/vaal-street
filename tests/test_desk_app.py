@@ -140,8 +140,12 @@ def test_api_order_fill_turns_in_the_card_set_it_needs(server):
     assert call(f"{server}/api/order", {"item": ITEM, "side": "sell", "market": "chaos", "currency_units": 30,
                                         "item_units": 1, "units": 2})[0] == 200
     order = call(f"{server}/api/ledger")[1]["orders"][0]
-    status, answer = call(f"{server}/api/order", {"fill": order["id"], "units": 2})
-    assert status == 200 and answer["trade"]["merges"][0]["inputs"][0]["units"] == 10
+    status, answer = call(f"{server}/api/order", {"fill": order["id"], "units": 1})
+    assert status == 200 and answer["trade"]["merges"][0]["inputs"][0]["units"] == 5
+    # "merge": false, as for a typed sale: the orb was looted, so the other 5 cards stay held.
+    status, answer = call(f"{server}/api/order", {"fill": order["id"], "units": 1, "merge": False})
+    assert status == 200 and answer["trade"]["merges"] == [] and answer["trade"]["uncovered"] == 1
+    assert next(p for p in call(f"{server}/api/ledger")[1]["positions"] if p["id"] == CARD)["units"] == 5
 
 
 def test_api_records_an_item_you_made_so_it_can_be_sold(server):
