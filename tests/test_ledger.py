@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 
 import pytest
 
@@ -139,10 +140,200 @@ def test_an_edit_that_would_oversell_history_is_refused(tmp_path):
     with pytest.raises(ValueError):
         ledger.edit_trade(999, price=1)
 
-    # A file that is already oversold (a buy deleted by hand) does not block an unrelated correction.
-    ledger.delete_trade(buy)
+    # A file that is already oversold (older versions let you delete a buy that a sale needed) does not
+    # block an unrelated correction, nor an unrelated delete.
+    with pytest.raises(ValueError, match="Deleting this would leave a sale selling more than the ledger held"):
+        ledger.delete_trade(buy)
+    assert ledger.trades("L")[0]["id"] == buy, "a refused delete changes nothing"
+    ledger.close()
+    db = sqlite3.connect(ledger_file(tmp_path))
+    db.execute("DELETE FROM trades WHERE id = ?", (buy,))
+    db.commit()
+    db.close()
+    ledger = Ledger(tmp_path)
     ledger.edit_trade(sale, note="typo fixed", price=3.5)
     assert ledger.trades("L")[0]["note"] == "typo fixed"
+    spare = ledger.add_trade("L", "gem", "buy", 1, 1, t=4)
+    ledger.delete_trade(spare)
+    ledger.delete_trade(999)  # no such trade: nothing to do
+    assert [t["id"] for t in ledger.trades("L")] == [sale, sale + 1]
+
+
+def test_an_item_you_made_carries_what_its_inputs_cost(tmp_path):
+    """Known answer: 3 small essences bought at 10 each merge into 1 big one that cost 30; sold at 40 it realises 10."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 3, 10, t=100)
+    with pytest.raises(ValueError, match="made this item from others"):
+        ledger.add_trade("L", "big", "sell", 1, 40, t=200)  # the report: the ledger never saw the big one arrive
+    with pytest.raises(ValueError, match="Cannot use 4 Small Essence: the ledger holds 3"):
+        ledger.add_made("L", [["small", 4]], "big", name=lambda item: "Small Essence")
+    for bad in ([], [["small", 0]], [["small", -1]], [["", 1]], [["big", 1]]):
+        with pytest.raises(ValueError):
+            ledger.add_made("L", bad, "big")
+    assert ledger.made("L") == [], "a refused entry leaves nothing behind"
+
+    session = ledger.start_session("L", t=150)
+    made = ledger.add_made("L", [["small", 3]], "big", note="vendor", t=200)
+    positions = ledger.positions("L")
+    assert positions["small"]["units"] == 0 and positions["small"]["cost"] == pytest.approx(0)
+    assert positions["big"]["units"] == 1 and positions["big"]["cost"] == pytest.approx(30)
+    assert positions["big"]["realized"] == 0 and positions["small"]["realized"] == 0, "making an item realises nothing"
+    ledger.add_trade("L", "big", "sell", 1, 40, t=300)
+    assert ledger.positions("L")["big"]["realized"] == pytest.approx(10)
+    ledger.stop_session(session, t=400)
+    assert ledger.sessions("L", now=500)[0]["profit"] == pytest.approx(10)
+    [entry] = ledger.made("L")
+    assert (entry["id"], entry["inputs"], entry["output"], entry["gives"], entry["note"]) == (made, [("small", 3.0)], "big", 1, "vendor")
+    assert ledger.made("Other") == [] and Ledger(tmp_path).made("L")[0]["id"] == made, "per league, and survives a restart"
+
+
+def test_a_delete_may_not_leave_later_entries_short(tmp_path):
+    """Known answer: 3 at 10 make 1 that cost 30, sold at 40 for 10 realised. Deleting the made entry or the
+    buy under that sale would put units back, or take them away, while the sale's profit stays."""
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "small", "buy", 3, 10, t=1)
+    made = ledger.add_made("L", [["small", 3]], "big", t=2)
+    sale = ledger.add_trade("L", "big", "sell", 1, 40, t=3)
+    with pytest.raises(ValueError, match="Deleting this would leave a sale selling more than the ledger held"):
+        ledger.delete_made(made)
+    with pytest.raises(ValueError, match="Deleting this would leave an item you made using more than the ledger held"):
+        ledger.delete_trade(buy)
+    positions = ledger.positions("L")
+    assert positions["small"]["units"] == 0 and positions["big"]["realized"] == pytest.approx(10), "a refused delete changes nothing"
+    assert len(ledger.trades("L")) == 2 and len(ledger.made("L")) == 1
+    # Newest first, each delete is fine: the sale, then the made entry, then the buy.
+    ledger.delete_trade(sale)
+    ledger.delete_made(made)
+    assert ledger.made("L") == [] and ledger.positions("L")["small"]["units"] == 3
+    ledger.delete_made(made)  # already gone: nothing to do
+    ledger.delete_trade(buy)
+    assert ledger.trades("L") == []
+
+
+def test_a_made_item_is_sold_once_even_after_a_trade_was_deleted(tmp_path):
+    """SQLite gives the id of a deleted newest trade to the next trade. With one time for every record, as in
+    a rehearsal, that id used to sort the sale before the entry that made the item: the sale realised its
+    whole 40, the item stayed in the holdings, and a second sale realised 10 more. Known answer: one sale, 10."""
+    ledger = Ledger(tmp_path, clock=lambda: 5000)
+    ledger.add_trade("L", "small", "buy", 3, 10)
+    spare = ledger.add_trade("L", "dust", "buy", 1, 1)
+    ledger.add_made("L", [["small", 3]], "big")  # remembers `spare` as the newest trade
+    ledger.delete_trade(spare)
+    sale = ledger.add_trade("L", "big", "sell", 1, 40)
+    assert sale > spare, "the id a made entry remembers is not handed out again"
+    with pytest.raises(ValueError, match="Cannot sell 1: the ledger holds 0"):
+        ledger.add_trade("L", "big", "sell", 1, 40)
+    big = ledger.positions("L")["big"]
+    assert big["units"] == 0 and big["realized"] == pytest.approx(10)
+    # Deleting the newest trade and recording again keeps counting up when nothing remembers the id.
+    ledger.delete_trade(sale)
+    assert ledger.add_trade("L", "big", "sell", 1, 40) == sale
+
+
+def test_made_items_keep_their_order_after_a_trade_was_deleted(tmp_path):
+    """The same id reuse, between two made entries: the second must still come after the first, although
+    the newest trade the first one remembers is gone. Known answer: 3 at 10 make 1 big, which makes 1 huge
+    that cost 30."""
+    ledger = Ledger(tmp_path, clock=lambda: 5000)
+    ledger.add_trade("L", "small", "buy", 3, 10)
+    spare = ledger.add_trade("L", "dust", "buy", 1, 1)
+    ledger.add_made("L", [["small", 3]], "big")
+    ledger.delete_trade(spare)
+    ledger.add_made("L", [["big", 1]], "huge")
+    assert [m["output"] for m in ledger.made("L")] == ["big", "huge"]
+    positions = ledger.positions("L")
+    assert positions["huge"]["units"] == 1 and positions["huge"]["cost"] == pytest.approx(30) and positions["big"]["units"] == 0
+    ledger.add_trade("L", "huge", "sell", 1, 45)
+    assert ledger.positions("L")["huge"]["realized"] == pytest.approx(15)
+
+
+def test_a_sale_dated_before_the_units_arrived_is_refused(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "orb", "buy", 5, 2, t=100)
+    with pytest.raises(ValueError, match="did not hold that many at the time of the sale"):
+        ledger.add_trade("L", "orb", "sell", 5, 3, t=50)  # today's holdings would cover it; the history does not
+    assert len(ledger.trades("L")) == 1
+    ledger.add_trade("L", "orb", "sell", 5, 3, t=150)
+
+
+def test_sales_that_arrive_together_cannot_oversell(tmp_path):
+    """Eight sales of the one unit held, released at once (a double click, eight times over): exactly one is
+    recorded. The check and the insert are one step under the ledger's lock. This guards that step; on the
+    code before it, the race was too narrow to show up in this test."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "orb", "buy", 1, 2, t=1)
+    gate, sold, refused = threading.Barrier(8), [], []
+
+    def sell():
+        gate.wait()
+        try:
+            sold.append(ledger.add_trade("L", "orb", "sell", 1, 3))
+        except ValueError as err:
+            refused.append(str(err))
+
+    threads = [threading.Thread(target=sell) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert len(sold) == 1 and len(refused) == 7 and all("Cannot sell" in text for text in refused)
+    assert ledger.positions("L")["orb"]["units"] == 0 and len(ledger.trades("L")) == 2
+
+
+def test_made_items_chain_and_take_several_inputs(tmp_path):
+    """Known answers: 9 at 10 make 3 that cost 30 each, which make 1 that cost 90. Two of that one (180)
+    and 4 dust bought at 5 (20) make 5 of a third item that cost 200 together, 40 each."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "tier1", "buy", 18, 10, t=1)
+    ledger.add_made("L", [["tier1", 18]], "tier2", gives=6, t=2)
+    ledger.add_made("L", [["tier2", 6]], "tier3", gives=2, t=3)
+    assert ledger.positions("L")["tier3"]["cost"] == pytest.approx(180)
+    ledger.add_trade("L", "dust", "buy", 8, 5, t=4)
+    ledger.add_made("L", [["tier3", 2], ["dust", 4]], "relic", gives=5, t=5)
+    positions = ledger.positions("L")
+    assert positions["relic"]["units"] == 5 and positions["relic"]["cost"] == pytest.approx(200)
+    assert positions["dust"]["units"] == 4 and positions["dust"]["cost"] == pytest.approx(20), "the dust not used keeps its cost"
+    ledger.add_trade("L", "relic", "sell", 2, 50, t=6)
+    assert ledger.positions("L")["relic"]["realized"] == pytest.approx(2 * (50 - 40))
+
+
+def test_an_edit_may_not_leave_a_made_item_short_of_its_inputs(tmp_path):
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "small", "buy", 3, 10, t=1)
+    ledger.add_made("L", [["small", 3]], "big", t=2)
+    sale = ledger.add_trade("L", "big", "sell", 1, 40, t=3)
+    for change in ({"units": 2}, {"side": "sell"}, {"item": "other"}):
+        with pytest.raises(ValueError, match="an item you made using more than the ledger held"):
+            ledger.edit_trade(buy, **change)
+    assert ledger.trades("L")[0]["units"] == 3, "a refused edit changes nothing"
+    with pytest.raises(ValueError, match="more than the ledger held"):
+        ledger.edit_trade(sale, units=2)  # only one was ever made
+    ledger.edit_trade(buy, price=12)  # a plain correction still goes through, and the cost follows it
+    ledger.edit_trade(sale, price=41)
+    assert ledger.positions("L")["big"]["realized"] == pytest.approx(41 - 36)
+    # Recorded for a time in the past, an entry may not take what a later sale already sold.
+    ledger.add_trade("L", "ore", "buy", 3, 1, t=10)
+    ledger.add_trade("L", "ore", "sell", 3, 2, t=20)
+    with pytest.raises(ValueError, match="more than the ledger held at the time"):
+        ledger.add_made("L", [["ore", 3]], "bar", t=15)
+    assert [m["output"] for m in ledger.made("L")] == ["big"]
+
+
+def test_records_of_the_same_moment_keep_the_order_they_were_made_in(tmp_path):
+    """A rehearsal stamps everything in one practice hour with one time. Buy, merge, sell and then the
+    same again must replay in that order: each sale realises 40 - 30 = 10, and nothing counts as short."""
+    ledger = Ledger(tmp_path, clock=lambda: 5000)
+    for _ in range(2):
+        ledger.add_trade("L", "small", "buy", 3, 10)
+        ledger.add_made("L", [["small", 3]], "big")
+        ledger.add_trade("L", "big", "sell", 1, 40)
+    assert {tr["t"] for tr in ledger.trades("L")} == {5000} and {m["t"] for m in ledger.made("L")} == {5000}
+    positions = ledger.positions("L")
+    assert positions["big"]["realized"] == pytest.approx(20) and positions["big"]["units"] == 0
+    assert positions["small"]["units"] == 0 and positions["small"]["cost"] == pytest.approx(0)
+    ledger.edit_trade(ledger.trades("L")[-1]["id"], note="checked")  # the history holds no short entry to trip on
+    with pytest.raises(ValueError, match="more than the ledger held"):
+        ledger.edit_trade(ledger.trades("L")[0]["id"], units=2)
 
 
 def test_a_trade_from_an_order_fill_keeps_the_orders_side_and_units(tmp_path):
@@ -289,6 +480,9 @@ def test_wave1_ledger_file_keeps_its_rows_and_gains_your_conversions(tmp_path):
     ledger = Ledger(tmp_path)
     assert ledger.trades("L")[0]["gold"] == 30 and ledger.recipe_checks()["set:a>b"]["status"] == "confirmed"
     assert ledger.fixed_conversions() == []
+    assert ledger.made("L") == [], "an older file gains the table for items you made"
+    ledger.add_made("L", [["orb", 3]], "big orb")
+    assert ledger.positions("L")["big orb"]["cost"] == pytest.approx(6) and ledger.positions("L")["orb"]["units"] == 7
     ledger.add_fixed("vendor", [["chaos", 5]], "orb", note="town vendor")
     assert ledger.fixed_conversions()[0]["key"] == "vendor:5*chaos>1*orb"
 

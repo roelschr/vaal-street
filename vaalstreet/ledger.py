@@ -1,7 +1,13 @@
-"""Your own state: trades, orders, sessions, recipe checks, watchlist, alerts and settings.
+"""Your own state: trades, items you made, orders, sessions, recipe checks, watchlist, alerts and settings.
 
 Market data is public and reproducible; this one small SQLite file is the only thing
 worth backing up. Positions use average cost: a sale realises (price - average cost) per unit.
+
+Not every item you sell was bought: three essences merge into one of the next tier, a card set
+turns into its reward. Such an item is recorded as made (`add_made`): the items used leave your
+holdings at their average cost, and that cost becomes the cost of the item made. Nothing is
+realised until the made item is sold, so a merge-and-sell shows the profit of the whole round.
+These are events in one league's history, like trades; they are not the recipes below.
 
 The file outlives the code, so the schema only ever grows: new tables are created if
 missing and new columns are added if missing (`_migrate`). Nothing is rewritten or dropped.
@@ -75,6 +81,11 @@ CREATE TABLE IF NOT EXISTS fixed_conversions(
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('recipe','vendor')),
     inputs TEXT NOT NULL, output TEXT NOT NULL, gives REAL NOT NULL CHECK(gives > 0),
     note TEXT NOT NULL DEFAULT '', t INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS made(
+    id INTEGER PRIMARY KEY, t INTEGER NOT NULL, league TEXT NOT NULL, inputs TEXT NOT NULL,
+    output TEXT NOT NULL, gives REAL NOT NULL CHECK(gives > 0), note TEXT NOT NULL DEFAULT '',
+    after_trade INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS made_league ON made(league, t, id);
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
@@ -184,20 +195,30 @@ class Ledger:
         gold = _gold(gold)
         if side not in ("buy", "sell") or not units > 0 or price < 0:
             raise ValueError("A trade needs side buy/sell, positive units and a non-negative price.")
-        if side == "sell":
-            held = self.positions(league).get(item, {}).get("units", 0.0)
-            if units > held + 1e-9:
-                raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}.")
-        return self._run(
-            "INSERT INTO trades(t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?)",
-            (int(t or self.clock()), league, item, side, units, price, str(note)[:200], gold, order_id),
-        )
+        when = int(t or self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
+        # The check and the insert are one step, so two sales that arrive together cannot both pass the check.
+        with self._lock, self._db:
+            positions, _, before = _history(self._db, league)
+            if side == "sell":
+                held = positions.get(item, {}).get("units", 0.0)
+                if units > held + 1e-9:
+                    raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}. "
+                                     "If you made this item from others, record that first under \"Record items you made\".")
+            trade_id = _next_trade_id(self._db)
+            self._db.execute(
+                "INSERT INTO trades(id, t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (trade_id, when, league, item, side, units, price, str(note)[:200], gold, order_id))
+            # Today's holdings can cover a sale that the history does not: a sale dated before the units arrived.
+            if side == "sell" and _history(self._db, league)[2] - before:
+                raise ValueError(f"Cannot sell {units:g}: the ledger did not hold that many at the time of the sale.")
+            return trade_id
 
     def edit_trade(self, trade_id: int, **changes) -> None:
         """Correct a recorded trade: its item, side, units, price, Gold or note. Its time stays.
 
         The edit is checked against the whole history, not only today's holdings, so turning an
-        old buy into a sale cannot leave a later sale selling units you never had. A trade an order
+        old buy into a sale cannot leave a later sale selling units you never had, nor leave an
+        item you made short of the items it used. A trade an order
         fill created keeps the order's item, side and units, so the order and its fills still agree.
         """
         fields = ("item", "side", "units", "price", "gold", "note")
@@ -218,15 +239,28 @@ class Ledger:
                     raise ValueError("This trade came from an order fill: its item, side and units follow the order. "
                                      "Delete it and record the trade by hand instead.")
                 new["gold"] = row["gold"]  # the order carries the Gold, never its fill (see the module docstring)
-            before = _oversold(self._db, row["league"])
+            before = _history(self._db, row["league"])[2]
             self._db.execute("UPDATE trades SET item = ?, side = ?, units = ?, price = ?, gold = ?, note = ? WHERE id = ?",
                              (new["item"], new["side"], new["units"], new["price"], new["gold"], new["note"], int(trade_id)))
-            if _oversold(self._db, row["league"]) - before:
-                raise ValueError("That edit would leave a sale selling more than the ledger held at the time. "
-                                 "Fix or delete that sale first.")
+            _refuse_short("That edit", _history(self._db, row["league"])[2] - before)
 
     def delete_trade(self, trade_id: int) -> None:
-        self._run("DELETE FROM trades WHERE id = ?", (int(trade_id),))
+        """Delete a trade. Refused when a later sale or an item you made needed the units it bought."""
+        self._delete("trades", trade_id)
+
+    def _delete(self, table: str, row_id: int) -> None:
+        """Delete a trade or a made entry, unless the history would then take units the ledger never held.
+
+        Without this, deleting the entry that made an item you already sold would put its inputs back in
+        your holdings and keep the sale's profit: the same units counted twice.
+        """
+        with self._lock, self._db:  # one transaction: a refused delete rolls back
+            row = self._db.execute(f"SELECT league FROM {table} WHERE id = ?", (int(row_id),)).fetchone()
+            if row is None:
+                return
+            before = _history(self._db, row["league"])[2]
+            self._db.execute(f"DELETE FROM {table} WHERE id = ?", (int(row_id),))
+            _refuse_short("Deleting this", _history(self._db, row["league"])[2] - before)
 
     def trades(self, league: str) -> list[dict]:
         return self._all("SELECT * FROM trades WHERE league = ? ORDER BY t, id", (league,))
@@ -236,24 +270,62 @@ class Ledger:
         return self._replay(league)[0]
 
     def _replay(self, league: str) -> tuple[dict[str, dict], list[tuple[int, float]]]:
-        """Positions, and (time, profit realised) for every sale, from the whole trade history."""
-        out: dict[str, dict] = {}
-        sales: list[tuple[int, float]] = []
-        for tr in self.trades(league):
-            p = out.setdefault(tr["item"], {"units": 0.0, "cost": 0.0, "realized": 0.0, "last": 0})
-            if tr["side"] == "buy":
-                p["units"] += tr["units"]
-                p["cost"] += tr["units"] * tr["price"]
-            else:
-                sold = min(tr["units"], p["units"])
-                average = p["cost"] / p["units"] if p["units"] else 0.0
-                gain = tr["units"] * tr["price"] - sold * average
-                p["realized"] += gain
-                sales.append((tr["t"], gain))
-                p["cost"] -= sold * average
-                p["units"] -= sold
-            p["last"] = tr["t"]
-        return out, sales
+        """Positions, and (time, profit realised) for every sale, from the whole history."""
+        with self._lock:
+            positions, sales, _ = _history(self._db, league)
+        return positions, sales
+
+    # ------------------------------------------------------ items you made
+    def add_made(self, league: str, inputs: list, output: str, gives: float = 1, note: str = "",
+                 t: int | None = None, name: Callable[[str], str] = str) -> int:
+        """Record that you turned items you hold into another item: 3 of one essence into 1 of the next tier.
+
+        `inputs` is [[item id, units], ...]. What the used items cost moves to the item made; nothing is
+        realised. Using more than the ledger holds is refused, as a sale would be. `name` turns an item id
+        into its name for that message.
+        """
+        used: dict[str, float] = {}
+        for item, units in inputs or []:
+            units = float(units)
+            if not item or not (math.isfinite(units) and units > 0):
+                raise ValueError("Every item you used needs a name and a positive count.")
+            used[str(item)] = used.get(str(item), 0.0) + units
+        gives = float(gives)
+        if not used or not output or not (math.isfinite(gives) and gives > 0):
+            raise ValueError("Say at least one item you used, the item you got and a positive count of it.")
+        output = str(output)
+        if output in used:
+            raise ValueError("The item you got cannot also be an item you used.")
+        when = int(t or self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
+        with self._lock, self._db:  # one transaction: a refused entry rolls back
+            positions, _, before = _history(self._db, league)
+            if t is None:  # recorded now, so today's holdings are the holdings at its time
+                for item, units in used.items():
+                    held = positions.get(item, {}).get("units", 0.0)
+                    if units > held + 1e-9:
+                        raise ValueError(f"Cannot use {units:g} {name(item)}: the ledger holds {held:g}. "
+                                         "Record buying them first.")
+            # Where this entry sits among records of the same time: after every trade recorded so far, and not
+            # before an earlier made entry whose newest trade was deleted since (see `_history`, `_next_trade_id`).
+            after = _next_trade_id(self._db) - 1
+            made_id = self._db.execute(
+                "INSERT INTO made(t, league, inputs, output, gives, note, after_trade) VALUES (?,?,?,?,?,?,?)",
+                (when, league, json.dumps([[item, units] for item, units in used.items()]),
+                 output, gives, str(note)[:200], after)).lastrowid
+            if _history(self._db, league)[2] - before:
+                raise ValueError("That would use more than the ledger held at the time, or leave a later sale short.")
+            return made_id
+
+    def delete_made(self, made_id: int) -> None:
+        """Delete a made entry. Refused when a later sale or made item needed the item it made."""
+        self._delete("made", made_id)
+
+    def made(self, league: str) -> list[dict]:
+        """What you recorded making in a league, oldest first; `inputs` is [(item, units), ...]."""
+        rows = self._all("SELECT * FROM made WHERE league = ? ORDER BY t, after_trade, id", (league,))
+        for row in rows:
+            row["inputs"] = [(item, units) for item, units in json.loads(row["inputs"])]
+        return rows
 
     def settings(self) -> dict:
         return {key: self.get(key, default) for key, default in SETTINGS.items()}
@@ -841,20 +913,85 @@ def _gold(value) -> float | None:
     return value
 
 
-def _oversold(db: sqlite3.Connection, league: str) -> set[int]:
-    """Ids of the sales that sold more than the ledger held at their time, in history order.
+def _next_trade_id(db: sqlite3.Connection) -> int:
+    """The id for a new trade: above every trade, and above every trade id a made entry remembers.
 
-    An edit may not add one. Older files can hold some already (a deleted buy), and those must
-    not block an unrelated correction, so callers compare the set before and after.
+    SQLite gives the id of a deleted newest trade to the next trade. A made entry that remembered the
+    deleted id would then sort after a sale recorded later at the same time, and the sale would count
+    as selling units not yet held: it would realise its whole price, and the made item would still be
+    in your holdings to sell again. So a remembered id is never handed out again.
     """
-    held: dict[str, float] = {}
-    out = set()
-    for tr in db.execute("SELECT id, item, side, units FROM trades WHERE league = ? ORDER BY t, id", (league,)):
-        have = held.get(tr["item"], 0.0)
-        if tr["side"] == "buy":
-            held[tr["item"]] = have + tr["units"]
+    return db.execute("SELECT MAX((SELECT COALESCE(MAX(id), 0) FROM trades), "
+                      "(SELECT COALESCE(MAX(after_trade), 0) FROM made)) + 1").fetchone()[0]
+
+
+def _refuse_short(action: str, short: set[tuple[str, int]]) -> None:
+    """Refuse a change that newly leaves these entries taking more than the ledger held (see `_history`)."""
+    if any(kind == "made" for kind, _ in short):
+        raise ValueError(f"{action} would leave an item you made using more than the ledger held at the time. "
+                         "Fix or delete that entry under \"Items you made\" first.")
+    if short:
+        raise ValueError(f"{action} would leave a sale selling more than the ledger held at the time. "
+                         "Fix or delete that sale first.")
+
+
+def _history(db: sqlite3.Connection, league: str) -> tuple[dict[str, dict], list[tuple[int, float]], set[tuple[str, int]]]:
+    """One walk over a league's trades and made items, in the order they happened.
+
+    Returns the positions (item -> {units, cost, realized, last}), (time, profit realised) for every
+    sale, and the entries that took more than the ledger held at their time, as ("trade", id) or
+    ("made", id). Everything that needs holdings reads this one walk, so the positions and the
+    checks cannot disagree. The caller holds the ledger's lock.
+
+    An edit or a new entry may not add to the short set. Older files can hold some already (a
+    deleted buy), and those must not block an unrelated correction, so callers compare the set
+    before and after.
+
+    Trades and made items live in two tables, and a rehearsal stamps everything recorded in one
+    practice hour with the same time, so the time alone cannot order "bought, merged, sold". A made
+    item therefore remembers the newest trade that existed when it was recorded (`after_trade`) and
+    sorts right after it. That only holds while every later trade gets a higher id, which SQLite
+    does not promise by itself (see `_next_trade_id`).
+    """
+    steps = [((tr["t"], tr["id"], 0, 0), "trade", tr)
+             for tr in db.execute("SELECT * FROM trades WHERE league = ?", (league,))]
+    steps += [((m["t"], m["after_trade"], 1, m["id"]), "made", m)
+              for m in db.execute("SELECT * FROM made WHERE league = ?", (league,))]
+    steps.sort(key=lambda step: step[0])
+    out: dict[str, dict] = {}
+    sales: list[tuple[int, float]] = []
+    short: set[tuple[str, int]] = set()
+
+    def position(item: str) -> dict:
+        return out.setdefault(item, {"units": 0.0, "cost": 0.0, "realized": 0.0, "last": 0})
+
+    def take(item: str, units: float, entry: tuple[str, int]) -> float:
+        """Remove up to `units` at average cost; returns the cost that left with them."""
+        p = position(item)
+        if units > p["units"] + 1e-9:
+            short.add(entry)
+        taken = min(units, p["units"])
+        cost = taken * (p["cost"] / p["units"]) if p["units"] else 0.0
+        p["cost"] -= cost
+        p["units"] -= taken
+        return cost
+
+    for _, kind, row in steps:
+        if kind == "made":
+            moved = sum(take(item, units, ("made", row["id"])) for item, units in json.loads(row["inputs"]))
+            for item, _units in json.loads(row["inputs"]):
+                position(item)["last"] = row["t"]
+            p = position(row["output"])
+            p["units"] += row["gives"]
+            p["cost"] += moved
+        elif row["side"] == "buy":
+            p = position(row["item"])
+            p["units"] += row["units"]
+            p["cost"] += row["units"] * row["price"]
         else:
-            if tr["units"] > have + 1e-9:
-                out.add(tr["id"])
-            held[tr["item"]] = max(have - tr["units"], 0.0)
-    return out
+            gain = row["units"] * row["price"] - take(row["item"], row["units"], ("trade", row["id"]))
+            p = position(row["item"])
+            p["realized"] += gain
+            sales.append((row["t"], gain))
+        p["last"] = row["t"]
+    return out, sales, short

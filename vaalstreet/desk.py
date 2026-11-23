@@ -144,8 +144,8 @@ class Costs:
     wins. With neither, the fee is unknown and every Gold figure built from it is None - the plan
     stays on the board, we just cannot price its Gold. We never guess a schedule.
 
-    Gold is charged per unit of the item an order buys or sells, on each order. Item-for-item swaps
-    cannot be recorded in the ledger, so for round trips we *assume* each swap costs the fee of the
+    Gold is charged per unit of the item an order buys or sells, on each order. The ledger records
+    no Gold for item-for-item swaps, so for round trips we *assume* each swap costs the fee of the
     item given up, the same as selling it would.
 
     Time: every order is `minutes_per_order` of your time (an assumption you set; 1 by default).

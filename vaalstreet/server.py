@@ -22,7 +22,7 @@ import numpy as np
 
 from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, search
 from vaalstreet.desk import Costs, Desk, _num, session_plan
-from vaalstreet.ingest import ingest
+from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert, describe_key
 from vaalstreet.paths import data_dir, icons_dir
@@ -623,9 +623,12 @@ class App:
         trades = self.ledger.trades(desk.league)
         for tr in trades:
             tr["name"] = desk._name(tr["item"])
+        made = [dict(m, inputs=[{"id": item, "name": desk._name(item), "units": units} for item, units in m["inputs"]],
+                     name=desk._name(m["output"])) for m in self.ledger.made(desk.league)]
         fees = self.ledger.gold_fees(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
+            "made": made[::-1][:200],
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
@@ -716,6 +719,22 @@ class App:
             raise ApiError(f"No item called {text!r}. Use the name as the exchange shows it.")
         return found
 
+    def _ledger_item(self, desk, text) -> str:
+        """The item a ledger entry names, from an id or a name.
+
+        The league's own market comes first, so a made item is the very item the trade form buys and
+        sells; then an id the ledger already holds, which may have stopped trading; then the item
+        export, which knows items that never traded here.
+        """
+        text = str(text or "").strip()
+        try:
+            return check.resolve(desk, text)
+        except LookupError:
+            pass
+        if text in self.ledger.positions(desk.league):
+            return text
+        return self._item_ref(text)
+
     def api_post(self, path: str, body: dict) -> dict:
         league = body.get("league") or self.default_league()
         try:
@@ -728,6 +747,27 @@ class App:
                 else:
                     self.ledger.add_trade(league, body["item"], body["side"], body["units"], body["price"],
                                           body.get("note", ""), gold=body.get("gold"))
+            elif path == "/api/made":
+                if body.get("delete"):
+                    self.ledger.delete_made(body["delete"])
+                else:
+                    desk = self.desk(league)
+                    inputs = [[self._ledger_item(desk, item), units] for item, units in body["inputs"]]
+                    output = self._ledger_item(desk, body["output"])
+                    # The ledger counts in Chaos and holds none: as an input it could never be "held", and as
+                    # an output it would sit there as an item whose profit is never realised.
+                    chaos, why = ANCHORS[desk.realm][0], "The ledger counts in Chaos Orbs and does not hold them, so "
+                    if output == chaos:
+                        raise ApiError(why + "they cannot be the item you got. Getting Chaos for items is a sale: "
+                                       "record it as a trade, Sold, with the Chaos you got for each item.")
+                    if any(item == chaos for item, _ in inputs):
+                        if len(inputs) == 1:
+                            raise ApiError(why + "they cannot be an item you used. Paying Chaos for an item is a buy: "
+                                           "record it as a trade, Bought, with the Chaos you paid for each item.")
+                        raise ApiError(why + "they cannot be an item you used. Record the entry without them; "
+                                       "the Chaos you paid on top is then missing from the cost of the item you made.")
+                    self.ledger.add_made(league, inputs, output, body.get("gives", 1),
+                                         body.get("note", ""), name=desk._name)
             elif path == "/api/order":
                 if body.get("delete"):
                     self.ledger.delete_order(body["delete"])
