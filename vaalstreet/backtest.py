@@ -783,10 +783,12 @@ class Simulation:
             return (limit, float(whole), math.nan, 1.0) if whole >= 1 else None
         if not math.isfinite(unit) or unit <= 0:
             return None
+        # The same orders the Flips page posts: the smallest ratio within `pricing.LOT_TOLERANCE` of the
+        # limit, rounded either way. The fill is judged at the price the ratio states, not at the limit.
         if side == "buy":
-            pair = _fit_ratio(limit / unit, "buy", cash / unit)
+            pair = _fit_ratio(limit / unit, cash / unit)
         else:
-            pair = _fit_ratio(limit / unit, "sell", 400.0, math.floor(self.position[item] + 1e-9))
+            pair = _fit_ratio(limit / unit, math.inf, math.floor(self.position[item] + 1e-9))
         if pair is None:
             return None
         currency, items = pair
@@ -882,20 +884,17 @@ def _whole(units: np.ndarray, lot: np.ndarray) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=65536)
-def _fit_cached(price: float, max_currency: int, max_items: int, side: str) -> tuple[int, int] | None:
-    return pricing.fit_ratio(price, max_currency, max_items, side=side)
+def _fit_cached(price: float, max_currency: int, max_items: int) -> tuple[int, int] | None:
+    return pricing.lot_ratio(price, pricing.LOT_TOLERANCE, max_currency, max_items)
 
 
-def _fit_ratio(price: float, side: str, max_currency: float, max_items: float = 5000) -> tuple[int, int] | None:
-    """pricing.fit_ratio, cached: strategies re-quote the same levels hour after hour.
+def _fit_ratio(price: float, max_currency: float, max_items: float = math.inf) -> tuple[int, int] | None:
+    """pricing.lot_ratio, cached: strategies re-quote the same levels hour after hour.
 
     The caps only matter as whole numbers, and prices are keyed to 7 significant digits."""
     if not math.isfinite(price) or price <= 0:
         return None
-    # Round the key in the order's favour, so caching can never move the ratio past the limit.
-    key = float(f"{price:.7g}")
-    key = min(key, price) if side == "buy" else max(key, price)
-    return _fit_cached(key, int(min(max_currency, 1e12)), int(min(max_items, 1e12)), side)
+    return _fit_cached(float(f"{price:.7g}"), int(min(max_currency, 1e12)), int(min(max_items, 1e12)))
 
 
 # ------------------------------------------------------------------ strategies

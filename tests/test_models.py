@@ -216,12 +216,13 @@ def test_cross_market_flip_captures_the_divine_premium(desk):
 
 
 def test_small_bankroll_gets_whole_lot_orders_it_can_post(desk):
-    assert pricing.fit_ratio(3.07, 40) == (40, 13)
-    assert pricing.fit_ratio(3.07, 5) == (3, 1), "the closest order that still fits five Chaos"
-    assert pricing.fit_ratio(250, 40) is None, "one unit costs more than the purse"
-    assert pricing.fit_ratio(0.024, 40) == (3, 125)
-    assert pricing.fit_ratio(0.024, 1) == (1, 42)
-    assert pricing.fit_ratio(10.4, 400, max_items=2) == (21, 2), "cannot sell more units than it can hold"
+    # 3.07: every lot up to seven states 3.0 (2.3% off); "25 for 8" is the first within 2% (1.8% off).
+    # A purse of five Chaos cannot pay for that, and posts the closest it can, "3 for 1".
+    assert pricing.lot_ratio(3.07, max_currency=40) == (25, 8)
+    assert pricing.lot_ratio(3.07, max_currency=5) == (3, 1), "the closest order that still fits five Chaos"
+    assert pricing.lot_ratio(250, max_currency=40) is None, "one unit costs more than the purse"
+    assert pricing.lot_ratio(0.024, max_currency=40) == (1, 42)
+    assert pricing.lot_ratio(10.4, max_items=2) == (21, 2), "cannot sell more units than it can hold"
 
     everything = desk.flips(share=0.1, min_margin=0.01)
     assert {p["kind"] for p in everything} >= {"chaos", "cross"}

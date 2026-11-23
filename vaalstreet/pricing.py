@@ -448,18 +448,24 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
     return best
 
 
+# Orders are cut to the smallest ratio within this of their price (`lot_ratio`), on the Flips page and
+# in backtests alike. Prices are read from hourly averages that move a median 3 to 12% within an hour
+# or two, so a closer ratio buys no real precision; on Covens 2% cut the median lot from 5 to 2 times
+# the smallest the markets allow.
+LOT_TOLERANCE = 0.02
+
+
 def lot_ratio(
-    price: float, tolerance: float = 0.02, max_currency: float = math.inf, max_items: float = math.inf,
-    max_units: int = 400,
+    price: float, tolerance: float = LOT_TOLERANCE, max_currency: float = math.inf,
+    max_items: float = math.inf, max_units: int = 400,
 ) -> tuple[int, int] | None:
     """The whole-number (currency, items) order with the smallest lot that states `price` within `tolerance`.
 
     An order fills in multiples of its ratio, so "23 Chaos for 10" fills ten items at a time while
-    "7 for 3" fills three. A flip level is read from hourly averages that move a median 3 to 12%
-    within an hour or two, so pinning it to 0.4% only makes the lots bigger and slower. This takes
-    the order with the fewest units on its smaller side that is within `tolerance` of `price`,
-    rounded either way, or else the closest one up to `max_units`. `max_currency` and `max_items` cap what the order
-    may state, for a small purse; None when even the smallest order does not fit.
+    "7 for 3" fills three. This takes the order with the fewest units on its smaller side that is
+    within `tolerance` of `price`, rounded either way, or else the closest one up to `max_units`.
+    `max_currency` and `max_items` cap what the order may state, for a small purse or the items
+    held; then it is the closest order that fits, and None when even the smallest does not.
     """
     if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
         return None
@@ -476,77 +482,6 @@ def lot_ratio(
             best, best_err = (currency, items), err
         if err <= tolerance:
             break
-    return best
-
-
-def fit_ratio(
-    price: float, max_currency: float, max_items: float = 5000, side: str | None = None
-) -> tuple[int, int] | None:
-    """The whole-number (currency, items) order closest to `price` that a small purse can post.
-
-    `max_currency` caps the currency side and `max_items` the item side. Returns None when even
-    the smallest order does not fit (one item costs more than the purse holds). With `side`
-    "buy" the ratio never exceeds `price`, with "sell" it never falls below it, so a resting
-    order states no worse a price than its limit.
-    """
-    if side is not None:
-        return _fit_ratio_side(price, max_currency, max_items, side == "buy")
-    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
-        return None
-    best, best_err = None, np.inf
-    if price >= 1:
-        for items in range(1, int(min(max_items, 400)) + 1):
-            currency = max(1, round(price * items))
-            if currency > max_currency:
-                break
-            err = abs(currency / items - price) / price
-            if err < best_err - 1e-12:
-                best, best_err = (currency, items), err
-            if err <= 0.004:
-                break
-    else:
-        for currency in range(1, int(min(max_currency, 400)) + 1):
-            items = max(1, round(currency / price))
-            if items > max_items:
-                break
-            err = abs(currency / items - price) / price
-            if err < best_err - 1e-12:
-                best, best_err = (currency, items), err
-            if err <= 0.004:
-                break
-    return best
-
-
-def _fit_ratio_side(price: float, max_currency: float, max_items: float, buy: bool) -> tuple[int, int] | None:
-    """fit_ratio, rounding only in the order's favour: down for a buy, up for a sell."""
-    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
-        return None
-    best, best_err = None, np.inf
-    eps = 1e-9  # keeps an exact ratio such as 3.3 * 10 from flooring to 32
-    if price >= 1:
-        for items in range(1, int(min(max_items, 400)) + 1):
-            currency = math.floor(price * items + eps) if buy else math.ceil(price * items - eps)
-            if currency < 1:
-                continue
-            if currency > max_currency:
-                break
-            err = abs(currency / items - price) / price
-            if err < best_err - 1e-12:
-                best, best_err = (currency, items), err
-            if err <= 0.004:
-                break
-    else:
-        for currency in range(1, int(min(max_currency, 400)) + 1):
-            items = math.ceil(currency / price - eps) if buy else math.floor(currency / price + eps)
-            if items < 1:
-                continue
-            if items > max_items:
-                break
-            err = abs(currency / items - price) / price
-            if err < best_err - 1e-12:
-                best, best_err = (currency, items), err
-            if err <= 0.004:
-                break
     return best
 
 
