@@ -701,8 +701,9 @@ class Desk:
         three items, "1 Divine for 40" is forty), and `hours_per_lot` is that lot divided by the
         units the plan takes per hour, as `lot_hours` and the session plan count it. A level
         slower than `LOT_WINDOW` is not a plan, and that is decided per patience level, so a more
-        patient level cannot win on a margin it has no trade to back. A plan slower than one sitting (`SESSION_HOURS`) carries `slow`, a sentence
-        naming its thinner market and what that market traded in the last day
+        patient level cannot win on a margin it has no trade to back. A plan slower than one
+        sitting (`SESSION_HOURS`) carries `slow`, a sentence naming its thinner market and what
+        that market traded in the last day
         (`slow_market`, `slow_market_value_24h`). The queue of offers ahead of you is shown
         (`ask_queue_hours`) but not counted here: the exchange does not publish at what prices
         that stock rests.
