@@ -15,6 +15,10 @@ than the ledger holds is never refused. Given the recipes the game data knows (`
 records those merges itself, linked to the sale (`made.sale`): deleting the sale deletes them
 too. What is still missing after that has no recorded cost. It is sold at zero cost, so its
 whole price counts as profit, the same as loot; `uncovered` says how many units that was.
+That profit is counted, and also kept apart: every position and every session says how much
+of its realised profit came from such units (`loot`), so what your trading earned can be read
+without what you found. Units with no cost that went into an item you made are not followed
+through the merge: they lower the made item's cost, and show as trading profit when it sells.
 
 The file outlives the code, so the schema only ever grows: new tables are created if
 missing and new columns are added if missing (`_migrate`). Nothing is rewritten or dropped.
@@ -316,8 +320,8 @@ class Ledger:
         """item -> {units, cost, realized}. `cost` is what the units still held were bought for."""
         return self._replay(league)[0]
 
-    def _replay(self, league: str) -> tuple[dict[str, dict], list[tuple[int, float]]]:
-        """Positions, and (time, profit realised) for every sale, from the whole history."""
+    def _replay(self, league: str) -> tuple[dict[str, dict], list[tuple[int, float, float]]]:
+        """Positions, and (time, profit realised, of which loot) for every sale, from the whole history."""
         with self._lock:
             positions, sales, _ = _history(self._db, league)
         return positions, sales
@@ -572,6 +576,11 @@ class Ledger:
         Profit is what sales inside the session realised against the average cost of everything
         bought before, so stock carried in from earlier counts at what you paid for it.
         Gold spent is the Gold on trades made and orders posted inside the session.
+
+        Units sold that the ledger never saw bought or made cost nothing, so their whole price is
+        profit: loot, mostly. That is income, but it is not what your orders earned, and the Flips
+        plan a session is compared with knows nothing of it. So `loot` says how much of the profit
+        it was, and `trading` and `trading_per_hour` are the profit without it.
         """
         now = int(now or self.clock())
         _, sales = self._replay(league)
@@ -582,11 +591,13 @@ class Ledger:
                 "SELECT (SELECT COALESCE(SUM(gold), 0) FROM trades WHERE league = ?1 AND t BETWEEN ?2 AND ?3)"
                 " + (SELECT COALESCE(SUM(gold), 0) FROM orders WHERE league = ?1 AND created BETWEEN ?2 AND ?3) AS g",
                 (league, s["started"], end))[0]["g"]
-            profit = sum(gain for t, gain in sales if s["started"] <= t <= end)
+            inside = [(gain, loot) for t, gain, loot in sales if s["started"] <= t <= end]
+            profit, loot = sum(gain for gain, _ in inside), sum(loot for _, loot in inside)
             hours = (end - s["started"]) / 3600
             out.append(dict(s, plan=json.loads(s["plan"]), running=s["stopped"] is None, hours=hours,
-                            profit=profit, gold_spent=spent,
-                            per_hour=profit / hours if hours > 0 else None))
+                            profit=profit, loot=loot, trading=profit - loot, gold_spent=spent,
+                            per_hour=profit / hours if hours > 0 else None,
+                            trading_per_hour=(profit - loot) / hours if hours > 0 else None))
         return out
 
     # -------------------------------------------------------- recipe checks
@@ -1110,8 +1121,8 @@ def _history(db: sqlite3.Connection, league: str, until: tuple[int, int] | None 
              ) -> tuple[dict[str, dict], list[tuple[int, float]], dict[tuple[str, int], float]]:
     """One walk over a league's trades and made items, in the order they happened.
 
-    Returns the positions (item -> {units, cost, realized, last}), (time, profit realised) for every
-    sale, and the entries that took more than the ledger held at their time, as ("trade", id) or
+    Returns the positions (item -> {units, cost, realized, loot, last}), (time, profit realised, of
+    which loot) for every sale, and the entries that took more than the ledger held at their time, as ("trade", id) or
     ("made", id) -> the units beyond the holdings, which come at zero cost. Everything that needs
     holdings reads this one walk, so the positions and the checks cannot disagree. The caller holds
     the ledger's lock. `until` = (time, trade id) stops the walk where a trade with that id and time
@@ -1136,11 +1147,11 @@ def _history(db: sqlite3.Connection, league: str, until: tuple[int, int] | None 
     if until is not None:
         steps = [step for step in steps if step[0] < (until[0], until[1], 0, 0)]
     out: dict[str, dict] = {}
-    sales: list[tuple[int, float]] = []
+    sales: list[tuple[int, float, float]] = []
     short: dict[tuple[str, int], float] = {}
 
     def position(item: str) -> dict:
-        return out.setdefault(item, {"units": 0.0, "cost": 0.0, "realized": 0.0, "last": 0})
+        return out.setdefault(item, {"units": 0.0, "cost": 0.0, "realized": 0.0, "loot": 0.0, "last": 0})
 
     def take(item: str, units: float, entry: tuple[str, int]) -> float:
         """Remove up to `units` at average cost; returns the cost that left with them."""
@@ -1166,9 +1177,13 @@ def _history(db: sqlite3.Connection, league: str, until: tuple[int, int] | None 
             p["units"] += row["units"]
             p["cost"] += row["units"] * row["price"]
         else:
+            # The units sold beyond the holdings cost nothing, so their price is all profit: `loot`.
+            beyond = max(0.0, row["units"] - position(row["item"])["units"])
+            loot = beyond * row["price"] if beyond > 1e-9 else 0.0
             gain = row["units"] * row["price"] - take(row["item"], row["units"], ("trade", row["id"]))
             p = position(row["item"])
             p["realized"] += gain
-            sales.append((row["t"], gain))
+            p["loot"] += loot
+            sales.append((row["t"], gain, loot))
         p["last"] = row["t"]
     return out, sales, short

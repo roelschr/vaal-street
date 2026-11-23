@@ -158,6 +158,23 @@ def test_rehearsal_session_over_the_api(server):
     assert "rehearsal" not in back and back["summary"]["league_day"] == 7
 
 
+def test_a_practice_sale_of_items_never_bought_is_not_a_result(archive_root, tmp_path):
+    """A rehearsal has no loot. Known answers: 5 orbs sold at 10 with nothing bought bring in 50, which counts
+    for nothing; 4 bought at 10 and sold at 12 realise 8. The result says 8, and names the 50 apart."""
+    from vaalstreet.ledger import Ledger
+    from vaalstreet.server import App
+
+    app = App(archive_root, sync=False)
+    app.ledger = Ledger(tmp_path)
+    app.start_rehearsal({"league": NEW, "start_day": 1})
+    app.api_post("/api/trade", {"league": NEW, "item": ITEM, "side": "sell", "units": 5, "price": 10.0})
+    app.api_post("/api/trade", {"league": NEW, "item": ITEM, "side": "buy", "units": 4, "price": 10.0})
+    app.api_post("/api/trade", {"league": NEW, "item": ITEM, "side": "sell", "units": 4, "price": 12.0})
+    result = app.stop_rehearsal()["result"]
+    assert result["realized"] == pytest.approx(8) and result["unbought"] == pytest.approx(50)
+    assert result["profit"] == pytest.approx(8)
+
+
 def test_practice_trades_never_reach_the_real_ledger(archive_root, tmp_path):
     from vaalstreet.ledger import Ledger
     from vaalstreet.server import App

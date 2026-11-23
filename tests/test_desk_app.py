@@ -445,3 +445,12 @@ def test_every_plan_s_own_orders_are_kept_when_two_plans_share_a_market(flat_ser
                 "units": 4 * order["item_units"]})[0] == 200
     orders = call(f"{flat_server}/api/ledger")[1]["orders"]
     assert len(orders) == 6 and {o["advice"] for o in orders} == {"keep"}, [(o["side"], o["market"], o["reason"]) for o in orders]
+def test_api_ledger_shows_loot_apart_from_trading(server):
+    """Known answers: 10 orbs bought at 9, 12 sold at 11. The 10 realise 10 × (11 − 9) = 20 of trading; the 2
+    the ledger never saw realise 2 × 11 = 22 of loot. Realised is 42, of which loot 22."""
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9})[0] == 200
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 12, "price": 11, "merge": False})[0] == 200
+    ledger = call(f"{server}/api/ledger")[1]
+    orb = next(p for p in ledger["positions"] if p["id"] == ITEM)
+    assert orb["realized"] == pytest.approx(42) and orb["loot"] == pytest.approx(22)
+    assert ledger["totals"]["realized"] == pytest.approx(42) and ledger["totals"]["loot"] == pytest.approx(22)

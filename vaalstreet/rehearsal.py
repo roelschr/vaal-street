@@ -168,15 +168,19 @@ class Rehearsal:
     def result(self) -> dict:
         """Practice profit, marked at the current hour's fair value, against holding Divines over the same hours.
 
-        Profit is realised profit plus what open positions are worth at fair value minus what they cost;
+        Profit is realised profit plus what open positions are worth at fair value minus what they cost.
+        A practice sale of units never bought in practice counts for nothing (`unbought` says how much
+        such sales brought in): in the game that would be loot, and a rehearsal has none;
         a position with no fair value is counted at cost and listed in `unpriced`. The Divine line is what
         the bankroll would have made sitting in Divines from the start hour to now.
         """
         desk = self.desk()
-        realized = value = cost = 0.0
+        realized = value = cost = unbought = 0.0
         unpriced = []
         for item_id, p in self.ledger.positions(self.league).items():
-            realized += p["realized"]
+            # A practice sale of units never bought in practice is not a result: nothing is looted here.
+            realized += p["realized"] - p["loot"]
+            unbought += p["loot"]
             cost += p["cost"]
             mark = desk.fair(item_id)
             if mark is None:
@@ -196,6 +200,7 @@ class Rehearsal:
             "league": self.league, "start": self.start, "hour": self.hour, "hours": hours,
             "bankroll": self.bankroll, "profit": _num(profit), "realized": _num(realized),
             "unrealized": _num(value - cost), "return": _num(profit / self.bankroll, 4),
+            "unbought": _num(unbought),
             "divine_then": _num(self.start_bridge), "divine_now": _num(desk.bridge),
             "hold_divines": _num(divine), "vs_divines": _num(profit - divine),
             "trades": len(self.ledger.trades(self.league)), "unpriced": unpriced,

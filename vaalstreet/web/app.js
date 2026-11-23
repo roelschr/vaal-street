@@ -913,6 +913,14 @@ async function viewLab(main) {
 // An empty field means "not recorded", which is not the same as zero.
 const optional = v => (v === '' || v == null ? null : +v);
 
+// Profit that includes loot, split in two: what trading made, and what came from items sold with no
+// recorded cost. Nothing is shown when there was no such sale, so a pure trading ledger looks as before.
+function lootNote(profit, loot, inline = false) {
+  if (!loot) return '';
+  const text = `${money(profit - loot)} trading + ${money(loot)} loot`;
+  return inline ? `<i class="muted">${text}</i>` : `<div class="muted small">${text}</div>`;
+}
+
 // ---------------------------------------------------------- "I posted this"
 // A plan carries the item, the side, the market and the ratio of each of its orders. So recording
 // that you posted one asks only how many items, and the Gold if you want the desk to learn the fee.
@@ -1140,7 +1148,7 @@ async function viewLedger(main) {
       <div class="kpi"><span>Inventory value</span><b>${money(t.value)}</b></div>
       <div class="kpi"><span>Cost of inventory</span><b>${money(t.cost)}</b></div>
       <div class="kpi"><span>Unrealised</span><b class="${t.unrealized >= 0 ? 'up' : 'down'}">${money(t.unrealized)}</b></div>
-      <div class="kpi"><span>Realised</span><b class="${t.realized >= 0 ? 'up' : 'down'}">${money(t.realized)}</b></div>
+      <div class="kpi" title="${t.loot ? 'Profit from everything you sold. Part of it came from items the ledger never saw you buy or make, loot mostly: they cost nothing, so their whole price is profit. The rest is what your trading made' : 'Profit from everything you sold, against what you paid'}"><span>Realised</span><b class="${t.realized >= 0 ? 'up' : 'down'}">${money(t.realized)}</b>${lootNote(t.realized, t.loot, true)}</div>
     </div>
     <section class="panel" id="tform" style="margin-bottom:14px"><header><h2 id="thead">Record a trade</h2><span class="muted small" id="tlock" hidden>Filled from an order: its item, side and units follow the order, and the order holds the Gold.</span></header><div class="body bar" style="margin:0">
       <label class="f">Item<input type="text" id="ti" list="items" placeholder="Start typing…" style="width:240px"><datalist id="items">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
@@ -1287,8 +1295,8 @@ async function viewLedger(main) {
     : `<span class="muted small">${plan ? `Starts against the Flips session plan: about ${money(plan.expected_per_hour)} an hour` : 'Open Flips with a bankroll first to compare against its plan'}</span><button class="btn primary" id="sstart">Start session</button>`);
   ses.append(table([
     { h: 'Started', l: 1, f: r => new Date(r.started * 1000).toLocaleString() + (r.running ? ' <span class="gold">running</span>' : '') },
-    { h: 'Hours', f: r => fmt(r.hours) }, { h: 'Profit', f: r => `<span class="${r.profit >= 0 ? 'up' : 'down'}">${money(r.profit)}</span>`, title: 'Profit realised by sales in the session, against what you paid' },
-    { h: 'Per hour', f: r => money(r.per_hour) }, { h: 'Plan said', f: r => r.expected_per_hour == null ? '–' : money(r.expected_per_hour) + '/h' },
+    { h: 'Hours', f: r => fmt(r.hours) }, { h: 'Profit', f: r => `<span class="${r.profit >= 0 ? 'up' : 'down'}">${money(r.profit)}</span>${lootNote(r.profit, r.loot)}`, title: 'Profit realised by sales in the session, against what you paid. Items sold that the ledger never saw you buy or make (loot, mostly) cost nothing, so their whole price is profit: shown apart, with what trading alone made' },
+    { h: 'Per hour', f: r => money(r.per_hour) + (r.loot && r.trading_per_hour != null ? `<div class="muted small">${money(r.trading_per_hour)} from trading</div>` : ''), title: 'Profit per hour of the session. With loot sold in the session, the second line is trading alone: that is the figure to hold against the plan' }, { h: 'Plan said', f: r => r.expected_per_hour == null ? '–' : money(r.expected_per_hour) + '/h', title: 'What the Flips session plan expected an hour. It knows nothing of loot' },
     { h: 'Gold spent', f: r => fmt(r.gold_spent) }, { h: 'Gold earned', f: r => r.gold_earned == null ? '–' : fmt(r.gold_earned) },
     { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this session">✕</button>` },
   ], d.sessions, { empty: 'Start a session when you sit down to trade; it reports what you made per hour.' }));
@@ -1319,7 +1327,7 @@ async function viewLedger(main) {
     { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name }, { h: 'Units', f: r => fmt(r.units), s: r => r.units },
     { h: 'Avg. cost', f: r => money(r.average), s: r => r.average }, { h: 'Fair value', f: r => money(r.mark), s: r => r.mark },
     { h: 'Value', f: r => money(r.value), s: r => r.value }, { h: 'Unrealised', f: r => r.unrealized == null ? '–' : `<span class="${r.unrealized >= 0 ? 'up' : 'down'}">${money(r.unrealized)}</span>`, s: r => r.unrealized },
-    { h: 'Realised', f: r => `<span class="${r.realized >= 0 ? 'up' : 'down'}">${money(r.realized)}</span>`, s: r => r.realized },
+    { h: 'Realised', f: r => `<span class="${r.realized >= 0 ? 'up' : 'down'}">${money(r.realized)}</span>${lootNote(r.realized, r.loot)}`, s: r => r.realized, title: 'Profit from what you sold of this item. Units sold that the ledger never saw you buy or make cost nothing: that part is shown apart as loot' },
   ], d.positions.filter(p => p.units > 0 || p.realized), { sort: 4, onRow: r => openItem(r.id), empty: 'No trades recorded in this league yet.' }));
   const tr = panel('Trades', 'c12');
   const tt = table([
@@ -1652,7 +1660,7 @@ function showPracticeEnd(r) {
       <div class="kpi"><span>Practice profit</span><b class="${r.profit >= 0 ? 'up' : 'down'}">${fmt(r.profit)}${CUR.c}</b><i class="muted">${pct(r.return)}</i></div>
       <div class="kpi"><span>Holding Divines instead</span><b>${fmt(r.hold_divines)}${CUR.c}</b><i class="muted">${fmt(r.divine_then)} → ${fmt(r.divine_now)}${CUR.c}</i></div>
       <div class="kpi"><span>Against holding Divines</span><b class="${r.vs_divines >= 0 ? 'up' : 'down'}">${r.vs_divines >= 0 ? '+' : ''}${fmt(r.vs_divines)}${CUR.c}</b></div></div>
-      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)}${CUR.c} realised, ${fmt(r.unrealized)}${CUR.c} in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)}${CUR.c}. ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
+      <p class="muted small" style="margin:0">${r.trades} practice trade${r.trades === 1 ? '' : 's'}; ${fmt(r.realized)}${CUR.c} realised, ${fmt(r.unrealized)}${CUR.c} in open positions at fair value. Holding Divines assumes a bankroll of ${fmt(r.bankroll)}${CUR.c}. ${r.unbought ? `Sales of items you never bought in this practice (${fmt(r.unbought)}${CUR.c}) are not counted.` : ''} ${r.unpriced?.length ? `${r.unpriced.length} position${r.unpriced.length === 1 ? ' has' : 's have'} no price and ${r.unpriced.length === 1 ? 'is' : 'are'} counted at cost. ` : ''}Your real ledger was not touched. You are back on the live market.</p></div>`;
   box.querySelector('[data-x]').onclick = () => box.remove();
   document.body.append(box);
 }
