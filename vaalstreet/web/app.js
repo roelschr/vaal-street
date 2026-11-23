@@ -1639,7 +1639,14 @@ function announce(event) {
   if (!state.hideout && window.Notification?.permission === 'granted') new Notification(event.title, { body: event.body, icon: '/mark.svg' });
 }
 // A new page fades in; refreshes and actions re-render in place without replaying it (see route).
-window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; if (!state.hideout) $('#main').classList.add('enter'); route(); });
+// The page still showing while the next one loads would replay its own entrance as soon as "enter"
+// is set, so those entrances end at once and only what the new page draws fades in.
+function enterPage() {
+  const main = $('#main');
+  main.classList.add('enter');
+  for (const a of main.getAnimations({ subtree: true })) if (a.animationName === 'rise' || a.animationName === 'fade') a.finish();
+}
+window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; if (!state.hideout) enterPage(); route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
   if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
@@ -1650,7 +1657,7 @@ window.addEventListener('keydown', e => {
   else if (e.key === '/') { e.preventDefault(); if (!$('#q')) location.hash = '#/markets'; setTimeout(() => $('#q')?.focus(), 150); }
 });
 showIcons();
-if (!state.hideout) $('#main').classList.add('enter');
+if (!state.hideout) enterPage();
 poll(true);
 setInterval(poll, state.hideout ? 60000 : 20000);
 if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
