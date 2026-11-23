@@ -272,3 +272,56 @@ body.practice.hideout{padding-top:0}
 body.hideout #practice{position:sticky}
 .violet{color:var(--violet)}
 .pend{position:fixed;left:50%;top:90px;transform:translateX(-50%);width:min(720px,94vw);z-index:45;box-shadow:0 18px 60px #000a}
+
+/* Motion. Short and one-off: a page fades in when you open it, panels slide in when they open,
+   gold answers the pointer, and a price flashes when a new hour moves it. Nothing loops while the
+   desk is idle; only the sync spinner and the loading mark move while they wait. Entrances use
+   opacity and translate, never transform, and keep no fill afterwards, so fixed panels inside them
+   stay anchored to the window. */
+@keyframes rise{from{opacity:0;translate:0 8px}}
+@keyframes fade{from{opacity:0}}
+@keyframes slidein{from{opacity:.4;translate:36px 0}}
+@keyframes popin{from{opacity:0;translate:0 -6px}}
+@keyframes toastin{from{opacity:0;translate:24px 0}}
+@keyframes flashup{0%,30%{color:var(--up);text-shadow:0 0 12px #7cc98a99}}
+@keyframes flashdown{0%,30%{color:var(--down);text-shadow:0 0 12px #e8675c99}}
+@keyframes spin{to{rotate:360deg}}
+@keyframes breathe{50%{opacity:.45;scale:.94}}
+@keyframes coin{from{transform:rotateY(0)}to{transform:rotateY(360deg)}}
+@keyframes pop{40%{scale:1.45;text-shadow:0 0 10px #f2c94c}}
+
+#main.enter>*{animation:rise .32s cubic-bezier(.2,.7,.3,1) backwards}
+#main.enter>.head{animation-name:fade}
+#main.enter>.grid{animation:none}  /* its panels rise one by one instead */
+#main.enter .grid>*{animation:rise .34s cubic-bezier(.2,.7,.3,1) backwards}
+#main.enter .grid>:nth-child(2),#main.enter .kpis+*{animation-delay:.04s}
+#main.enter .grid>:nth-child(3){animation-delay:.08s}
+#main.enter .grid>:nth-child(4){animation-delay:.12s}
+#main.enter .grid>:nth-child(5){animation-delay:.16s}
+#main.enter .grid>:nth-child(n+6){animation-delay:.2s}
+#drawer:not([hidden]){animation:slidein .24s cubic-bezier(.2,.7,.3,1)}
+#tc:not([hidden]),#tour:not([hidden]),.pend{animation:popin .2s ease-out}
+.toast{animation:toastin .22s ease-out}
+#top .stat b:is(.flash-up,.flash-down){color:var(--accent-hi)}  /* the flash ends on the usual gold */
+#top .stat b.flash-up{animation:flashup 1.8s ease-out}
+#top .stat b.flash-down{animation:flashdown 1.8s ease-out}
+.dot.busy{background:none;box-shadow:none;border:1.5px solid var(--gold);border-right-color:transparent;width:9px;height:9px;animation:spin .8s linear infinite}
+.boot::before{content:'';display:block;width:46px;height:46px;margin:0 auto 12px;background:url('/mark.svg') center/contain no-repeat;animation:breathe 1.6s ease-in-out infinite}
+.brand:hover img{animation:coin .9s cubic-bezier(.3,.6,.3,1)}
+.star.pop{animation:pop .35s ease-out}
+
+/* gold answers the pointer */
+#nav>a,#nav>a svg,.seg button,select,input,.tag{transition:background-color .15s,color .15s,border-color .15s,box-shadow .15s}
+tbody tr.click{transition:background-color .12s}
+tbody tr.click td:first-child{box-shadow:inset 0 0 0 transparent;transition:box-shadow .15s}
+tbody tr.click:hover td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+.panel::before{transition:filter .25s}
+.panel:hover::before{filter:brightness(1.35)}
+.btn.primary::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:linear-gradient(105deg,transparent 35%,#fff8 50%,transparent 65%);translate:-110% 0}
+.btn.primary:hover::after{translate:110% 0;transition:translate .7s ease}
+#practice .btn::after{display:none}
+body.hideout #main>*{animation:none}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
