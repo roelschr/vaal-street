@@ -455,10 +455,10 @@ def lot_ratio(
     """The whole-number (currency, items) order with the smallest lot that states `price` within `tolerance`.
 
     An order fills in multiples of its ratio, so "23 Chaos for 10" fills ten items at a time while
-    "7 for 3" fills three. A flip level is read from hourly averages that move 5 to 12% within an
-    hour or two, so pinning it to 0.4% only makes the lots bigger and slower. This takes the order
-    with the fewest units on its smaller side that is within `tolerance` of `price`, rounded either
-    way, or else the closest one up to `max_units`. `max_currency` and `max_items` cap what the order
+    "7 for 3" fills three. A flip level is read from hourly averages that move a median 3 to 12%
+    within an hour or two, so pinning it to 0.4% only makes the lots bigger and slower. This takes
+    the order with the fewest units on its smaller side that is within `tolerance` of `price`,
+    rounded either way, or else the closest one up to `max_units`. `max_currency` and `max_items` cap what the order
     may state, for a small purse; None when even the smallest order does not fit.
     """
     if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:

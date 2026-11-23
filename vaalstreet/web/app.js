@@ -342,7 +342,7 @@ async function viewFlips(main) {
       { h: 'Item', l: 1, f: r => itemCell(r, `<span class="tag ${r.kind}">${KIND[r.kind]}</span>${flipWarn(r)}`) },
       { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
       { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => `${money(r.stake)}${r.lot_share != null ? `<div class="gold small">one lot is ${plainPct(r.lot_share)} of your purse</div>` : ''}`, title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
-      { h: 'Smallest lot', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
+      { h: 'One lot costs', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
       { h: 'Last week vs Divines', f: r => `${money(r.replayed_vs_divine_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, minus what the stake would have made held as Divines' },
       { h: 'Last week', f: r => `${money(r.replayed_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, in Chaos' },
       { h: 'Promised', f: r => `${money(r.est)}<span class="dim"> / h</span>`, title: 'What the plan expects if every order fills as estimated; it runs well ahead of the replay' },

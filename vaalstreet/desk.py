@@ -51,8 +51,9 @@ SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fi
 # traded there would not have made a single lot, so nothing says the order ever fills.
 LOT_WINDOW = SWING_WINDOW
 # A flip order states the smallest whole-number ratio within this of its level (`pricing.lot_ratio`).
-# The levels come from hourly averages that move 5 to 12% in an hour or two, so 2% costs little, and
-# it keeps lots small: on Covens it cut the median lot from 5 to 2 times the smallest the markets allow.
+# The levels come from hourly averages that move a median 3 to 12% in an hour or two (by price and
+# market, over two weeks of Covens), so 2% costs little, and it keeps lots small: on Covens it cut
+# the median lot from 5 to 2 times the smallest the markets allow.
 RATIO_TOLERANCE = 0.02
 MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
 
