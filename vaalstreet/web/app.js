@@ -322,10 +322,10 @@ const feeSource = r => (r.gold_sources || []).map(x => x.source === 'your trades
 const goldCell = (r, value) => r.gold == null
   ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. Record the Gold of a trade in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
   : `${value}<div class="muted small">${feeSource(r)}</div>`;
-const flipCols = () => [
+const flipCols = (mine = []) => [
   { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`), s: r => r.name },
-  { h: 'Buy order', f: r => order(r.buy_order, true), s: r => r.buy, title: 'Currency you pay, for how many items' },
-  { h: 'Sell order', f: r => order(r.sell_order, false), s: r => r.sell, title: 'Items you give, for how much currency' },
+  { h: 'Buy order', f: r => order(r.buy_order, true) + postedLine(r, 'buy', mine), s: r => r.buy, title: 'Currency you pay, for how many items' },
+  { h: 'Sell order', f: r => order(r.sell_order, false) + postedLine(r, 'sell', mine), s: r => r.sell, title: 'Items you give, for how much currency' },
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
   { h: 'Units / hour', f: r => `<span title="${esc(shareTitle(r))}">${fmt(r.units_per_hour)}${r.share_source?.startsWith('your fills') ? ' <span class="dim" title="Measured from your orders">✓</span>' : ''}</span>`, s: r => r.units_per_hour },
@@ -383,7 +383,7 @@ async function viewFlips(main) {
   const draw = () => {
     const q = f.q.toLowerCase();
     const rows = d.flips.filter(r => (f.kind === 'all' || r.kind === f.kind) && (!q || r.name.toLowerCase().includes(q)));
-    $('#tbl', main).replaceChildren(table(flipCols(), rows, { sort: RANK[f.rankBy] ?? RANK.profit, onRow: r => openItem(r.id), empty: 'No plan clears these filters.' }));
+    $('#tbl', main).replaceChildren(table(flipCols(d.orders), rows, { sort: RANK[f.rankBy] ?? RANK.profit, onRow: r => openItem(r.id), empty: 'No plan clears these filters.' }));
     // The session plan is built in Python (desk.session_plan) from the same plans, before the search filter.
     const bank = +f.capital, host = $('#plan', main), sp = d.session;
     host.replaceChildren();
@@ -395,7 +395,7 @@ async function viewFlips(main) {
     p.style.marginBottom = '14px';
     p.append(table([
       { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`) },
-      { h: 'Buy order', f: r => order(r.buy_order, true) }, { h: 'Sell order', f: r => order(r.sell_order, false) },
+      { h: 'Buy order', f: r => order(r.buy_order, true) + postedLine(r, 'buy', d.orders) }, { h: 'Sell order', f: r => order(r.sell_order, false) + postedLine(r, 'sell', d.orders) },
       { h: 'Margin', f: r => pct(r.margin) }, { h: 'Stake', f: r => `${money(r.stake)}${r.lot_share != null ? `<div class="gold small">one lot is ${plainPct(r.lot_share)} of your purse</div>` : ''}`, title: 'Chaos to keep working in this item: a quarter of the bankroll, or one whole lot if that is more' },
       { h: 'One lot costs', f: r => money(r.lot_cost), title: 'What it takes to post the buy order and to hold enough for one sell order' },
       { h: 'Last week vs Divines', f: r => `${money(r.replayed_vs_divine_per_hour)}<span class="dim"> / h</span>`, title: 'What this plan made an hour over the last week at this stake, minus what the stake would have made held as Divines' },
@@ -914,6 +914,61 @@ async function viewLab(main) {
 // An empty field means "not recorded", which is not the same as zero.
 const optional = v => (v === '' || v == null ? null : +v);
 
+// ---------------------------------------------------------- "I posted this"
+// A plan carries the item, the side, the market and the ratio of each of its orders. So recording
+// that you posted one asks only how many items, and the Gold if you want the desk to learn the fee.
+// `mine` is the orders you recorded that are still on the exchange (`orders` from the server): a
+// plan you posted already says so, which keeps a second click from recording it twice.
+const itemCount = v => (+(+v).toFixed(2)).toLocaleString('en-US');  // 40, 1,250, 2.5: a count, not a price
+function postedLine(r, side, mine = []) {
+  const o = r[side + '_order'], market = o.currency === 'Divine' ? 'divine' : 'chaos';
+  // The count the form starts from: whole multiples of the order's ratio, as many lots as the
+  // session plan's stake pays for, and one lot where there is no stake. A buy rounds up, so it can
+  // fill a whole sell order; a sell rounds down, so it never asks for more than was bought. You
+  // correct the count to what you posted.
+  const lot = r.lot_units || Math.max(r.buy_order.item_units, r.sell_order.item_units);
+  const lots = r.stake > 0 && r.lot_cost > 0 ? Math.max(1, Math.floor(r.stake / r.lot_cost)) : 1;
+  const round = side === 'buy' ? Math.ceil : Math.floor;
+  const units = Math.max(1, round(lots * lot / o.item_units)) * o.item_units;
+  const ask = { item: r.id, name: r.name, side, market, currency: o.currency, currency_units: o.currency_units, item_units: o.item_units, units };
+  const open = mine.filter(x => x.item === r.id && x.side === side && x.market === market);
+  const left = open.reduce((n, x) => n + x.units - x.filled, 0);
+  const ratios = [...new Set(open.map(x => `${x.item_units} for ${x.currency_units}`))].join(', ');
+  return `<div class="post">${open.length ? `<span class="muted small" title="You recorded ${open.length === 1 ? 'an order' : `${open.length} orders`} here (${esc(ratios)} ${esc(o.currency)}), with ${itemCount(left)} still to fill. The Ledger says whether to keep, re-price, cancel or collect.">✓ ${itemCount(left)} posted</span> ` : ''}<button class="btn ghost small" data-post="${esc(JSON.stringify(ask))}" title="Posted this order in game? Record it without typing the item, the market or the ratio.">${open.length ? 'Posted more…' : 'Posted…'}</button></div>`;
+}
+function askPosted(o) {
+  $('.posted')?.remove();
+  const box = document.createElement('form'); box.className = 'panel pend posted'; box.autocomplete = 'off';
+  box.innerHTML = `<header><h2>${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <div class="body"><div class="bar" style="margin:0">
+      <div class="f ctl">Ratio<span class="num" style="padding:6px 0;color:var(--text)">${order(o, o.side === 'buy')}</span></div>
+      <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units}" required style="width:110px"></label>
+      <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" style="width:110px"></label>
+      <button class="btn primary">Record</button></div>
+      <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. If you posted a different ratio, record the order on the Ledger page instead.</p></div>`;
+  box.onsubmit = async e => {
+    e.preventDefault();
+    if (box.dataset.busy) return;  // a second click or Enter while the first is on its way must not record twice
+    box.dataset.busy = '1';
+    const units = +box.elements.units.value;
+    try {
+      await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units: o.currency_units, item_units: o.item_units, units, gold: optional(box.elements.gold.value) });
+    } catch (err) { delete box.dataset.busy; return toast(err.message, true); }
+    box.remove();
+    toast(`Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
+    // Draw the page again so the plan says it is posted, and the item's panel too when it shows this item.
+    const drawer = $('#drawer');
+    if (drawer && !drawer.hidden && drawer.dataset.item === o.item) openItem(o.item);
+    route();
+  };
+  // Esc closes this form only, not the item panel under it.
+  box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); box.remove(); } });
+  box.querySelector('[data-x]').onclick = () => box.remove();
+  document.body.append(box);
+  box.elements.units.select();
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-post]'); if (b) askPosted(JSON.parse(b.dataset.post)); });
+
 // What you hold, valued now: typed in, or the positions your recorded trades add up to.
 async function stashPanel(names) {
   const source = localStorage.stashSource === 'ledger' ? 'ledger' : 'stash';
@@ -1316,6 +1371,7 @@ async function openItem(id, hours = 168) {
   try { [d, curve] = await Promise.all([api(withLeague('/api/item', { id, hours, share: state.share })), api(`/api/curve?id=${encodeURIComponent(id)}`)]); }
   catch (err) { drawer.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
   const s = d.series, row = (state.market || []).find(r => r.id === s.id) || {};
+  drawer.dataset.item = s.id;  // so a recorded order knows whether this panel shows its item
   const div = state.unit === 'divine', conv = (arr) => arr.map((v, i) => v == null ? null : div ? v / s.bridge[i] : v);
   const yf = x => fmt(x) + (div ? ' d' : ' c');
   drawer.innerHTML = `<button class="btn ghost close" title="Close (Esc)">✕</button>
@@ -1349,7 +1405,7 @@ async function openItem(id, hours = 168) {
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order">${marketTag(p.kind)}
       <div class="big">≈ ${money(p.profit_per_hour)} <span class="muted small">/ hour · ${pct(p.margin)} margin</span></div>
-      <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
+      <div class="num small plan-orders"><div>Buy: ${order(p.buy_order, true)}${postedLine(p, 'buy', d.orders)}</div><div>Sell: ${order(p.sell_order, false)}${postedLine(p, 'sell', d.orders)}</div></div>
       <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour · one lot every ${dur(p.hours_per_lot)}<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos${replayRate(p.replay) ? ` (${replayRate(p.replay)})` : ''}, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}${p.slow ? `<br><span class="gold">⚠ ${esc(p.slow)}</span>` : ''}</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
