@@ -207,6 +207,20 @@ def test_a_capped_order_never_states_more_than_two_percent_worse_than_its_limit(
     assert sim.position[0] == 2 and sim.sales[0] == 0
 
 
+def test_swing_keeps_its_cost_floor_on_the_price_a_whole_lot_sale_states(monkeypatch):
+    """Rounding a whole-lot order may move it 2% either way. Swing never offers below cost plus its margin,
+    and that has to hold for the price the posted order states, or a 2% flip rounds to nothing."""
+    # Levels fixed at 3.31 to buy and 3.38 to sell, a 2.1% margin. The buy posts "10 for 3" (3.333) and fills
+    # at hour 1. The floor is 3.333 * 1.02 = 3.40, which rounds back to "10 for 3": a sale at cost. The floor
+    # lifts the limit so the sale posts "7 for 2" (3.5) instead, which the 3.36 averages never reach.
+    monkeypatch.setattr(backtest.Context, "swing",
+                        lambda ctx, leg, reach: np.log(np.where(reach < 0.5, 3.31, 3.38) / ctx.fair))
+    sim = backtest.Simulation(tiny_panel([3.35, 3.30] + [3.36] * 6), capital=1000, participation=1.0, whole_lots=True)
+    sim.run(backtest.Swing(top=1, sell_leg="r", min_margin=0.02, warmup=0))
+    assert sim.position[0] == 15, "five lots of 'ten for three' bought, 50 Chaos at 5% of the bankroll"
+    assert sim.sales[0] == 0, "and none sold at cost"
+
+
 def test_a_purse_too_small_for_one_lot_posts_nothing():
     sim = backtest.Simulation(tiny_panel([10, 9, 9, 9]), capital=5, participation=1.0, whole_lots=True)
     result = sim.run(Script({0: [("buy", 5, 9.5)]}))

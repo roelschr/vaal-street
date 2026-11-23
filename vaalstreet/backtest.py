@@ -257,6 +257,26 @@ class Context:
     def bridge(self) -> float:
         return float(self._sim.panel.bridge[self.t])
 
+    @property
+    def whole_lots(self) -> bool:
+        return self._sim.whole_lots
+
+    def stated_sell(self, leg: str, limit: np.ndarray) -> np.ndarray:
+        """The Chaos price a sale at each limit would state, for the items held now.
+
+        With whole lots that is the price of the ratio the order posts, up to `pricing.LOT_TOLERANCE`
+        either side of the limit, and NaN where none would be posted; without, the limit itself."""
+        limit = np.asarray(limit, dtype=float)
+        if not self.whole_lots:
+            return limit
+        unit = self.bridge if leg == "b" else 1.0
+        out = np.full(limit.shape, np.nan)
+        for i in np.flatnonzero(np.isfinite(limit) & (limit > 0)):
+            pair = _lot("sell", float(limit[i]) / unit, math.inf, math.floor(self._sim.position[i] + 1e-9))
+            if pair is not None:
+                out[i] = pair[0] / pair[1] * unit
+        return out
+
     # ----- the account
     @property
     def cash(self) -> float:
@@ -786,18 +806,12 @@ class Simulation:
         # The same orders the Flips page posts: the smallest ratio within `pricing.LOT_TOLERANCE` of the
         # limit, rounded either way. The fill is judged at the price the ratio states, not at the limit.
         if side == "buy":
-            pair = _fit_ratio(limit / unit, cash / unit)
+            pair = _lot("buy", limit / unit, cash / unit)
         else:
-            pair = _fit_ratio(limit / unit, math.inf, math.floor(self.position[item] + 1e-9))
+            pair = _lot("sell", limit / unit, math.inf, math.floor(self.position[item] + 1e-9))
         if pair is None:
             return None
         currency, items = pair
-        # Under a cap (little cash, few items held) lot_ratio falls back to the closest ratio that fits,
-        # which can sit far off the limit. Never post one more than the tolerance worse than the limit
-        # asked for; the slack covers the 7-digit key `_fit_ratio` caches on.
-        worse = currency / items / (limit / unit) - 1
-        if (worse if side == "buy" else -worse) > pricing.LOT_TOLERANCE + 1e-6:
-            return None
         held = units if side == "buy" else min(units, self.position[item])
         lots = math.floor(held / items + 1e-9)
         if side == "buy":
@@ -903,6 +917,19 @@ def _fit_ratio(price: float, max_currency: float, max_items: float = math.inf) -
     return _fit_cached(float(f"{price:.7g}"), int(min(max_currency, 1e12)), int(min(max_items, 1e12)))
 
 
+def _lot(side: str, price: float, max_currency: float, max_items: float = math.inf) -> tuple[int, int] | None:
+    """The (currency, items) ratio a whole-lot order at `price` posts, or None if it posts nothing.
+
+    Under a cap (little cash, few items held) lot_ratio falls back to the closest ratio that fits,
+    which can sit far off the price. An order never states more than `pricing.LOT_TOLERANCE` worse
+    than its limit; the slack covers the 7-digit key `_fit_ratio` caches on."""
+    pair = _fit_ratio(price, max_currency, max_items)
+    if pair is None:
+        return None
+    worse = pair[0] / pair[1] / price - 1
+    return None if (worse if side == "buy" else -worse) > pricing.LOT_TOLERANCE + 1e-6 else pair
+
+
 # ------------------------------------------------------------------ strategies
 def _liquid(ctx: Context, top: int, min_active: float = 0.5, window: int = 48) -> np.ndarray:
     """Boolean mask of the `top` items by traded value over the trailing window that print regularly."""
@@ -980,6 +1007,12 @@ class Swing:
         # A position that still has not sold after `stop_days` is cut at market instead.
         floor = np.nan_to_num(ctx.average_cost) * (1 + self.min_margin)
         limit = np.where(held, np.maximum(np.where(np.isfinite(sell), sell, fair), floor), np.nan)
+        if ctx.whole_lots:
+            # A whole-lot order states a price up to `pricing.LOT_TOLERANCE` either side of its limit. Where
+            # that would sell below the floor, lift the limit so that any ratio it may post clears the floor.
+            with np.errstate(invalid="ignore"):
+                low = ctx.stated_sell(self.sell_leg, limit) < floor
+            limit = np.where(low, floor / (1 - pricing.LOT_TOLERANCE), limit)
         ctx.quote_sells(self.sell_leg, np.where(stale, 0.0, limit), np.where(held, ctx.position, 0.0))
 
 
