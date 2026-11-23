@@ -12,7 +12,7 @@ import pytest
 
 from conftest import NEW, SCRAP, SCRAP_PREMIUM
 from vaalstreet import backtest, check, pricing
-from vaalstreet.desk import SWING_WINDOW, Desk
+from vaalstreet.desk import LOT_WINDOW, SWING_WINDOW, Desk
 from vaalstreet.panel import weighted_quantile
 
 
@@ -74,6 +74,82 @@ def test_leg_deviation_is_causal():
     assert np.array_equal(a[:200], b[:200], equal_nan=True), "the future must not move the past"
     # Clipped around the market's own value: a 2.8x market is not cut down to 1.5x the blended value.
     assert np.nanmedian(np.exp(a[50:])) == pytest.approx(2.8, rel=0.1)
+
+
+def test_every_plan_says_how_long_one_lot_takes(desk):
+    """Known answer: Test Scrap is worth about 2 Chaos and about 5.6 Chaos in its Divine market, so its
+    Chaos-market lot is one scrap and its Divine-market lot is one Divine's worth, bridge / price scraps."""
+    plans = desk.flips(min_margin=0.0)
+    assert plans
+    for plan in plans:
+        assert plan["hours_per_lot"] == pytest.approx(plan["lot_units"] / plan["units_per_hour"], rel=0.01)  # both rounded
+        assert plan["hours_per_lot"] <= LOT_WINDOW
+    scrap = {p["kind"]: p for p in plans if p["id"] == SCRAP}
+    assert scrap["chaos"]["lot_units"] == 1
+    assert scrap["cross"]["lot_units"] == pytest.approx(desk.bridge / scrap["cross"]["sell"], rel=1e-3)
+    # The Divine-only flip buys low and sells high in the same market: the cheaper buy sets the lot.
+    assert scrap["divine"]["lot_units"] == pytest.approx(desk.bridge / scrap["divine"]["buy"], rel=1e-3)
+    assert scrap["cross"]["slow"] is None, "a lot that fills within a sitting carries no warning"
+
+
+def test_a_level_too_slow_to_fill_one_lot_is_not_a_plan(desk):
+    """Thin the scrap's Divine market until only the most patient level fills one lot within two days.
+
+    Known answer: hours per lot = lot / (share x reach x units per hour). With the market trading
+    lot / 2 units an hour at a 10% share, the 50% level takes 2 / (0.1 x 0.5) = 40 hours and the 35% level
+    2 / (0.1 x 0.35) = 57 hours, more than the 48 hours the levels were read from. (The lot differs a
+    little between levels, because each level sells at its own price; hence the tolerance.)
+    """
+    i = desk.panel.index(SCRAP)
+    leg = desk.legs["b"]
+    lot = next(p for p in desk.flips(min_margin=0.0) if p["id"] == SCRAP and p["kind"] == "cross")["lot_units"]
+    flow, value = leg.flow[i], leg.value_24h[i]
+    try:
+        leg.flow[i], leg.value_24h[i] = lot / 2, 30 * desk.bridge
+        desk._cache.clear()
+        cross = next(p for p in desk.flips(min_margin=0.0) if p["id"] == SCRAP and p["kind"] == "cross")
+        assert cross["reach"] == 0.5
+        assert cross["hours_per_lot"] == pytest.approx(40, rel=0.1)
+        assert cross["slow_market"] == "Divine"
+        assert cross["slow"] == (f"Slow: at your share of the trade, one lot fills about every {cross['hours_per_lot']:.0f} hours. "
+                                 "Its Divine market traded about 30 Divines in the last day.")
+        # Thinner still, and no level fills a lot in two days: the Divine-market plans are gone, the Chaos one stays.
+        leg.flow[i] = lot / 4
+        desk._cache.clear()
+        assert {p["kind"] for p in desk.flips(min_margin=0.0) if p["id"] == SCRAP} == {"chaos"}
+    finally:
+        leg.flow[i], leg.value_24h[i] = flow, value
+        desk._cache.clear()
+
+
+def test_a_slow_plan_names_its_market_in_plain_words(desk):
+    slow = {"hours_per_lot": 12.4, "slow_market": "Chaos", "slow_market_value_24h": 1234.0}
+    assert desk._slow(slow) == ("Slow: at your share of the trade, one lot fills about every 12 hours. "
+                                "Its Chaos market traded about 1,234 Chaos in the last day.")
+    assert desk._slow(slow | {"slow_market": "Divine", "slow_market_value_24h": desk.bridge}) == (
+        "Slow: at your share of the trade, one lot fills about every 12 hours. "
+        "Its Divine market traded about 1 Divine in the last day.")
+    # Under ten, one decimal place and never an exponent: 9.7 Divines, not "1e+01".
+    assert "traded about 9.7 Divines in" in desk._slow(slow | {"slow_market": "Divine", "slow_market_value_24h": 9.7 * desk.bridge})
+    assert "traded about 0.5 Divines in" in desk._slow(slow | {"slow_market": "Divine", "slow_market_value_24h": 0.5 * desk.bridge})
+    assert desk._slow(slow | {"hours_per_lot": 6.0}) is None, "one lot within a sitting is not slow"
+    # Just past a sitting says so, not "every 6 hours".
+    assert "one lot fills about every 6.4 hours" in desk._slow(slow | {"hours_per_lot": 6.4})
+
+
+def test_a_plan_cut_to_a_bankroll_times_its_own_lot(desk):
+    """With a bankroll the orders are re-cut to whole numbers at slightly different prices; the lot and
+    its time follow those prices, not the uncut plan's."""
+    plans = desk.flips(min_margin=0.0, bankroll=500.0)
+    assert plans
+    for plan in plans:
+        buy_unit = desk.bridge if plan["kind"] == "divine" else 1.0
+        sell_unit = desk.bridge if plan["kind"] != "chaos" else 1.0
+        lot = max(1.0, buy_unit / plan["buy"], sell_unit / plan["sell"])
+        assert plan["lot_units"] == pytest.approx(lot, rel=1e-3)
+        assert plan["hours_per_lot"] == pytest.approx(lot / plan["units_per_hour"], rel=1e-2)
+        assert plan["hours_per_lot"] <= LOT_WINDOW
+        assert (plan["slow"] is None) == (plan["hours_per_lot"] <= 6)
 
 
 def test_a_divine_market_far_above_the_chaos_market_is_flagged_not_dropped(desk):

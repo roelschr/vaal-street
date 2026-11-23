@@ -167,8 +167,8 @@ def _flips(args: argparse.Namespace) -> None:
           + (", or what your own orders measured (see `fills`)" if learned else ""))
     _table(plans, [("name", "Item", ""), ("kind", "Plan", ""), ("buy", "Buy", ".4g"), ("sell", "Sell", ".4g"),
                    ("margin", "Margin", ".1%"), ("reach", "Reach", ".0%"), ("buy_text", "Buy order", ""),
-                   ("sell_text", "Sell order", ""), ("profit_per_hour", "c/hour", ",.0f"),
-                   ("capital", "Capital", ",.0f")], args.rows)
+                   ("sell_text", "Sell order", ""), ("hours_per_lot", "Hours/lot", ".2g"),
+                   ("profit_per_hour", "c/hour", ",.0f"), ("capital", "Capital", ",.0f")], args.rows)
 
 
 def _rehearse(args: argparse.Namespace) -> None:
