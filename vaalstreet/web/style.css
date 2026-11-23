@@ -275,6 +275,12 @@ body.practice.hideout{padding-top:0}
 body.hideout #practice{position:sticky}
 .violet{color:var(--violet)}
 .pend{position:fixed;left:50%;top:90px;transform:translateX(-50%);width:min(720px,94vw);z-index:45;box-shadow:0 18px 60px #000a}
+/* "Posted…" under a plan's order: quiet until hovered, so the table stays a table of numbers. */
+.post{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:2px;white-space:nowrap}
+.post .btn{padding:1px 6px}
+.plan-orders>div{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.plan-orders .post{margin-top:0}
+.posted{width:min(560px,94vw)}
 
 /* Motion. Short and one-off: a page fades in when you open it, panels slide in when they open,
    gold answers the pointer, and a price flashes when a new hour moves it. Nothing loops while the

@@ -19,8 +19,6 @@ def test_ledger_average_cost_and_realised_profit(tmp_path):
     pos = ledger.positions("L")["orb"]
     assert pos["units"] == 15 and pos["cost"] == pytest.approx(45.0) and pos["realized"] == pytest.approx(10.0)
     with pytest.raises(ValueError):
-        ledger.add_trade("L", "orb", "sell", 16, 5.0)
-    with pytest.raises(ValueError):
         ledger.add_trade("L", "orb", "buy", -1, 5.0)
     assert ledger.positions("Other") == {}
     trade_id = ledger.trades("L")[-1]["id"]
@@ -81,7 +79,7 @@ def test_api_backtest_and_ledger_round_trip(server):
     assert call(f"{server}/api/backtest", {"strategy": "swing", "schedule": "whenever"})[0] == 400
 
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9})[0] == 200
-    assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 99, "price": 9})[0] == 400
+    assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 0, "price": 9})[0] == 400
     assert call(f"{server}/api/watch", {"item": ITEM})[0] == 200
     assert call(f"{server}/api/alert", {"item": ITEM, "field": "price", "op": "above", "threshold": 1})[0] == 200
     ledger = call(f"{server}/api/ledger")[1]
@@ -92,16 +90,71 @@ def test_api_backtest_and_ledger_round_trip(server):
 
 
 
+def test_api_sale_turns_in_the_card_set_it_needs(server):
+    """The synthetic archive's Test Card: 5 make 1 Test Orb. Known answers: 6 cards bought at 5; selling 1 orb at
+    20 turns in 5 of them (25), so it realises −5 and 1 card stays. A second orb has no cards behind it: it is
+    uncovered and realises its whole 20."""
+    from vaalstreet.ledger import recipe_key
+
+    assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 6, "price": 5})[0] == 200
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
+    assert status == 200 and answer["trade"]["uncovered"] is None
+    [merge] = answer["trade"]["merges"]
+    assert merge["name"] == "Test Orb" and merge["gives"] == 1
+    assert merge["inputs"] == [{"id": CARD, "name": "Test Card", "units": 5}]
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
+    assert status == 200 and answer["trade"]["merges"] == [] and answer["trade"]["uncovered"] == 1
+    ledger = call(f"{server}/api/ledger")[1]
+    second, first = ledger["trades"][:2]  # newest first
+    assert [m["id"] for m in first["merges"]] == [merge["id"]] and second["uncovered"] == 1
+    assert ledger["made"][0]["sale"] == first["id"]
+    orb = next(p for p in ledger["positions"] if p["id"] == ITEM)
+    assert orb["realized"] == pytest.approx(-5 + 20)
+    assert next(p for p in ledger["positions"] if p["id"] == CARD)["units"] == 1
+    # The form's prefill. Test Shards make the orb too; the sale used the cards because only they were held.
+    assert {"inputs": [["Test Card", 5]], "gives": 1} in ledger["made_from"]["Test Orb"]
+    assert {"inputs": [["Test Shard", 20]], "gives": 1} in ledger["made_from"]["Test Orb"]
+    # Deleting the sale takes its merge along; "merge": false, or a set marked as not working, merges nothing.
+    for sale in (second, first):
+        assert call(f"{server}/api/trade", {"delete": sale["id"]})[0] == 200
+    assert call(f"{server}/api/ledger")[1]["made"] == []
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20, "merge": False})
+    assert answer["trade"]["merges"] == [] and call(f"{server}/api/trade", {"delete": answer["trade"]["id"]})[0] == 200
+    assert call(f"{server}/api/recipe_check", {"key": recipe_key("set", [CARD, ITEM]), "status": "failed"})[0] == 200
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
+    assert answer["trade"]["merges"] == [] and answer["trade"]["uncovered"] == 1
+
+
+def test_api_sale_of_divines_turns_nothing_in(server):
+    """Divines are money: selling ones you looted must not turn in cards you bought to trade. A recipe of your
+    own that makes them still prefills the form."""
+    assert call(f"{server}/api/recipe", {"kind": "recipe", "inputs": [["Test Card", 3]], "output": "Divine Orb"})[0] == 200
+    assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 3, "price": 5})[0] == 200
+    status, answer = call(f"{server}/api/trade", {"item": "Divine Orb", "side": "sell", "units": 1, "price": 150})
+    assert status == 200 and answer["trade"]["merges"] == [] and answer["trade"]["uncovered"] == 1
+    assert call(f"{server}/api/ledger")[1]["made_from"]["Divine Orb"] == [{"inputs": [["Test Card", 3]], "gives": 1}]
+
+
+def test_api_order_fill_turns_in_the_card_set_it_needs(server):
+    assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 10, "price": 5})[0] == 200
+    assert call(f"{server}/api/order", {"item": ITEM, "side": "sell", "market": "chaos", "currency_units": 30,
+                                        "item_units": 1, "units": 2})[0] == 200
+    order = call(f"{server}/api/ledger")[1]["orders"][0]
+    status, answer = call(f"{server}/api/order", {"fill": order["id"], "units": 1})
+    assert status == 200 and answer["trade"]["merges"][0]["inputs"][0]["units"] == 5
+    # "merge": false, as for a typed sale: the orb was looted, so the other 5 cards stay held.
+    status, answer = call(f"{server}/api/order", {"fill": order["id"], "units": 1, "merge": False})
+    assert status == 200 and answer["trade"]["merges"] == [] and answer["trade"]["uncovered"] == 1
+    assert next(p for p in call(f"{server}/api/ledger")[1]["positions"] if p["id"] == CARD)["units"] == 5
+
+
 def test_api_records_an_item_you_made_so_it_can_be_sold(server):
     # 6 cards bought at 5 make 2 orbs that cost 15 each; one sold at 20 realises 5.
     assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 6, "price": 5})[0] == 200
-    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
-    assert status == 400 and "Record items you made" in answer["error"]
-    status, answer = call(f"{server}/api/made", {"inputs": [["Test Card", 7]], "output": "Test Orb"})
-    assert status == 400 and "Cannot use 7 Test Card: the ledger holds 6" in answer["error"]
     assert call(f"{server}/api/made", {"inputs": [["No Such Thing", 1]], "output": ITEM})[0] == 400
     assert call(f"{server}/api/made", {"inputs": [["test card", 6]], "output": ITEM, "gives": 2, "note": "set"})[0] == 200
-    assert call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})[0] == 200
+    status, answer = call(f"{server}/api/trade", {"item": ITEM, "side": "sell", "units": 1, "price": 20})
+    assert status == 200 and answer["trade"]["merges"] == [], "the orbs were made already: nothing to merge"
     ledger = call(f"{server}/api/ledger")[1]
     [made] = ledger["made"]
     assert made["name"] == "Test Orb" and made["gives"] == 2 and made["note"] == "set"
@@ -149,8 +202,9 @@ def test_api_edits_a_trade(server):
     ledger = call(f"{server}/api/ledger")[1]
     assert ledger["trades"][0]["side"] == "sell" and ledger["positions"][0]["units"] == 6
     assert ledger["positions"][0]["realized"] == pytest.approx(4 * (11 - 9))
-    status, answer = call(f"{server}/api/trade", {"edit": wrong["id"], "units": 99})
-    assert status == 400 and "more than the ledger held" in answer["error"]
+    right = ledger["trades"][1]
+    status, answer = call(f"{server}/api/trade", {"edit": right["id"], "units": 1})  # the sale of 4 would lose 3
+    assert status == 400 and "would leave a sale selling more than the ledger held" in answer["error"]
 
 def test_server_refuses_other_sites_and_serves_the_app(server):
     assert call(f"{server}/api/status", headers={"Origin": "https://evil.example"})[0] == 403
@@ -336,3 +390,39 @@ def test_the_sync_thread_warms_the_slow_answers(flat_root, tmp_path):
     app.api_flips({})
     app.api_ladder({})
     assert set(app.desk()._replays) == warmed and app.desk() is desk
+
+
+def test_a_plan_carries_what_recording_its_order_needs(server):
+    """The Flips page records an order you posted from the plan's own row: the item, the side, the ratio and
+    the market its currency names. Known answers: both orders then come back with the plan (`orders`), so the
+    page can say "posted"; an order at exactly the plan's ratio needs no re-price; a filled or cancelled order
+    is no longer on the exchange, so it is no longer listed."""
+    flips = call(f"{server}/api/flips")[1]
+    assert flips["orders"] == []
+    plan = flips["flips"][0]
+    for side in ("buy", "sell"):
+        order = plan[f"{side}_order"]
+        assert call(f"{server}/api/order", {
+            "item": plan["id"], "side": side, "market": order["currency"].lower(),
+            "currency_units": order["currency_units"], "item_units": order["item_units"],
+            "units": 4 * order["item_units"]})[0] == 200
+    posted = call(f"{server}/api/flips")[1]["orders"]
+    assert [(o["item"], o["side"], o["units"], o["filled"]) for o in posted] == [
+        (plan["id"], side, 4 * plan[f"{side}_order"]["item_units"], 0) for side in ("buy", "sell")]
+    assert [(o["currency_units"], o["item_units"], o["market"]) for o in posted] == [
+        (plan[f"{side}_order"]["currency_units"], plan[f"{side}_order"]["item_units"],
+         plan[f"{side}_order"]["currency"].lower()) for side in ("buy", "sell")]
+    advice = {o["side"]: o["advice"] for o in call(f"{server}/api/ledger")[1]["orders"]}
+    assert advice == {"buy": "keep", "sell": "keep"}
+    # The item's panel lists the orders of its own item only.
+    assert [o["id"] for o in call(f"{server}/api/item?id={plan['id']}")[1]["orders"]] == [o["id"] for o in posted]
+    other = OTHER if plan["id"] != OTHER else ITEM
+    assert call(f"{server}/api/item?id={other}")[1]["orders"] == []
+    # A part-filled order is still posted; a filled one and a cancelled one are not.
+    buy, sell = posted
+    assert call(f"{server}/api/order", {"fill": buy["id"], "units": plan["buy_order"]["item_units"]})[0] == 200
+    assert call(f"{server}/api/order", {"id": sell["id"], "status": "cancelled"})[0] == 200
+    [left] = call(f"{server}/api/flips")[1]["orders"]
+    assert left["id"] == buy["id"] and left["filled"] == plan["buy_order"]["item_units"]
+    assert call(f"{server}/api/order", {"fill": buy["id"], "units": 3 * plan["buy_order"]["item_units"]})[0] == 200
+    assert call(f"{server}/api/flips")[1]["orders"] == []
