@@ -25,10 +25,21 @@ without typing. One item can sit in several stacks, and the copied text does not
 came from. The rule is the owner's: a copy is compared with the copy just before it. The same item
 with a different count is another stack, and adds. The same item with the same count is the same
 stack pressed twice, and changes nothing. Any other copy sets the item's line to the count read.
-The rule has two gaps: two stacks of one item with equal counts count once, and one stack copied
-twice with its count changed in between is added to itself. The console prints the sum on every
-write so that both are seen. "Just before" is also bounded in time (`ROW_SECONDS`): checking one
-currency again an hour later must replace its count, not add to it.
+"Just before" is also bounded in time (`ROW_SECONDS`): checking one currency again an hour later
+must replace its count, not add to it.
+
+A player who also plays maps drops loot into the stash all the time, so the same pile is copied
+again with a new count far more often than a second stack is. The copied text tells the two apart
+in the common case: it gives the size of a full stack after the slash ("2,448/40"), and a count
+above that can only be a pile in a tab with one space for the item, such as the currency tab. Such
+a pile always sets the line and never adds. Counts up to a full stack keep the rule above. So
+count the pile first and loose stacks after it: 2,448, then 12 from the inventory, makes 2,460,
+and once the 12 are dropped into the pile, copying the pile at 2,460 says 2,460.
+
+What stays wrong, and why the console prints the sum on every write: two stacks of one item with
+equal counts count once; a stack of up to a full stack copied twice with its count changed in
+between is added to itself; two piles of one item in two tabs count as the later one; and a loose
+stack copied before the pile is dropped when the pile is copied.
 
 The parser and `handle_copy` are plain functions over an injected clipboard, so the tests run
 without Windows. The Windows calls go through `ctypes` from the standard library and are resolved
@@ -70,6 +81,12 @@ class NotAnItem(ValueError):
 class Stack:
     item: str
     units: int
+    full: int | None = None  # the size of a full stack, when the copied text gave it
+
+    @property
+    def pile(self) -> bool:
+        """More than a full stack: it lies in a tab with one space for the item, not in a stack."""
+        return self.full is not None and self.units > self.full
 
     def describe(self) -> str:
         """What was read, in a player's words, so a wrong item or count is easy to spot."""
@@ -91,15 +108,16 @@ def parse_item(text: str) -> Stack:
     head = [ln for ln in head if ln and not ln.startswith(RARITY)]
     if not head:
         raise NotAnItem("no item name")
-    units = 1
+    units, full = 1, None
     for line in lines:
         if line.startswith(STACK):
-            held = re.sub(r"\D", "", line[len(STACK):].split("/")[0])
+            held, _, of = line[len(STACK):].partition("/")
+            held, of = re.sub(r"\D", "", held), re.sub(r"\D", "", of)
             if not held or int(held) < 1:
                 raise NotAnItem("no stack size")
-            units = int(held)
+            units, full = int(held), int(of) if of and int(of) > 0 else None
             break
-    return Stack(head[0], units)
+    return Stack(head[0], units, full)
 
 
 # ------------------------------------------------------------------ wording
@@ -172,6 +190,8 @@ class Tally:
             return stack.units, None
         if last[1] == stack.units:
             return None, last[2]
+        if stack.pile:
+            return stack.units, None  # the pile counted again, with loot in it or an order out of it
         return last[2] + stack.units, last[2]
 
     def done(self, stack: Stack, total: int) -> None:
@@ -205,6 +225,8 @@ def keep(stack: Stack, league: str, desk, tally: Tally, say: Callable[[str], Non
         was = out.get("was")
         if was is not None and float(was) != total:
             words += f" It replaces the {float(was):,.10g} the list held."
+        if stack.pile:
+            words += f" More than a full stack of {stack.full:,}, so it is the pile in your tab: it never adds."
     if out.get("rehearsal"):
         words += " This is the practice stash: a rehearsal is running."
     say(f"    {words}")

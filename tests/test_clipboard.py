@@ -50,6 +50,16 @@ def test_parser_reads_copied_item_text(text, expected):
     assert (stack.item, stack.units) == expected
 
 
+def test_parser_tells_a_pile_from_a_stack():
+    # "held/full stack": more than a full stack can only lie in a tab with one space for the item.
+    scrolls, cards = parse_item(SCROLLS), parse_item(CARDS)
+    assert (scrolls.full, scrolls.pile) == (40, True) and (cards.full, cards.pile) == (8, False)
+    assert parse_item(SCROLLS.replace("2,448/40", "40/40")).pile is False  # a full stack is still a stack
+    assert parse_item(RARE).full is None and parse_item(RARE).pile is False
+    no_size = parse_item(SCROLLS.replace("2,448/40", "2,448"))
+    assert (no_size.units, no_size.full, no_size.pile) == (2448, None, False)
+
+
 @pytest.mark.parametrize("text", [
     "", "hunter2", "my password is Item Class: Stackable Currency",  # item text only at the very start
     "Item Class: Stackable Currency\nRarity: Currency\n",  # no name
@@ -198,6 +208,7 @@ def orbs(count):
 
 
 def test_tally_adds_different_counts_in_a_row_and_nothing_else():
+    # No full-stack size in the copied text: the owner's plain rule, whatever the counts.
     now = [0.0]
     tally = Tally(clock=lambda: now[0])
 
@@ -225,38 +236,66 @@ def test_tally_adds_different_counts_in_a_row_and_nothing_else():
     assert copy("Chaos Orb", 30) == (650, 620)
 
 
+def test_a_pile_sets_the_line_so_loot_never_doubles_it():
+    # A full stack of Chaos is 20. The sequence a player who also plays maps goes through:
+    tally = Tally()
+
+    def copy(units, full=20):
+        stack = Stack("Chaos Orb", units, full)
+        total, before = tally.plan(stack)
+        tally.done(stack, total if total is not None else before)
+        return total, before
+
+    assert copy(2448) == (2448, None)  # the pile in the currency tab
+    assert copy(12) == (2460, 2448)  # a stack still in the inventory: another stack, it adds
+    assert copy(2460) == (2460, None)  # the 12 dropped into the pile, the pile copied again: 2,460, not 4,920
+    assert copy(2460) == (None, 2460)  # pressed twice
+    assert copy(2500) == (2500, None)  # loot from the next map: the pile again, straight after
+    assert copy(2380) == (2380, None)  # an order took some
+    # Up to a full stack the plain rule still holds, in both its use and its gap.
+    assert copy(20) == (2400, 2380) and copy(7) == (2407, 2400)
+    # A loose stack counted before the pile is dropped when the pile is copied: count the pile first.
+    tally.forget()
+    assert copy(12) == (12, None) and copy(2448) == (2448, None)
+    # Without the full-stack size nothing is known to be a pile, and different counts add as before.
+    tally.forget()
+    assert copy(500, None) == (500, None) and copy(620, None) == (1120, 500)
+
+
 def test_stash_switch_writes_the_copied_stack_and_prints_the_sum():
     desk, tally, said = FakeDesk(stash={"was": 80.0}), Tally(), []
     clip = FakeClip(text=orbs(100))
     handle_copy(clip, 7, desk, said.append, tally)
     assert clip.reads == 1 and desk.kept == [("Test Orb", 100, "New")]
-    assert any("Stash: Test Orb set to 100. It replaces the 80 the list held." in line for line in said)
+    assert any("Stash: Test Orb set to 100. It replaces the 80 the list held. More than a full stack of 20, "
+               "so it is the pile in your tab: it never adds." in line for line in said)
     assert any("Your stash list: 2 lines, worth 3 Divine (450 Chaos)." in line for line in said)
     assert "Stash: Test Orb set to 100." in desk.events[-1][1], "the hideout window hears of the write too"
 
-    clip = FakeClip(text=orbs(40))
+    clip = FakeClip(text=orbs(12))  # up to a full stack of 20: a stack somewhere else
     handle_copy(clip, 7, desk, said.append, tally)
-    assert clip.reads == 1 and desk.kept[-1] == ("Test Orb", 140, "New")
-    assert any("Stash: Test Orb 100 + 40 = 140 (another stack)." in line for line in said)
+    assert clip.reads == 1 and desk.kept[-1] == ("Test Orb", 112, "New")
+    assert any("Stash: Test Orb 100 + 12 = 112 (another stack)." in line for line in said)
 
     said.clear()
-    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)  # the same stack pressed twice
-    assert len(desk.kept) == 2 and any("Stash unchanged" in line and "stays at 140" in line for line in said)
+    handle_copy(FakeClip(text=orbs(12)), 7, desk, said.append, tally)  # the same stack pressed twice
+    assert len(desk.kept) == 2 and any("Stash unchanged" in line and "stays at 112" in line for line in said)
 
-    handle_copy(FakeClip(text=orbs(1500)), 7, desk, said.append, tally)
-    assert desk.kept[-1] == ("Test Orb", 1640, "New")
-    assert any("Stash: Test Orb 140 + 1,500 = 1,640 (another stack)." in line for line in said)
+    desk._stash = {"was": 112.0}
+    handle_copy(FakeClip(text=orbs(1500)), 7, desk, said.append, tally)  # the pile again, loot dropped in
+    assert desk.kept[-1] == ("Test Orb", 1500, "New")
+    assert any("Stash: Test Orb set to 1,500. It replaces the 112 the list held." in line for line in said)
 
 
 def test_a_failed_write_leaves_the_count_where_it_was():
     desk, tally, said = FakeDesk(), Tally(), []
     handle_copy(FakeClip(text=orbs(100)), 7, desk, said.append, tally)
     desk._stash = RuntimeError("Can't reach the desk")
-    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)
+    handle_copy(FakeClip(text=orbs(12)), 7, desk, said.append, tally)
     assert any("The stash was not changed: Can't reach the desk" in line for line in said)
     desk._stash = {}
-    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)  # copied again: the same sum is tried again
-    assert [k[1] for k in desk.kept] == [100, 140, 140]
+    handle_copy(FakeClip(text=orbs(12)), 7, desk, said.append, tally)  # copied again: the same sum is tried again
+    assert [k[1] for k in desk.kept] == [100, 112, 112]
 
 
 def test_an_unknown_item_writes_nothing_and_ends_the_row():
@@ -267,14 +306,14 @@ def test_an_unknown_item_writes_nothing_and_ends_the_row():
     assert handle_copy(clip, 7, desk, said.append, tally) is None
     assert clip.reads == 1 and len(desk.kept) == 1
     desk._worth = WORTH
-    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)
-    assert desk.kept[-1] == ("Test Orb", 40, "New"), "a copy came between, so this one sets the line"
+    handle_copy(FakeClip(text=orbs(12)), 7, desk, said.append, tally)
+    assert desk.kept[-1] == ("Test Orb", 12, "New"), "a copy came between, so this one sets the line"
     # The desk not answering is no copy in between: the next copy carries on with the count.
     desk._worth = screen.DeskUnreachable("Can't reach the desk")
     assert handle_copy(FakeClip(text=orbs(7)), 7, desk, said.append, tally) is None
     desk._worth = WORTH
     handle_copy(FakeClip(text=orbs(7)), 7, desk, said.append, tally)
-    assert desk.kept[-1] == ("Test Orb", 47, "New")
+    assert desk.kept[-1] == ("Test Orb", 19, "New")
 
 
 def test_copied_stacks_fill_the_stash_through_the_real_api(server):
@@ -282,10 +321,13 @@ def test_copied_stacks_fill_the_stash_through_the_real_api(server):
     assert call(f"{server}/api/stash", {"item": "Test Orb", "units": 80})[1]["was"] is None  # typed by hand first
     handle_copy(FakeClip(text=orbs(100)), 7, client, said.append, tally)
     assert any("It replaces the 80 the list held." in line for line in said)
-    handle_copy(FakeClip(text=orbs(40)), 7, client, said.append, tally)
-    handle_copy(FakeClip(text=orbs(40)), 7, client, said.append, tally)
+    handle_copy(FakeClip(text=orbs(12)), 7, client, said.append, tally)
+    handle_copy(FakeClip(text=orbs(12)), 7, client, said.append, tally)
     rows = call(f"{server}/api/stash")[1]["rows"]
-    assert [(r["name"], r["units"]) for r in rows] == [("Test Orb", 140)]
+    assert [(r["name"], r["units"]) for r in rows] == [("Test Orb", 112)]
+    # Loot dropped into the pile, the pile copied again straight after: the line is the pile, not a sum.
+    handle_copy(FakeClip(text=orbs(130)), 7, client, said.append, tally)
+    assert [r["units"] for r in call(f"{server}/api/stash")[1]["rows"]] == [130]
     assert any("Your stash list: 1 line, worth " in line for line in said)
 
 

@@ -491,6 +491,8 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
                   "item's line to the count read, replacing what the line held.")
             print(f"The same item copied again within {clipboard.ROW_SECONDS / 60:g} minutes with a different count "
                   "is another stack and adds; with the same count it is the same stack and changes nothing.")
+            print("A count above a full stack is the pile in a tab with one space for the item: it always sets the "
+                  "line, so loot dropped into it never doubles. Count the pile first, loose stacks after it.")
             print("To start an item's count over, copy another item first, or edit the line on the Ledger page.")
         else:
             print("Nothing is saved. Start with --stash to write copied stacks to your stash list.")
