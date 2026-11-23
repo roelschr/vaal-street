@@ -83,7 +83,8 @@ kbd{font:10.5px var(--mono);border:1px solid var(--line2);border-bottom-width:2p
 #top .stat b{font:500 14px var(--mono)}
 /* gold only for plain figures: a profit, a loss or the practice hour keeps its own colour */
 #top .stat b:not([class]),.kpi b:not([class]){color:var(--accent-hi)}
-#top .stat span:not(.cur){font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+/* the label under a figure; the 24h change and the orb inside the figure keep their own look */
+#top .stat span:not([class]){font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 #top .grow{flex:1}
 .sync{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--up);box-shadow:0 0 6px currentColor;color:var(--up)}
