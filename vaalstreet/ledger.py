@@ -1082,8 +1082,9 @@ def _history(db: sqlite3.Connection, league: str, until: tuple[int, int] | None 
     would sit.
 
     A new entry may be short itself, but neither it nor an edit or a delete may make another entry
-    short: that would change what an earlier record realised. Older files can hold short entries
-    already, and those must not block an unrelated correction, so callers compare before and after.
+    short, or short by more than it was: that would change what an earlier record realised. A sale of
+    loot is short by design, and an unrelated correction must not be blocked by it, so callers compare
+    each entry's units before and after (`_newly_short`).
 
     Trades and made items live in two tables, and a rehearsal stamps everything recorded in one
     practice hour with the same time, so the time alone cannot order "bought, merged, sold". A made
