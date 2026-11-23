@@ -172,26 +172,53 @@ def test_orders_stand_while_you_are_away():
 def test_whole_lots_fill_whole_items_at_the_ratio_the_order_states():
     sim = backtest.Simulation(tiny_panel([4, 3, 3, 3]), capital=1000, participation=1.0, whole_lots=True)
     result = sim.run(Script({0: [("buy", 25, 3.31)]}))
-    # 3.31 Chaos each becomes "33 Chaos for 10", a lot of ten: 25 wanted means two lots, 20 items at 3.30.
-    assert sim.position[0] == 20 and result.fills == 1
-    assert result.cash[1] == pytest.approx(1000 - 66)
-    assert sim.books["r"].buy_units[0] == 0, "the five items short of a lot were never posted"
+    # 3.31 Chaos each becomes "10 Chaos for 3" (3 for 1 is 9% off, 7 for 2 is 6% off, 10 for 3 is 0.7%), a
+    # lot of three: 25 wanted means eight lots, 24 items, at the 3.33 the order states.
+    assert sim.position[0] == 24 and result.fills == 1
+    assert result.cash[1] == pytest.approx(1000 - 80)
+    assert sim.books["r"].buy_units[0] == 0, "the one item short of a lot was never posted"
 
 
-def test_whole_lot_orders_never_state_a_worse_price_than_their_limit():
+def test_whole_lot_orders_state_the_smallest_ratio_within_two_percent():
+    """The backtest posts the orders the Flips page posts: the smallest ratio within 2% of the limit,
+    rounded either way, and it fills them at the price the ratio states."""
     from vaalstreet import pricing
 
     for limit in (3.31, 0.0937, 7.77, 1.234, 0.31, 151.5, 2.0 / 3):
-        c, i = pricing.fit_ratio(limit, 1000, side="buy")
-        assert c / i <= limit + 1e-12, f"a buy at {limit} posts {c}/{i}"
-        c, i = pricing.fit_ratio(limit, 1000, side="sell")
-        assert c / i >= limit - 1e-12, f"a sell at {limit} posts {c}/{i}"
-    # In the simulator: 3.31 is bought at "33 for 10" (3.30), and a sale at 3.31 is offered at or above it.
+        c, i = pricing.lot_ratio(limit, max_currency=1000)
+        assert abs(c / i / limit - 1) <= pricing.LOT_TOLERANCE, f"an order at {limit} posts {c}/{i}"
     sim = backtest.Simulation(tiny_panel([4, 3, 4, 4, 4]), capital=1000, participation=1.0, whole_lots=True)
-    sim.run(Script({0: [("buy", 25, 3.31)], 2: [("sell", 20, 3.31)]}))
-    # The sale rounds up to "53 for 16" (3.3125): one lot of 16 sells, four items stay.
+    sim.run(Script({0: [("buy", 25, 3.31)], 2: [("sell", 20, 3.5)]}))
+    # Bought 24 at "10 for 3"; the sale at 3.5 is "7 for 2", a lot of two: ten lots of 20 sell, four items stay.
     assert sim.position[0] == 4
-    assert sim.realized[0] == pytest.approx(16 * (53 / 16 - 3.30))
+    assert sim.realized[0] == pytest.approx(20 * (3.5 - 10 / 3))
+
+
+def test_a_capped_order_never_states_more_than_two_percent_worse_than_its_limit():
+    """With little cash, or few items held, the closest ratio that fits can sit far from the limit. Such an
+    order is not posted rather than posted at a price the strategy never asked for."""
+    # 5 Chaos cannot post "7 for 3" for a 2.3 limit; the closest that fits, "5 for 2", states 2.5, 8.7% more.
+    sim = backtest.Simulation(tiny_panel([3, 2, 2, 2]), capital=5, participation=1.0, whole_lots=True)
+    result = sim.run(Script({0: [("buy", 2, 2.3)]}))
+    assert result.fills == 0 and sim.position[0] == 0
+    # Two items held cannot post "13 for 5" for a 2.6 limit; "5 for 2" states 2.5, 3.8% less. Not posted.
+    sim = backtest.Simulation(tiny_panel([2, 2, 2.55, 2.55, 2.55]), capital=1000, participation=1.0, whole_lots=True)
+    sim.run(Script({0: [("buy", 2, 2.0)], 1: [("sell", 2, 2.6)]}))
+    assert sim.position[0] == 2 and sim.sales[0] == 0
+
+
+def test_swing_keeps_its_cost_floor_on_the_price_a_whole_lot_sale_states(monkeypatch):
+    """Rounding a whole-lot order may move it 2% either way. Swing never offers below cost plus its margin,
+    and that has to hold for the price the posted order states, or a 2% flip rounds to nothing."""
+    # Levels fixed at 3.31 to buy and 3.38 to sell, a 2.1% margin. The buy posts "10 for 3" (3.333) and fills
+    # at hour 1. The floor is 3.333 * 1.02 = 3.40, which rounds back to "10 for 3": a sale at cost. The floor
+    # lifts the limit so the sale posts "7 for 2" (3.5) instead, which the 3.36 averages never reach.
+    monkeypatch.setattr(backtest.Context, "swing",
+                        lambda ctx, leg, reach: np.log(np.where(reach < 0.5, 3.31, 3.38) / ctx.fair))
+    sim = backtest.Simulation(tiny_panel([3.35, 3.30] + [3.36] * 6), capital=1000, participation=1.0, whole_lots=True)
+    sim.run(backtest.Swing(top=1, sell_leg="r", min_margin=0.02, warmup=0))
+    assert sim.position[0] == 15, "five lots of 'ten for three' bought, 50 Chaos at 5% of the bankroll"
+    assert sim.sales[0] == 0, "and none sold at cost"
 
 
 def test_a_purse_too_small_for_one_lot_posts_nothing():
@@ -220,10 +247,11 @@ def test_a_divine_market_order_trades_whole_divines_at_the_fill_hours_divine_pri
 
     sim = backtest.Simulation(panel, capital=1000, participation=1.0, whole_lots=True)
     result = sim.run(BuyForDivines())
-    # 9.6 Chaos at 100 a Divine is 0.096 Divine each; rounded down within 10 Divines: "7 Divines for 73".
-    # Row 1 the Divine is 110, so the order stands at 10.55 Chaos each and the 9.0 average trades through it.
-    assert sim.position[0] == 73
-    assert result.cash[1] == pytest.approx(1000 - 7 * 110), "seven whole Divines, at the hour they are paid"
+    # 9.6 Chaos at 100 a Divine is 0.096 Divine each: "1 Divine for 10" is 4% off, "2 Divines for 21" 0.8%.
+    # 80 wanted is three lots, 63 items for 6 Divines. Row 1 the Divine is 110, so the order stands at
+    # 10.48 Chaos each and the 9.0 average trades through it.
+    assert sim.position[0] == 63
+    assert result.cash[1] == pytest.approx(1000 - 6 * 110), "six whole Divines, at the hour they are paid"
 
 
 class Requote:
@@ -253,8 +281,8 @@ def test_a_whole_lot_requote_that_rounds_to_the_standing_order_is_not_a_new_post
 
     sim = backtest.Simulation(tiny_panel([4] * 4), capital=1000, whole_lots=True, gold_per_unit=3)
     result = sim.run(Same())
-    # Both quotes become "33 Chaos for 10", two lots: 20 units posted once, 60 Gold.
-    assert result.gold.tolist() == [60, 60, 60, 60]
+    # Both quotes become "10 Chaos for 3", eight lots: 24 units posted once, 72 Gold.
+    assert result.gold.tolist() == [72, 72, 72, 72]
 
 
 def test_a_spent_gold_budget_stops_new_orders_but_standing_ones_still_fill():
