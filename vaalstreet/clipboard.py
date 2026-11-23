@@ -35,9 +35,9 @@ from typing import Callable
 # The game's copy key. Ctrl+Alt+C, the copy with advanced details, holds the same two keys and
 # copies the same header, so it counts too.
 COPY_KEY = "<ctrl>+c"
-# What the game's window is called: its window class, or failing that the start of its title.
+# The game's window class. Its title is not used: an Explorer window on the game's folder or a
+# browser tab about the game also starts with "Path of Exile", and a Ctrl+C there must not be read.
 GAME_CLASS = "POEWindowClass"
-GAME_TITLE = "Path of Exile"
 FIRST_LINE = "Item Class: "  # every copied item starts with this, in an English client
 RARITY = "Rarity: "
 STACK = "Stack Size: "
@@ -166,7 +166,9 @@ def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print) -> d
     if not clip.game_in_front():
         return None
     if not wait_changed(clip.sequence, since):
-        return None  # the game copied nothing: there was no item under the cursor
+        # The game copied nothing, so nothing is read. Said aloud, or a first try that fails is a riddle.
+        say("\nCtrl+C heard in game, but nothing was copied: is the cursor over an item?")
+        return None
     text = clip.read()
     try:
         stack = parse_item(text)
@@ -190,18 +192,23 @@ def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print) -> d
 
 # ------------------------------------------------------------------ Windows
 class WindowsClipboard:
-    """The Windows clipboard and the window in front, through `ctypes`; nothing to install."""
+    """The Windows clipboard and the window in front, through `ctypes`; nothing to install.
 
-    def __init__(self):
+    `user32` and `kernel32` are the two Windows libraries; the tests pass stand-ins that count calls.
+    By default each is loaded afresh, so the argument types set here do not change the shared
+    `ctypes.windll` objects other libraries (the hotkey listener among them) call through.
+    """
+
+    def __init__(self, user32=None, kernel32=None):
         import ctypes
         from ctypes import wintypes
 
         self._ctypes = ctypes
-        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32  # AttributeError off Windows
+        user32 = user32 or ctypes.WinDLL("user32")  # AttributeError off Windows
+        kernel32 = kernel32 or ctypes.WinDLL("kernel32")
         user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
         user32.GetForegroundWindow.restype = wintypes.HWND
         user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         user32.OpenClipboard.argtypes = [wintypes.HWND]
         user32.OpenClipboard.restype = wintypes.BOOL
         user32.GetClipboardData.argtypes = [wintypes.UINT]
@@ -221,10 +228,7 @@ class WindowsClipboard:
             return False
         name = self._ctypes.create_unicode_buffer(256)
         self._user32.GetClassNameW(window, name, 256)
-        if name.value == GAME_CLASS:
-            return True
-        self._user32.GetWindowTextW(window, name, 256)
-        return name.value.startswith(GAME_TITLE)
+        return name.value == GAME_CLASS
 
     def read(self) -> str:
         """The clipboard's text, read once. Empty when it holds no text."""

@@ -12,8 +12,10 @@ clipboard changed after the press.
 
 from __future__ import annotations
 
+import ctypes
 import sys
 import threading
+import types
 
 import pytest
 
@@ -132,7 +134,8 @@ def test_nothing_is_read_when_the_game_copied_nothing():
     # No item under the cursor: the clipboard never changes, so its old contents are never looked at.
     clip, desk, said = FakeClip(writes_after=None), FakeDesk(), []
     assert handle_copy(clip, 7, desk, said.append) is None
-    assert clip.reads == 0 and clip.looks > 1 and desk.asked == [] and desk.events == [] and said == []
+    assert clip.reads == 0 and clip.looks > 1 and desk.asked == [] and desk.events == []
+    assert len(said) == 1 and "nothing was copied" in said[0]
 
 
 def test_text_that_is_not_an_item_is_dropped_unseen():
@@ -179,6 +182,72 @@ def test_worth_in_words():
     # A long name gives way; the amount and the better market stay whole.
     title, _ = describe_worth(Stack("Awakened Unbound Ailments Support of the Long Name", 12345), WORTH)
     assert len(title) <= 60 and title.endswith("…: 6.67 Divine, 10% more for Divines") and title.startswith("12,345 Awakened")
+
+
+# ------------------------------------------------------------------ the Windows reader
+class Fn:
+    """A stand-in for one Windows function: counts its calls, and takes the type hints ctypes sets."""
+
+    def __init__(self, answer):
+        self.answer, self.calls = answer, 0
+
+    def __call__(self, *args):
+        self.calls += 1
+        return self.answer(*args) if callable(self.answer) else self.answer
+
+
+def windows(text=ORBS, window_class="POEWindowClass", opens=True, window=1234):
+    """`WindowsClipboard` over stand-in libraries, with the stand-ins to count calls on."""
+    held = ctypes.create_unicode_buffer(text or "")
+
+    def class_name(hwnd, buffer, size):
+        buffer.value = window_class
+        return len(window_class)
+
+    user32 = types.SimpleNamespace(
+        GetClipboardSequenceNumber=Fn(41), GetForegroundWindow=Fn(window), GetClassNameW=Fn(class_name),
+        OpenClipboard=Fn(opens), GetClipboardData=Fn(99 if text is not None else 0), CloseClipboard=Fn(1))
+    # `held` rides along so the text stays in memory for as long as the stand-in points at it.
+    kernel32 = types.SimpleNamespace(GlobalLock=Fn(ctypes.addressof(held)), GlobalUnlock=Fn(1), held=held)
+    return clipboard.WindowsClipboard(user32, kernel32), user32, kernel32
+
+
+def test_windows_reader_reads_the_contents_once_and_always_closes():
+    clip, user32, kernel32 = windows()
+    assert clip.read() == ORBS
+    assert user32.GetClipboardData.calls == 1 and user32.OpenClipboard.calls == 1 and user32.CloseClipboard.calls == 1
+    assert kernel32.GlobalLock.calls == 1 and kernel32.GlobalUnlock.calls == 1
+    # The change counter and the window check never touch the contents.
+    assert clip.sequence() == 41 and clip.game_in_front()
+    assert user32.GetClipboardData.calls == 1 and user32.OpenClipboard.calls == 1
+
+
+def test_windows_reader_reads_nothing_when_the_clipboard_cannot_be_opened():
+    clip, user32, kernel32 = windows(opens=False)  # another program holds it for the whole wait
+    assert clip.read() == ""
+    assert user32.OpenClipboard.calls > 1 and user32.GetClipboardData.calls == 0 and user32.CloseClipboard.calls == 0
+
+
+def test_windows_reader_closes_the_clipboard_when_it_holds_no_text():
+    clip, user32, kernel32 = windows(text=None)  # an image, say
+    assert clip.read() == ""
+    assert user32.GetClipboardData.calls == 1 and kernel32.GlobalLock.calls == 0 and user32.CloseClipboard.calls == 1
+
+
+@pytest.mark.parametrize("window_class, window, in_front", [
+    ("POEWindowClass", 1234, True),
+    ("Chrome_WidgetWin_1", 1234, False),  # a browser tab titled "Path of Exile" is not the game
+    ("CabinetWClass", 1234, False),  # nor is a folder window on the game's folder
+    ("POEWindowClass", 0, False),  # no window in front at all
+])
+def test_only_the_games_own_window_counts_as_in_front(window_class, window, in_front):
+    clip, user32, _ = windows(window_class=window_class, window=window)
+    assert clip.game_in_front() is in_front
+    # With another window in front, a press ends before the change counter is even looked at.
+    desk, said = FakeDesk(), []
+    if not in_front:
+        assert handle_copy(clip, 41, desk, said.append) is None
+        assert user32.GetClipboardSequenceNumber.calls == 0 and user32.OpenClipboard.calls == 0 and said == []
 
 
 # ------------------------------------------------------------------ the gate, the desk, the command
