@@ -296,7 +296,8 @@ def _screen(args: argparse.Namespace) -> None:
     from vaalstreet import screen
 
     try:
-        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region, args.stacks)
+        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region, args.stacks or args.stash,
+                   args.stash)
     except (RuntimeError, ValueError) as err:
         sys.exit(str(err))
 
@@ -892,6 +893,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--stacks", action="store_true",
                    help="also value the stack under the cursor when you press Ctrl+C in game: reads the clipboard "
                         "once per press, only while the game is the window in front (Windows only)")
+    p.add_argument("--stash", action="store_true",
+                   help="like --stacks, and also write each copied stack to your stash list on the desk: a copy "
+                        "sets the item's line; the same item copied again right after with a different count adds")
     p.add_argument("--league")
     p.set_defaults(run=_screen)
 

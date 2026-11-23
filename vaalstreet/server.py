@@ -731,16 +731,22 @@ class App:
         return {"league": valued["league"], "bridge": valued["bridge"]} | valued["rows"][0]
 
     def api_stash_post(self, body: dict) -> dict:
-        """Set a line (units 0 removes it), or clear the stash; answers with the new valuation."""
+        """Set a line (units 0 removes it), or clear the stash; answers with the new valuation.
+
+        `was` is the units the line held before, so the stack check can say what a copy replaced.
+        """
         desk = self.desk(body.get("league"))
+        was = None
         try:
             if body.get("clear"):
                 self.ledger.clear_stash(desk.league)
             else:
-                self.ledger.set_stash(desk.league, check.resolve(desk, str(body["item"])), body.get("units", 0))
+                item = check.resolve(desk, str(body["item"]))
+                was = self.ledger.stash(desk.league).get(item)
+                self.ledger.set_stash(desk.league, item, body.get("units", 0))
         except (KeyError, ValueError, TypeError) as err:
             raise ApiError(f"Bad request: {err}") from err
-        return self.api_stash({"league": desk.league})
+        return self.api_stash({"league": desk.league}) | {"was": was}
 
     def _advise(self, desk) -> list[dict]:
         """Open orders with advice, from today's prices and the flip plan's own order levels."""

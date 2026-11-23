@@ -20,6 +20,27 @@ GGG's rules for tools that read the clipboard shape the design, as they do for t
   and anything on the clipboard that is not item text is dropped: never printed, never sent to the
   desk. Only the item's name and the size of the stack leave this module.
 
+With `--stash` each copied stack is also written to the stash list on the desk, so the list fills
+without typing. One item can sit in several stacks, and the copied text does not say which stack it
+came from. The rule is the owner's: a copy is compared with the copy just before it. The same item
+with a different count is another stack, and adds. The same item with the same count is the same
+stack pressed twice, and changes nothing. Any other copy sets the item's line to the count read.
+"Just before" is also bounded in time (`ROW_SECONDS`): checking one currency again an hour later
+must replace its count, not add to it.
+
+A player who also plays maps drops loot into the stash all the time, so the same pile is copied
+again with a new count far more often than a second stack is. The copied text tells the two apart
+in the common case: it gives the size of a full stack after the slash ("2,448/40"), and a count
+above that can only be a pile in a tab with one space for the item, such as the currency tab. Such
+a pile always sets the line and never adds. Counts up to a full stack keep the rule above. So
+count the pile first and loose stacks after it: 2,448, then 12 from the inventory, makes 2,460,
+and once the 12 are dropped into the pile, copying the pile at 2,460 says 2,460.
+
+What stays wrong, and why the console prints the sum on every write: two stacks of one item with
+equal counts count once; a stack of up to a full stack copied twice with its count changed in
+between is added to itself; two piles of one item in two tabs count as the later one; and a loose
+stack copied before the pile is dropped when the pile is copied.
+
 The parser and `handle_copy` are plain functions over an injected clipboard, so the tests run
 without Windows. The Windows calls go through `ctypes` from the standard library and are resolved
 only when the companion starts with `--stacks`.
@@ -32,6 +53,8 @@ import re
 import time
 from typing import Callable
 
+from vaalstreet.screen import DeskUnreachable
+
 # The game's copy key. Ctrl+Alt+C, the copy with advanced details, holds the same two keys and
 # copies the same header, so it counts too.
 COPY_KEY = "<ctrl>+c"
@@ -43,6 +66,9 @@ RARITY = "Rarity: "
 STACK = "Stack Size: "
 SEPARATOR = "--------"
 WAIT = 0.5  # seconds the game gets to write the clipboard after the key goes down
+# Copies of one item count as "one after another" only this close together. Counting the stacks of a
+# tab takes seconds; a count taken again after some trading must replace the old one.
+ROW_SECONDS = 120.0
 TICK = 0.01
 CF_UNICODETEXT = 13
 
@@ -55,6 +81,12 @@ class NotAnItem(ValueError):
 class Stack:
     item: str
     units: int
+    full: int | None = None  # the size of a full stack, when the copied text gave it
+
+    @property
+    def pile(self) -> bool:
+        """More than a full stack: it lies in a tab with one space for the item, not in a stack."""
+        return self.full is not None and self.units > self.full
 
     def describe(self) -> str:
         """What was read, in a player's words, so a wrong item or count is easy to spot."""
@@ -76,15 +108,16 @@ def parse_item(text: str) -> Stack:
     head = [ln for ln in head if ln and not ln.startswith(RARITY)]
     if not head:
         raise NotAnItem("no item name")
-    units = 1
+    units, full = 1, None
     for line in lines:
         if line.startswith(STACK):
-            held = re.sub(r"\D", "", line[len(STACK):].split("/")[0])
+            held, _, of = line[len(STACK):].partition("/")
+            held, of = re.sub(r"\D", "", held), re.sub(r"\D", "", of)
             if not held or int(held) < 1:
                 raise NotAnItem("no stack size")
-            units = int(held)
+            units, full = int(held), int(of) if of and int(of) > 0 else None
             break
-    return Stack(head[0], units)
+    return Stack(head[0], units, full)
 
 
 # ------------------------------------------------------------------ wording
@@ -141,6 +174,69 @@ def describe_worth(stack: Stack, worth: dict) -> tuple[str, list[str]]:
     return f"{stack.units:,} {name}{rest}", lines
 
 
+# ------------------------------------------------------------------ the stash
+class Tally:
+    """Adds up the stacks of one item that are copied one after another (see the module docstring)."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic):
+        self._clock = clock
+        self._last: tuple[str, int, int, float] | None = None  # item, its last count, running total, when
+
+    def plan(self, stack: Stack) -> tuple[int | None, int | None]:
+        """(the total to write, the total it adds to). No total: the same stack again, nothing to write.
+        Nothing to add to: this copy sets the line."""
+        last = self._last
+        if not last or last[0] != stack.item or self._clock() - last[3] > ROW_SECONDS:
+            return stack.units, None
+        if last[1] == stack.units:
+            return None, last[2]
+        if stack.pile:
+            return stack.units, None  # the pile counted again, with loot in it or an order out of it
+        return last[2] + stack.units, last[2]
+
+    def done(self, stack: Stack, total: int) -> None:
+        """Call once the desk has taken the write (or the copy changed nothing), never before."""
+        self._last = (stack.item, stack.units, total, self._clock())
+
+    def forget(self) -> None:
+        """A copy the stash cannot hold came in between: the next copy starts a new count."""
+        self._last = None
+
+
+def keep(stack: Stack, league: str, desk, tally: Tally, say: Callable[[str], None]) -> str | None:
+    """Write the copied stack to the stash list by the tally's rule; the words for what happened."""
+    total, before = tally.plan(stack)
+    if total is None:
+        tally.done(stack, before)
+        words = (f"Stash unchanged: the same count as the copy before, so the same stack. "
+                 f"{stack.item} stays at {before:,}.")
+        say(f"    {words}")
+        return words
+    try:
+        out = desk.set_stash(stack.item, total, league)
+    except RuntimeError as err:
+        say(f"    The stash was not changed: {err}")
+        return None  # the tally has not moved, so copying the stack again tries again
+    tally.done(stack, total)
+    if before is not None:
+        words = f"Stash: {stack.item} {before:,} + {stack.units:,} = {total:,} (another stack)."
+    else:
+        words = f"Stash: {stack.item} set to {total:,}."
+        was = out.get("was")
+        if was is not None and float(was) != total:
+            words += f" It replaces the {float(was):,.10g} the list held."
+        if stack.pile:
+            words += f" More than a full stack of {stack.full:,}, so it is the pile in your tab: it never adds."
+    if out.get("rehearsal"):
+        words += " This is the practice stash: a rehearsal is running."
+    say(f"    {words}")
+    rows, value = out.get("rows") or [], (out.get("total") or {}).get("value")
+    if value is not None:
+        say(f"    Your stash list: {len(rows)} line{'s' if len(rows) != 1 else ''}, "
+            f"worth {_money(value, out.get('bridge'))}.")
+    return words
+
+
 # ------------------------------------------------------------------ one press
 def wait_changed(sequence: Callable[[], int], since: int, timeout: float = WAIT, tick: float = TICK,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> bool:
@@ -156,12 +252,15 @@ def wait_changed(sequence: Callable[[], int], since: int, timeout: float = WAIT,
     return True
 
 
-def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print) -> dict | None:
+def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print,
+                tally: Tally | None = None) -> dict | None:
     """Everything one press of the copy key does: at most one clipboard read, one valuation, one event.
 
     `clip` is the clipboard (`WindowsClipboard`, or a stand-in in tests); `since` is its change
     counter from the moment the key went down. Nothing is read unless the game is in front and the
     clipboard changed after the press. Text that is not an item is dropped without being shown.
+    With a `tally` (`--stash`) the stack is also written to the stash list; without one, nothing is
+    saved on the desk.
     """
     if not clip.game_in_front():
         return None
@@ -182,11 +281,16 @@ def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print) -> d
         worth = desk.worth(stack.item, stack.units)
     except RuntimeError as err:
         say(f"  {err}")
+        # An item the desk does not know is a copy in between, and ends the row. A desk that could
+        # not be reached is not: copying the stack again should carry on where the count stood.
+        if tally is not None and not isinstance(err, DeskUnreachable):
+            tally.forget()
         return None
     title, lines = describe_worth(stack, worth)
     for line in lines:
         say(f"    {line}")
-    desk.event(title, f"Read: {stack.describe()}. " + " ".join(lines[:2]), worth["league"])
+    kept = keep(stack, worth["league"], desk, tally, say) if tally is not None else None
+    desk.event(title, f"Read: {stack.describe()}. " + " ".join(lines[:2] + ([kept] if kept else [])), worth["league"])
     return worth
 
 
