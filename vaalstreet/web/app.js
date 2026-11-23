@@ -939,10 +939,12 @@ function askPosted(o) {
       <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. If you posted a different ratio, record the order on the Ledger page instead.</p></div>`;
   box.onsubmit = async e => {
     e.preventDefault();
+    if (box.dataset.busy) return;  // a second click or Enter while the first is on its way must not record twice
+    box.dataset.busy = '1';
     const units = +box.elements.units.value;
     try {
       await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units: o.currency_units, item_units: o.item_units, units, gold: optional(box.elements.gold.value) });
-    } catch (err) { return toast(err.message, true); }
+    } catch (err) { delete box.dataset.busy; return toast(err.message, true); }
     box.remove();
     toast(`Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
     // Draw the page again so the plan says it is posted, and the item's panel too when it shows this item.
