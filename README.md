@@ -2,7 +2,7 @@
 
 A local trading desk for the Path of Exile Currency Exchange. It mirrors the exchange's public hourly history, turns it into prices you can trust, and answers the questions a trader actually has: what is this worth, what can I flip right now, what converts into something dearer, what did this item do at this point of past leagues, and would my strategy have made money.
 
-Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export, item icons and, unless you turn it off, poe.ninja's public price lists for the few card rewards the exchange does not trade (at most once an hour per list). Every request names this project and its address, and nothing about you is sent. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game.
+Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export, item icons and, unless you turn it off, poe.ninja's public price lists for the few card rewards the exchange does not trade (at most once an hour per list). Every request names this project and its address, and nothing about you is sent. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game; if you turn on its stack check, it also reads the clipboard once each time you press the game's copy key.
 
 PoE 1 is the focus. The data layer also mirrors PoE 2, but the desk and models are built and tested against PoE 1.
 
@@ -153,6 +153,7 @@ python -m vaalstreet fills                       # how fast your tracked orders 
 python -m vaalstreet check "Orb of Alteration" --market divine --side buy --ratio "64 items = 1 divine" --stock 300
                                                  # go / no-go for an offer in the order window (items first)
 python -m vaalstreet screen                      # on Windows: press a key to read an offer off the exchange window (optional)
+python -m vaalstreet screen --stacks             # also: press Ctrl+C over a stack in game to see what it is worth
 python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone lists it, stash --ledger values your positions
 python -m vaalstreet arb --swaps 3               # sets against their rewards, and round trips
 python -m vaalstreet ninja refresh               # prices from poe.ninja for card rewards the exchange lacks (status: what is cached)
@@ -253,6 +254,10 @@ python -m vaalstreet screen --calibrate                    # one capture to lear
 python -m vaalstreet screen --desk http://localhost:3000   # press Ctrl+Alt+F9 in game; Ctrl+C here to stop
 ```
 
+**Stack check: what is this stack worth?** Start the companion with `--stacks`, hover a stack in your stash or inventory, and press the game's own copy key, Ctrl+C. The game copies the item's text to the clipboard; the companion reads it once and asks the desk what the stack is worth. The answer appears in the companion's console and in the hideout window ("2,448 Portal Scroll: 12 Chaos, 16% more for Divines"): the worth at fair value with its low and high, which of the item's two markets pays more and by how much, and how many hours of that market's volume the stack is, with a warning when selling it all would push the price. Nothing is saved: your stash list on the Ledger page is not changed.
+
+It is off unless you ask for it, and it follows the same rule as the screenshot. You press the key yourself, and the companion sends none. It reads the clipboard once per press, and only while the game is the window in front, so a Ctrl+C in your browser or password manager is never read. It waits up to half a second for the game to copy, by watching Windows' count of clipboard changes, which says nothing of the contents; if the game copied nothing, it reads nothing and says so. Text that is not a copied item is dropped: never shown, never sent to the desk. Only the item's name and the size of the stack reach the desk. Every answer starts with what was read ("Read: 2,448 Portal Scroll"). The game must run in English, and the stack check works only under Windows Python. It was written from how other tools read the copied text and has not been tested against the live game yet.
+
 The default key is Ctrl+Alt+F9, chosen to stay clear of the game's own keys (Ctrl+Alt+C copies an item); change it with `--hotkey "<ctrl>+<shift>+<f8>"`. The game still sees the key press, so pick a combination the game ignores. Run the game in windowed or borderless windowed mode so the screenshot shows it. If you run the game as administrator, run the companion as administrator too, or Windows hides your key presses from it. The rectangle is saved in `screen.json` in the data directory of the Windows copy (`data\` in a checkout); the companion never opens your ledger or the archive.
 
 ## Files
@@ -283,6 +288,7 @@ vaalstreet/panel.py     dense arrays     vaalstreet/ledger.py    trades, orders,
 vaalstreet/pricing.py   models           vaalstreet/server.py    local API; vaalstreet/web/ is the UI
 vaalstreet/check.py     trade check and stash valuation
 vaalstreet/screen.py    screen check companion: one screenshot per key press (optional extra)
+vaalstreet/clipboard.py stack check: what a stack you copy in game is worth, one clipboard read per press
 vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders
 vaalstreet/sharing.py   strategy files: export and import

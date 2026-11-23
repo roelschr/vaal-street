@@ -23,6 +23,10 @@ positions, because text recognition returns lines in a loose order and often dro
 ("OrbofAlteration") or splits a row in two. When it is not sure, it fails with a message that tells
 the player to press again or type the offer, rather than guessing a verdict.
 
+The companion can also value a stack you copy in game with the game's own copy key
+(`--stacks`, off unless you ask for it). That reads the clipboard, not the screen, once per press,
+and lives in `clipboard.py`. Both keys go through one `PressGate`, so only one read runs at a time.
+
 The optional libraries (`pip install "vaalstreet[screen]"`) are imported only when the companion
 starts, so the rest of the package never needs them.
 """
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import functools
 import json
 import re
 import threading
@@ -259,6 +264,11 @@ class DeskClient:
         body = dataclasses.asdict(reading) | {"league": league}
         return self._call("/api/check", body)
 
+    def worth(self, item: str, units: float) -> dict:
+        """What a holding is worth, for the stack check. Nothing is saved on the desk."""
+        query = {"item": item, "units": f"{units:g}"} | ({"league": self.league} if self.league else {})
+        return self._call("/api/worth?" + urllib.parse.urlencode(query))
+
     def event(self, title: str, body: str, league: str) -> dict:
         return self._call("/api/event", {"title": title, "body": body, "league": league})
 
@@ -299,17 +309,25 @@ class PressGate:
     The hotkey callback runs inside the system keyboard hook, where slow work lags all input, so it
     only sets a flag. The main thread does the work. A press that arrives while a check is running
     is dropped, so one press is always one capture and nothing captures on its own.
+
+    A press may bring its own job, as the copy key does for the stack check. It goes through the
+    same gate, so a screen read and a clipboard read never run at once and neither queues.
     """
 
     def __init__(self):
         self._pressed = threading.Event()
         self._busy = threading.Lock()
+        self._job: Callable[[], object] | None = None
         self.stopped = threading.Event()
 
-    def press(self) -> bool:
-        """Called from the hotkey; True if the press was taken, False if a check was already running."""
+    def press(self, job: Callable[[], object] | None = None) -> bool:
+        """Called from a hotkey; True if the press was taken, False if a check was already running.
+
+        `job` is what this press should do instead of the work `serve` was given.
+        """
         if self._busy.locked() or self._pressed.is_set():
             return False
+        self._job = job
         self._pressed.set()
         return True
 
@@ -324,9 +342,10 @@ class PressGate:
             if self.stopped.is_set():
                 return
             with self._busy:
+                job, self._job = self._job or work, None
                 self._pressed.clear()
                 try:
-                    work()
+                    job()
                 except Exception as err:  # one bad press must not end the companion
                     print(f"  That press failed: {err}")
 
@@ -411,8 +430,11 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
-        do_calibrate: bool = False, region: str | None = None) -> None:
-    """The companion: wait for the hotkey, and do one check per press until Ctrl+C."""
+        do_calibrate: bool = False, region: str | None = None, stacks: bool = False) -> None:
+    """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
+
+    With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
+    """
     mss, keyboard, RapidOCR = load_libraries()
     if do_calibrate:
         calibrate(root, mss)
@@ -432,14 +454,30 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     print(f"Screen check for {league_name}, talking to the desk at {desk.base_url}.")
     print(f"Each press of {hotkey} takes one screenshot of {where}, reads its text, and checks the offer.")
     print("The screenshot stays in memory and is dropped after the check. Nothing is sent to the game.")
-    print("Press Ctrl+C here to stop.")
     gate = PressGate()
 
     def work():
         print("\nReading the screen…")
         handle_press(capture, recognise, desk)
 
-    listener = keyboard.GlobalHotKeys({hotkey: gate.press})
+    hotkeys = {hotkey: gate.press}
+    if stacks:
+        from vaalstreet import clipboard
+
+        clip = clipboard.open_clipboard()
+
+        def copied(since: int) -> None:
+            clipboard.handle_copy(clip, since, desk)
+
+        # The counter is noted here, inside the key press, before the game has written the clipboard.
+        hotkeys[clipboard.COPY_KEY] = lambda: gate.press(functools.partial(copied, clip.sequence()))
+        print("Stack check is on: while the game is the window in front, each press of Ctrl+C over an item reads "
+              "the clipboard once.")
+        print("It reads the item's name and the size of the stack, and shows what the stack is worth. Anything "
+              "else on the clipboard is dropped: never shown, never sent to the desk. You press the key; nothing is "
+              "sent to the game.")
+    print("Press Ctrl+C here to stop.")
+    listener = keyboard.GlobalHotKeys(hotkeys)
     listener.start()
     try:
         gate.serve(work)
