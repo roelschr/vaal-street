@@ -38,6 +38,21 @@ Conditions for an implementation:
 - If public, show "This product isn't affiliated with or endorsed by Grinding Gear Games in any way." (developer docs).
 - Open risk: GGG does not mention OCR by name, and I did not find a staff forum post about it.
 
+## 1b. Stack check (the player's own copy key → one clipboard read → what the stack is worth)
+
+Added 2026-11-23. **Verdict: allowed with conditions**, under the same overlay rules as section 1: "Apps that use information sourced from the screen, the clipboard, or the game's logs must follow our overlay rules", "You may only read this information as long as the user is aware of what you are doing with that data." and "Reading from the screen or clipboard may only be performed once per manual key press." (https://www.pathofexile.com/developer/docs, re-read 2026-11-23). The docs' changelog for 3.30.0, dated 12/11/2026, says: "Updated the Policy wording around macros and overlays to be clearer about when they apply."
+
+How the desk does it (`vaalstreet/clipboard.py`, `vaalstreet screen --stacks`):
+- The player presses the game's copy key. The companion sends no key, so the macro rules, which cover "Automation of key-strokes (or other inputs) that affect the game", do not come into play. Awakened PoE Trade and Exiled Exchange 2 press the copy key for the player; the desk does not.
+- One read of the clipboard's contents per press. Awakened PoE Trade reads the clipboard every 48 ms for up to 500 ms after one press (`main/src/shortcuts/HostClipboard.ts`, read 2026-11-23); the desk does not copy that. It waits for Windows' clipboard sequence number to change and then reads once. The sequence number counts changes and holds nothing of the contents.
+- It is off unless the player starts the companion with `--stacks`, and the start-up text says what is read and when.
+- A press counts only while the game is the window in front (window class `POEWindowClass`, as Exile UI finds the game, or a title starting "Path of Exile", Awakened PoE Trade's default). Text that does not start with "Item Class: " is dropped without being shown or sent.
+
+Open risks:
+- That waiting on the sequence number and then reading once satisfies "once per manual key press" is this project's reading of the rule. GGG has not said so.
+- Nothing here has run on Windows or against the game: not the key detection, the wait, the window check or the copied text's layout, which was taken from the two tools' parsers ("Stack Size: 2,448/40").
+- If the game writes the clipboard before the companion hears the key, the companion sees no change and stays silent. It fails by saying nothing, never by valuing the item copied before.
+
 ## 2. Trade-site prices (uniques, gems, bases)
 
 **Verdict: pathofexile.com/trade automation is not allowed. The Public Stash API is out of reach for a local tool. poe.ninja's economy endpoints are allowed under its usage rules, and the desk uses them for card rewards (see "poe.ninja" below).**

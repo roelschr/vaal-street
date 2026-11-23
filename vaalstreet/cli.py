@@ -296,7 +296,7 @@ def _screen(args: argparse.Namespace) -> None:
     from vaalstreet import screen
 
     try:
-        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region)
+        screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region, args.stacks)
     except (RuntimeError, ValueError) as err:
         sys.exit(str(err))
 
@@ -881,13 +881,17 @@ def main(argv: list[str] | None = None) -> None:
         description="A companion to run next to the game, under Windows Python. Each press of the hotkey takes "
                     "one screenshot (of the area you set with --calibrate), reads the offer's item, ratio and "
                     "stock, and shows the desk's verdict here and in the desk's hideout window. It sends "
-                    "nothing to the game and keeps no screenshot.",
+                    "nothing to the game and keeps no screenshot. With --stacks it also says what a stack is "
+                    "worth when you press the game's own copy key (Ctrl+C) over it.",
         epilog='Needs the optional libraries: pip install "vaalstreet[screen]". The desk itself '
                "(vaalstreet serve) can run in WSL; this companion reaches it at http://localhost:<port>.")
     p.add_argument("--desk", default="http://localhost:3000", help="the desk's address (default %(default)s)")
     p.add_argument("--hotkey", help="the key to press, in pynput's form (default <ctrl>+<alt>+<f9>)")
     p.add_argument("--calibrate", action="store_true", help="capture once, then save the area around the exchange window")
     p.add_argument("--region", help='save this area and use it: "left top width height" in pixels')
+    p.add_argument("--stacks", action="store_true",
+                   help="also value the stack under the cursor when you press Ctrl+C in game: reads the clipboard "
+                        "once per press, only while the game is the window in front (Windows only)")
     p.add_argument("--league")
     p.set_defaults(run=_screen)
 

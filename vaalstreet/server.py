@@ -662,6 +662,19 @@ class App:
             holdings = self.ledger.stash(desk.league)
         return check.stash_value(desk, holdings) | {"source": q.get("source") or "stash"}
 
+    def api_worth(self, q: dict) -> dict:
+        """What one holding is worth, for the stack check: valued like a stash line, and not saved."""
+        desk = self.desk(q.get("league"))
+        try:
+            units = float(q.get("units") or 1)
+            if not (units > 0 and math.isfinite(units)):
+                raise ValueError("units must be more than zero")
+            item = check.resolve(desk, str(q["item"]))
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+        valued = check.stash_value(desk, {item: units})
+        return {"league": valued["league"], "bridge": valued["bridge"]} | valued["rows"][0]
+
     def api_stash_post(self, body: dict) -> dict:
         """Set a line (units 0 removes it), or clear the stash; answers with the new valuation."""
         desk = self.desk(body.get("league"))
@@ -940,7 +953,7 @@ GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
-    "/api/ledger": "api_ledger", "/api/stash": "api_stash",
+    "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/worth": "api_worth",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
     "/api/rehearsal": "api_rehearsal",
 }
