@@ -109,8 +109,36 @@ def test_api_records_an_item_you_made_so_it_can_be_sold(server):
     orb = next(p for p in ledger["positions"] if p["id"] == ITEM)
     assert orb["units"] == 1 and orb["average"] == pytest.approx(15) and orb["realized"] == pytest.approx(5)
     assert ledger["totals"]["cost"] == pytest.approx(15) and ledger["totals"]["realized"] == pytest.approx(5)
+    # The orb that entry made is sold: deleting the entry would put the cards back and keep the sale's profit.
+    status, answer = call(f"{server}/api/made", {"delete": made["id"]})
+    assert status == 400 and "would leave a sale selling more than the ledger held" in answer["error"]
+    sale = next(t for t in ledger["trades"] if t["side"] == "sell")
+    assert call(f"{server}/api/trade", {"delete": sale["id"]})[0] == 200
     assert call(f"{server}/api/made", {"delete": made["id"]})[0] == 200
     assert call(f"{server}/api/ledger")[1]["made"] == []
+    # An item the ledger holds can be used even when neither the market nor the item export knows its id.
+    gone = "Metadata/Items/Currency/CurrencyNoLongerTraded"
+    assert call(f"{server}/api/trade", {"item": gone, "side": "buy", "units": 3, "price": 2})[0] == 200
+    assert call(f"{server}/api/made", {"inputs": [[gone, 3]], "output": ITEM})[0] == 200
+    assert call(f"{server}/api/ledger")[1]["made"][0]["inputs"][0]["id"] == gone
+
+
+def test_api_made_items_never_take_or_give_chaos_orbs(server):
+    """The ledger counts in Chaos and holds none. As an input it could never be held; as an output it would
+    become an item whose profit is never realised. Each case is refused with the trade to record instead."""
+    from vaalstreet.ingest import CHAOS
+
+    assert call(f"{server}/api/trade", {"item": CARD, "side": "buy", "units": 6, "price": 5})[0] == 200
+    for chaos in ("Chaos Orb", "chaos orb", CHAOS):
+        status, answer = call(f"{server}/api/made", {"inputs": [[chaos, 5]], "output": ITEM})
+        assert status == 400 and "record it as a trade, Bought" in answer["error"]
+        status, answer = call(f"{server}/api/made", {"inputs": [[CARD, 6]], "output": chaos, "gives": 40})
+        assert status == 400 and "record it as a trade, Sold" in answer["error"]
+        status, answer = call(f"{server}/api/made", {"inputs": [[CARD, 6], [chaos, 5]], "output": ITEM})
+        assert status == 400 and "Record the entry without them" in answer["error"]
+        assert "does not hold them" in answer["error"] and "holds 0" not in answer["error"]
+    ledger = call(f"{server}/api/ledger")[1]
+    assert ledger["made"] == [] and [p["id"] for p in ledger["positions"]] == [CARD], "nothing was written"
 
 
 def test_api_edits_a_trade(server):

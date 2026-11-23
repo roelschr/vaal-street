@@ -195,15 +195,23 @@ class Ledger:
         gold = _gold(gold)
         if side not in ("buy", "sell") or not units > 0 or price < 0:
             raise ValueError("A trade needs side buy/sell, positive units and a non-negative price.")
-        if side == "sell":
-            held = self.positions(league).get(item, {}).get("units", 0.0)
-            if units > held + 1e-9:
-                raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}. "
-                                 "If you made this item from others, record that first under \"Record items you made\".")
-        return self._run(
-            "INSERT INTO trades(t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?)",
-            (int(t or self.clock()), league, item, side, units, price, str(note)[:200], gold, order_id),
-        )
+        when = int(t or self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
+        # The check and the insert are one step, so two sales that arrive together cannot both pass the check.
+        with self._lock, self._db:
+            positions, _, before = _history(self._db, league)
+            if side == "sell":
+                held = positions.get(item, {}).get("units", 0.0)
+                if units > held + 1e-9:
+                    raise ValueError(f"Cannot sell {units:g}: the ledger holds {held:g}. "
+                                     "If you made this item from others, record that first under \"Record items you made\".")
+            trade_id = _next_trade_id(self._db)
+            self._db.execute(
+                "INSERT INTO trades(id, t, league, item, side, units, price, note, gold, order_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (trade_id, when, league, item, side, units, price, str(note)[:200], gold, order_id))
+            # Today's holdings can cover a sale that the history does not: a sale dated before the units arrived.
+            if side == "sell" and _history(self._db, league)[2] - before:
+                raise ValueError(f"Cannot sell {units:g}: the ledger did not hold that many at the time of the sale.")
+            return trade_id
 
     def edit_trade(self, trade_id: int, **changes) -> None:
         """Correct a recorded trade: its item, side, units, price, Gold or note. Its time stays.
@@ -234,16 +242,25 @@ class Ledger:
             before = _history(self._db, row["league"])[2]
             self._db.execute("UPDATE trades SET item = ?, side = ?, units = ?, price = ?, gold = ?, note = ? WHERE id = ?",
                              (new["item"], new["side"], new["units"], new["price"], new["gold"], new["note"], int(trade_id)))
-            short = _history(self._db, row["league"])[2] - before
-            if any(kind == "made" for kind, _ in short):
-                raise ValueError("That edit would leave an item you made using more than the ledger held at the time. "
-                                 "Fix or delete that entry under \"Items you made\" first.")
-            if short:
-                raise ValueError("That edit would leave a sale selling more than the ledger held at the time. "
-                                 "Fix or delete that sale first.")
+            _refuse_short("That edit", _history(self._db, row["league"])[2] - before)
 
     def delete_trade(self, trade_id: int) -> None:
-        self._run("DELETE FROM trades WHERE id = ?", (int(trade_id),))
+        """Delete a trade. Refused when a later sale or an item you made needed the units it bought."""
+        self._delete("trades", trade_id)
+
+    def _delete(self, table: str, row_id: int) -> None:
+        """Delete a trade or a made entry, unless the history would then take units the ledger never held.
+
+        Without this, deleting the entry that made an item you already sold would put its inputs back in
+        your holdings and keep the sale's profit: the same units counted twice.
+        """
+        with self._lock, self._db:  # one transaction: a refused delete rolls back
+            row = self._db.execute(f"SELECT league FROM {table} WHERE id = ?", (int(row_id),)).fetchone()
+            if row is None:
+                return
+            before = _history(self._db, row["league"])[2]
+            self._db.execute(f"DELETE FROM {table} WHERE id = ?", (int(row_id),))
+            _refuse_short("Deleting this", _history(self._db, row["league"])[2] - before)
 
     def trades(self, league: str) -> list[dict]:
         return self._all("SELECT * FROM trades WHERE league = ? ORDER BY t, id", (league,))
@@ -279,6 +296,7 @@ class Ledger:
         output = str(output)
         if output in used:
             raise ValueError("The item you got cannot also be an item you used.")
+        when = int(t or self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
         with self._lock, self._db:  # one transaction: a refused entry rolls back
             positions, _, before = _history(self._db, league)
             if t is None:  # recorded now, so today's holdings are the holdings at its time
@@ -287,18 +305,20 @@ class Ledger:
                     if units > held + 1e-9:
                         raise ValueError(f"Cannot use {units:g} {name(item)}: the ledger holds {held:g}. "
                                          "Record buying them first.")
-            # Where this entry sits among trades of the same time: after every trade recorded so far (see `_history`).
-            after = self._db.execute("SELECT COALESCE(MAX(id), 0) FROM trades").fetchone()[0]
+            # Where this entry sits among records of the same time: after every trade recorded so far, and not
+            # before an earlier made entry whose newest trade was deleted since (see `_history`, `_next_trade_id`).
+            after = _next_trade_id(self._db) - 1
             made_id = self._db.execute(
                 "INSERT INTO made(t, league, inputs, output, gives, note, after_trade) VALUES (?,?,?,?,?,?,?)",
-                (int(t or self.clock()), league, json.dumps([[item, units] for item, units in used.items()]),
+                (when, league, json.dumps([[item, units] for item, units in used.items()]),
                  output, gives, str(note)[:200], after)).lastrowid
             if _history(self._db, league)[2] - before:
                 raise ValueError("That would use more than the ledger held at the time, or leave a later sale short.")
             return made_id
 
     def delete_made(self, made_id: int) -> None:
-        self._run("DELETE FROM made WHERE id = ?", (int(made_id),))
+        """Delete a made entry. Refused when a later sale or made item needed the item it made."""
+        self._delete("made", made_id)
 
     def made(self, league: str) -> list[dict]:
         """What you recorded making in a league, oldest first; `inputs` is [(item, units), ...]."""
@@ -893,6 +913,28 @@ def _gold(value) -> float | None:
     return value
 
 
+def _next_trade_id(db: sqlite3.Connection) -> int:
+    """The id for a new trade: above every trade, and above every trade id a made entry remembers.
+
+    SQLite gives the id of a deleted newest trade to the next trade. A made entry that remembered the
+    deleted id would then sort after a sale recorded later at the same time, and the sale would count
+    as selling units not yet held: it would realise its whole price, and the made item would still be
+    in your holdings to sell again. So a remembered id is never handed out again.
+    """
+    return db.execute("SELECT MAX((SELECT COALESCE(MAX(id), 0) FROM trades), "
+                      "(SELECT COALESCE(MAX(after_trade), 0) FROM made)) + 1").fetchone()[0]
+
+
+def _refuse_short(action: str, short: set[tuple[str, int]]) -> None:
+    """Refuse a change that newly leaves these entries taking more than the ledger held (see `_history`)."""
+    if any(kind == "made" for kind, _ in short):
+        raise ValueError(f"{action} would leave an item you made using more than the ledger held at the time. "
+                         "Fix or delete that entry under \"Items you made\" first.")
+    if short:
+        raise ValueError(f"{action} would leave a sale selling more than the ledger held at the time. "
+                         "Fix or delete that sale first.")
+
+
 def _history(db: sqlite3.Connection, league: str) -> tuple[dict[str, dict], list[tuple[int, float]], set[tuple[str, int]]]:
     """One walk over a league's trades and made items, in the order they happened.
 
@@ -908,9 +950,8 @@ def _history(db: sqlite3.Connection, league: str) -> tuple[dict[str, dict], list
     Trades and made items live in two tables, and a rehearsal stamps everything recorded in one
     practice hour with the same time, so the time alone cannot order "bought, merged, sold". A made
     item therefore remembers the newest trade that existed when it was recorded (`after_trade`) and
-    sorts right after it. SQLite hands the id of a deleted newest trade to the next one, so a trade
-    recorded after such a delete, at the very same time, can sort before the made item; nothing is
-    lost, that one sale just counts as selling units not yet held.
+    sorts right after it. That only holds while every later trade gets a higher id, which SQLite
+    does not promise by itself (see `_next_trade_id`).
     """
     steps = [((tr["t"], tr["id"], 0, 0), "trade", tr)
              for tr in db.execute("SELECT * FROM trades WHERE league = ?", (league,))]

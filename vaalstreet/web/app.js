@@ -1036,9 +1036,11 @@ async function viewLedger(main) {
   $('#mmore', main).onclick = () => $('#mins', main).insertAdjacentHTML('beforeend', usedRow());
   $('#mform', main).onsubmit = async e => {
     e.preventDefault();
-    const form = e.target, inputs = [...form.querySelectorAll('[data-in]')].map(r => [$('.it', r).value.trim(), +$('.n', r).value]).filter(([item]) => item);
+    // The market's own id where the name is in the list, as the trade form sends it; the server looks up any other name.
+    const ref = name => state.market.find(r => r.name === name)?.id || name;
+    const form = e.target, inputs = [...form.querySelectorAll('[data-in]')].map(r => [ref($('.it', r).value.trim()), +$('.n', r).value]).filter(([item]) => item);
     if (!inputs.length || !$('#mo', form).value.trim()) return toast('Name what you used and what you got.', true);
-    try { await api('/api/made', { league: state.league, inputs, output: $('#mo', form).value.trim(), gives: +$('#mg', form).value, note: $('#mn', form).value }); route(); }
+    try { await api('/api/made', { league: state.league, inputs, output: ref($('#mo', form).value.trim()), gives: +$('#mg', form).value, note: $('#mn', form).value }); route(); }
     catch (err) { toast(err.message, true); }
   };
   let oside = 'buy', omkt = 'chaos';
