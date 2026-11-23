@@ -764,7 +764,13 @@ class App:
             holdings = {k: p["units"] for k, p in self.ledger.positions(desk.league).items() if p["units"] > 1e-9}
         else:
             holdings = self.ledger.stash(desk.league)
-        return check.stash_value(desk, holdings) | {"source": q.get("source") or "stash"}
+        out = check.stash_value(desk, holdings) | {"source": q.get("source") or "stash"}
+        if out["source"] == "stash":
+            # How long ago each line was last set, by the ledger's own clock: in a rehearsal that is practice time.
+            counted, now = self.ledger.stash_counted(desk.league), self.ledger.clock()
+            for row in out["rows"]:
+                row["counted_ago"] = max(0, int(now - counted[row["id"]])) if row["id"] in counted else None
+        return out
 
     def api_worth(self, q: dict) -> dict:
         """What one holding is worth, for the stack check: valued like a stash line, and not saved."""

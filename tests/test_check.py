@@ -128,6 +128,42 @@ def test_stash_table_is_added_to_an_existing_ledger(tmp_path):
     assert ledger.stash("L") == {}
 
 
+def test_a_stash_line_remembers_when_it_was_last_counted(tmp_path):
+    """Known answers with a clock the test sets: a line set at 100 and another at 200. Setting the first to the
+    units it already holds at 500 counts it again; a pasted list counts every line it names; a removed line
+    is forgotten."""
+    now = [100]
+    ledger = Ledger(tmp_path, clock=lambda: now[0])
+    ledger.set_stash("L", "orb", 7)
+    now[0] = 200
+    ledger.set_stash("L", "card", 1)
+    assert ledger.stash_counted("L") == {"orb": 100, "card": 200} and ledger.stash_counted("Other") == {}
+    now[0] = 500
+    ledger.set_stash("L", "orb", 7)
+    assert ledger.stash_counted("L") == {"orb": 500, "card": 200} and ledger.stash("L") == {"card": 1, "orb": 7}
+    now[0] = 900
+    ledger.set_stash_many("L", {"card": 1, "shard": 3})
+    assert ledger.stash_counted("L") == {"orb": 500, "card": 900, "shard": 900}
+    ledger.set_stash("L", "orb", 0)
+    assert "orb" not in ledger.stash_counted("L")
+
+
+def test_api_stash_says_how_long_ago_each_line_was_counted(archive_root, tmp_path):
+    """The age is by the ledger's clock, so it is right in a rehearsal too. Known answers: lines set 3 hours
+    and 10 minutes before "now". Ledger positions are not counted lines, so they carry no age."""
+    from vaalstreet.server import App
+
+    now = [1_000_000]
+    app = App(archive_root, sync=False)
+    app.ledger = Ledger(tmp_path, clock=lambda: now[0])
+    app.ledger.set_stash(NEW, ITEM, 100, t=now[0] - 3 * 3600)
+    app.ledger.set_stash(NEW, CARD, 6, t=now[0] - 600)
+    rows = {row["id"]: row["counted_ago"] for row in app.api_stash({"league": NEW})["rows"]}
+    assert rows == {ITEM: 3 * 3600, CARD: 600}
+    app.ledger.add_trade(NEW, ITEM, "buy", 10, 9.0)
+    assert all("counted_ago" not in row for row in app.api_stash({"league": NEW, "source": "ledger"})["rows"])
+
+
 def test_api_check_and_stash(server):
     status, r = call(f"{server}/api/check", {"item": "Test Orb", "market": "chaos", "side": "buy", "ratio": "1:9"})
     assert status == 200 and r["verdict"] == "go"

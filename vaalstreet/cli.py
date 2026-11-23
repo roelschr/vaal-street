@@ -358,6 +358,7 @@ def _stash(args: argparse.Namespace) -> None:
     else:
         holdings = ledger.stash(desk.league)
     out = check.stash_value(desk, holdings)
+    counted, now = ledger.stash_counted(desk.league), ledger.clock()  # when each line was last set
     if not out["rows"]:
         print(f"Nothing held in {desk.league}. Add a line with: stash set \"<item>\" <units>")
         return
@@ -367,8 +368,12 @@ def _stash(args: argparse.Namespace) -> None:
         row["best_text"] = (f"{row['best'].title()} +{row['best_by']:.1%}" if row.get("best_by") is not None
                             else (row.get("best") or "-").title())
         row["thin_text"] = "hard to sell" if row.get("thin") else ""
+        age = None if args.ledger or row["id"] not in counted else max(0, now - counted[row["id"]])
+        row["counted_text"] = ("" if age is None else f"{max(1, round(age / 60))} min ago" if age < 5400
+                               else f"{round(age / 3600)} h ago" if age < 172800 else f"{round(age / 86400)} d ago")
     print(f"{desk.league} - {'ledger positions' if args.ledger else 'your stash'} at fair value (Divine {desk.bridge:.1f}c)")
-    _table(out["rows"], [("name", "Item", ""), ("units", "Units", ",.6g"), ("value", "Value", ",.0f"),
+    _table(out["rows"], [("name", "Item", ""), ("units", "Units", ",.6g"), ("counted_text", "Counted", ""),
+                         ("value", "Value", ",.0f"),
                          ("low", "Low", ",.0f"), ("high", "High", ",.0f"), ("chaos_price", "Chaos mkt", ",.4g"),
                          ("divine_price", "Divine mkt", ",.4g"), ("best_text", "Pays more", ""),
                          ("hours", "Hours of volume", ",.1f"), ("thin_text", "", "")], 200)

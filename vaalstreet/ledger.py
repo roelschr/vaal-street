@@ -613,6 +613,12 @@ class Ledger:
         rows = self._all("SELECT item, units FROM stash WHERE league = ? ORDER BY item", (league,))
         return {r["item"]: r["units"] for r in rows}
 
+    def stash_counted(self, league: str) -> dict[str, int]:
+        """item -> when its stash line was last set. Setting a line to the units it already holds counts too:
+        you looked and it was still right. A list is only as fresh as its oldest line, and loot since then
+        is not in it, so the desk shows this next to every line."""
+        return {r["item"]: r["updated"] for r in self._all("SELECT item, updated FROM stash WHERE league = ?", (league,))}
+
     def set_stash(self, league: str, item: str, units: float, t: int | None = None) -> None:
         """Set how many of an item you hold; zero removes the line."""
         units = float(units)
