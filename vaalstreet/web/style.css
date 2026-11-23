@@ -182,13 +182,20 @@ html.icons .cur.d,html.icons .ci.d{background:var(--ic-d) center/14px no-repeat,
 html.icons .cur{margin-left:4px}
 html.icons .cur.word{margin:0 1px}
 html.icons .ci.big{width:28px;height:28px;background-size:20px,auto;vertical-align:-8px;margin-right:6px}
-html.icons .tag{display:inline-flex;align-items:center;gap:2px;border:0;background:none;padding:1px 0}
-html.icons .tag .kt,html.icons #unitSeg .kt{display:none}
+html.icons .tag.mk{display:inline-flex;align-items:center;gap:2px;border:0;background:none;padding:1px 0}
+html.icons .tag.mk .kt,html.icons #unitSeg .kt{display:none}
 html.icons .ia{display:inline;font-style:normal;color:var(--dim);font-size:11px}
 html.icons #unitSeg button{display:flex;align-items:center;padding:4px 9px}
 #top .stat.orb{flex-direction:row;align-items:center}
 html.icons #top .stat.orb .ci.big{margin-right:8px;vertical-align:0}
 #top .stat.orb>div{display:flex;flex-direction:column}
+/* Where every cell of a column shares a unit, the orb steps back so the numbers lead. Orders and
+   market badges keep it at full strength, because there the currency changes from row to row. */
+html.icons td.num .cur:not(.word){width:16px;height:16px;background-size:11px,auto;vertical-align:-3px;margin-left:3px;opacity:.7}
+html.icons :is(.sub,.small) .cur,html.icons body.hideout .cur{width:15px;height:15px;background-size:10px,auto;vertical-align:-3px}
+html.icons :is(.sub,.small) .cur.c,html.icons body.hideout .cur.c{box-shadow:inset 0 0 0 1.2px #e0773a}
+html.icons :is(.sub,.small) .cur.d,html.icons body.hideout .cur.d{box-shadow:inset 0 0 0 1.2px #93bdf2}
+.kpi i.ci{margin-left:0}
 
 /* charts */
 .chart{position:relative;height:300px}
