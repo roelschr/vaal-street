@@ -194,6 +194,19 @@ def test_whole_lot_orders_state_the_smallest_ratio_within_two_percent():
     assert sim.realized[0] == pytest.approx(20 * (3.5 - 10 / 3))
 
 
+def test_a_capped_order_never_states_more_than_two_percent_worse_than_its_limit():
+    """With little cash, or few items held, the closest ratio that fits can sit far from the limit. Such an
+    order is not posted rather than posted at a price the strategy never asked for."""
+    # 5 Chaos cannot post "7 for 3" for a 2.3 limit; the closest that fits, "5 for 2", states 2.5, 8.7% more.
+    sim = backtest.Simulation(tiny_panel([3, 2, 2, 2]), capital=5, participation=1.0, whole_lots=True)
+    result = sim.run(Script({0: [("buy", 2, 2.3)]}))
+    assert result.fills == 0 and sim.position[0] == 0
+    # Two items held cannot post "13 for 5" for a 2.6 limit; "5 for 2" states 2.5, 3.8% less. Not posted.
+    sim = backtest.Simulation(tiny_panel([2, 2, 2.55, 2.55, 2.55]), capital=1000, participation=1.0, whole_lots=True)
+    sim.run(Script({0: [("buy", 2, 2.0)], 1: [("sell", 2, 2.6)]}))
+    assert sim.position[0] == 2 and sim.sales[0] == 0
+
+
 def test_a_purse_too_small_for_one_lot_posts_nothing():
     sim = backtest.Simulation(tiny_panel([10, 9, 9, 9]), capital=5, participation=1.0, whole_lots=True)
     result = sim.run(Script({0: [("buy", 5, 9.5)]}))

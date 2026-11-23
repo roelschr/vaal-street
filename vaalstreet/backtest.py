@@ -792,6 +792,12 @@ class Simulation:
         if pair is None:
             return None
         currency, items = pair
+        # Under a cap (little cash, few items held) lot_ratio falls back to the closest ratio that fits,
+        # which can sit far off the limit. Never post one more than the tolerance worse than the limit
+        # asked for; the slack covers the 7-digit key `_fit_ratio` caches on.
+        worse = currency / items / (limit / unit) - 1
+        if (worse if side == "buy" else -worse) > pricing.LOT_TOLERANCE + 1e-6:
+            return None
         held = units if side == "buy" else min(units, self.position[item])
         lots = math.floor(held / items + 1e-9)
         if side == "buy":
