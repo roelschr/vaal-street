@@ -336,3 +336,39 @@ def test_the_sync_thread_warms_the_slow_answers(flat_root, tmp_path):
     app.api_flips({})
     app.api_ladder({})
     assert set(app.desk()._replays) == warmed and app.desk() is desk
+
+
+def test_a_plan_carries_what_recording_its_order_needs(server):
+    """The Flips page records an order you posted from the plan's own row: the item, the side, the ratio and
+    the market its currency names. Known answers: both orders then come back with the plan (`orders`), so the
+    page can say "posted"; an order at exactly the plan's ratio needs no re-price; a filled or cancelled order
+    is no longer on the exchange, so it is no longer listed."""
+    flips = call(f"{server}/api/flips")[1]
+    assert flips["orders"] == []
+    plan = flips["flips"][0]
+    for side in ("buy", "sell"):
+        order = plan[f"{side}_order"]
+        assert call(f"{server}/api/order", {
+            "item": plan["id"], "side": side, "market": order["currency"].lower(),
+            "currency_units": order["currency_units"], "item_units": order["item_units"],
+            "units": 4 * order["item_units"]})[0] == 200
+    posted = call(f"{server}/api/flips")[1]["orders"]
+    assert [(o["item"], o["side"], o["units"], o["filled"]) for o in posted] == [
+        (plan["id"], side, 4 * plan[f"{side}_order"]["item_units"], 0) for side in ("buy", "sell")]
+    assert [(o["currency_units"], o["item_units"], o["market"]) for o in posted] == [
+        (plan[f"{side}_order"]["currency_units"], plan[f"{side}_order"]["item_units"],
+         plan[f"{side}_order"]["currency"].lower()) for side in ("buy", "sell")]
+    advice = {o["side"]: o["advice"] for o in call(f"{server}/api/ledger")[1]["orders"]}
+    assert advice == {"buy": "keep", "sell": "keep"}
+    # The item's panel lists the orders of its own item only.
+    assert [o["id"] for o in call(f"{server}/api/item?id={plan['id']}")[1]["orders"]] == [o["id"] for o in posted]
+    other = OTHER if plan["id"] != OTHER else ITEM
+    assert call(f"{server}/api/item?id={other}")[1]["orders"] == []
+    # A part-filled order is still posted; a filled one and a cancelled one are not.
+    buy, sell = posted
+    assert call(f"{server}/api/order", {"fill": buy["id"], "units": plan["buy_order"]["item_units"]})[0] == 200
+    assert call(f"{server}/api/order", {"id": sell["id"], "status": "cancelled"})[0] == 200
+    [left] = call(f"{server}/api/flips")[1]["orders"]
+    assert left["id"] == buy["id"] and left["filled"] == plan["buy_order"]["item_units"]
+    assert call(f"{server}/api/order", {"fill": buy["id"], "units": 3 * plan["buy_order"]["item_units"]})[0] == 200
+    assert call(f"{server}/api/flips")[1]["orders"] == []

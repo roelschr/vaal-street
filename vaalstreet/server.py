@@ -420,7 +420,17 @@ class App:
         plans = [p for p in desk.flips(share=float(q.get("share", 0.1)), min_margin=0.0) if p["id"] == series["id"]]
         sets = [c for c in desk.conversions() if series["id"] in (c["id"], c["reward_id"])]
         return {"series": series, "flips": plans, "conversions": sets,
-                "meta": desk.meta.get(series["id"], {}), "alerts": self.ledger.alerts(desk.league)}
+                "meta": desk.meta.get(series["id"], {}), "alerts": self.ledger.alerts(desk.league),
+                "orders": [o for o in self._posted(desk.league) if o["item"] == series["id"]]}
+
+    def _posted(self, league: str) -> list[dict]:
+        """The orders you recorded that are still on the exchange.
+
+        The Flips page and an item's panel show them next to the plan they belong to, so that a plan you
+        already posted says so and is not recorded a second time.
+        """
+        keep = ("id", "item", "side", "market", "currency_units", "item_units", "units", "filled")
+        return [{k: o[k] for k in keep} for o in self.ledger.orders(league) if o["status"] in ("open", "part-filled")]
 
     def costs(self, league: str) -> Costs:
         return self.ledger.costs(league)
@@ -441,7 +451,8 @@ class App:
         kind = q.get("kind", "all")
         plans = [p for p in plans if kind == "all" or p["kind"] == kind]
         limit = int(q["limit"]) if q.get("limit") else None
-        out = {"summary": desk.summary(), "flips": plans[:limit], "settings": self.settings()}
+        out = {"summary": desk.summary(), "flips": plans[:limit], "settings": self.settings(),
+               "orders": self._posted(desk.league)}
         if bankroll:
             budget = float(q["gold_budget"]) if q.get("gold_budget") else None
             out["session"] = session_plan(plans, bankroll, budget if budget is not None and budget >= 0 else None)
