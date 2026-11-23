@@ -448,6 +448,37 @@ def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> 
     return best
 
 
+def lot_ratio(
+    price: float, tolerance: float = 0.02, max_currency: float = math.inf, max_items: float = math.inf,
+    max_units: int = 400,
+) -> tuple[int, int] | None:
+    """The whole-number (currency, items) order with the smallest lot that states `price` within `tolerance`.
+
+    An order fills in multiples of its ratio, so "23 Chaos for 10" fills ten items at a time while
+    "7 for 3" fills three. A flip level is read from hourly averages that move 5 to 12% within an
+    hour or two, so pinning it to 0.4% only makes the lots bigger and slower. This takes the order
+    with the fewest units on its smaller side that is within `tolerance` of `price`, rounded either
+    way, or else the closest one up to `max_units`. `max_currency` and `max_items` cap what the order
+    may state, for a small purse; None when even the smallest order does not fit.
+    """
+    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
+        return None
+    best, best_err = None, math.inf
+    for n in range(1, max_units + 1):
+        if price >= 1:  # the items are the smaller side
+            currency, items = max(1, round(price * n)), n
+        else:
+            currency, items = n, max(1, round(n / price))
+        if currency > max_currency or items > max_items:
+            break  # both sides only grow with n
+        err = abs(currency / items / price - 1)
+        if err < best_err - 1e-12:
+            best, best_err = (currency, items), err
+        if err <= tolerance:
+            break
+    return best
+
+
 def fit_ratio(
     price: float, max_currency: float, max_items: float = 5000, side: str | None = None
 ) -> tuple[int, int] | None:

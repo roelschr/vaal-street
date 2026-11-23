@@ -127,6 +127,25 @@ def test_nice_ratio_gives_small_whole_number_orders():
         pricing.nice_ratio(0)
 
 
+def test_lot_ratio_takes_the_smallest_lot_within_two_percent():
+    # 2.3 Chaos: 2 for 1 and 5 for 2 are 13% and 8.7% off; 7 for 3 is 1.4% off. (nice_ratio says 23 for 10.)
+    assert pricing.lot_ratio(2.3) == (7, 3)
+    # Near a whole number the lot has to grow: at 1.15, 7 for 6 is the first within 2% (1.4% off).
+    assert pricing.lot_ratio(1.15) == (7, 6)
+    assert pricing.lot_ratio(1.912) == (15, 8)
+    assert pricing.lot_ratio(220.97) == (221, 1)
+    # Cheaper than the currency: the currency is the smaller side. 0.3157: 1 for 3 is 5.6% off,
+    # 4 for 13 is 2.5% off, 5 for 16 is 1.0% off.
+    assert pricing.lot_ratio(0.3157) == (5, 16)
+    assert pricing.lot_ratio(0.3157, tolerance=0.06) == (1, 3)
+    # Caps for a small purse: the closest order that still fits, or None when nothing does.
+    assert pricing.lot_ratio(2.3, max_currency=5) == (5, 2)
+    assert pricing.lot_ratio(250, max_currency=40) is None
+    assert pricing.lot_ratio(0.024, max_currency=1) == (1, 42)
+    assert pricing.lot_ratio(0.024, max_items=40) is None, "one unit of currency buys 42"
+    assert pricing.lot_ratio(0) is None and pricing.lot_ratio(float("nan")) is None
+
+
 def test_rolling_helpers_match_numpy():
     rng = np.random.default_rng(1)
     a = rng.normal(size=(120, 3))

@@ -12,7 +12,7 @@ import pytest
 
 from conftest import NEW, SCRAP, SCRAP_PREMIUM
 from vaalstreet import backtest, check, pricing
-from vaalstreet.desk import LOT_WINDOW, REPLAY_STAKE, SWING_WINDOW, Desk
+from vaalstreet.desk import LOT_WINDOW, RATIO_TOLERANCE, REPLAY_STAKE, SWING_WINDOW, Desk, lot_hours
 from vaalstreet.panel import weighted_quantile
 
 
@@ -91,19 +91,53 @@ def test_leg_deviation_is_causal():
 
 
 def test_every_plan_says_how_long_one_lot_takes(desk):
-    """Known answer: Test Scrap is worth about 2 Chaos and about 5.6 Chaos in its Divine market, so its
-    Chaos-market lot is one scrap and its Divine-market lot is one Divine's worth, bridge / price scraps."""
+    """Each order is the smallest whole-number ratio within 2% of its level, and one lot is the larger
+    of the two orders' item counts, timed as the session plan times it.
+
+    Known answers for Test Scrap (Divine at 147.75 Chaos): its Chaos-market levels sit near 1.91 Chaos,
+    and near 2 nothing smaller than "15 Chaos for 8" comes within 2% (2 for 1 is 4.6% off, 13 for 7 is
+    2.9% off), so that plan's lot is 8. Its Divine-market levels near 5.3 to 5.6 Chaos post as one
+    Divine for 26 to 28 scraps, so those lots are about one Divine's worth.
+    """
     plans = desk.flips(min_margin=0.0)
     assert plans
     for plan in plans:
-        assert plan["hours_per_lot"] == pytest.approx(plan["lot_units"] / plan["units_per_hour"], rel=0.01)  # both rounded
+        buy, sell = plan["buy_order"], plan["sell_order"]
+        assert plan["lot_units"] == max(buy["item_units"], sell["item_units"])
+        assert plan["hours_per_lot"] == pytest.approx(lot_hours(plan), rel=1e-2)  # shown to three figures
         assert plan["hours_per_lot"] <= LOT_WINDOW
+        assert plan["buy"] == pytest.approx(plan["buy_level"], rel=RATIO_TOLERANCE + 1e-6)
+        assert plan["sell"] == pytest.approx(plan["sell_level"], rel=RATIO_TOLERANCE + 1e-6)
+        # The margin is what the orders state, and the level they were cut from cleared it too.
+        assert plan["margin"] == pytest.approx(sell["price"] / buy["price"] - 1, abs=1e-3)
+        assert plan["sell_level"] >= plan["buy_level"] and "level_profit" not in plan
     scrap = {p["kind"]: p for p in plans if p["id"] == SCRAP}
-    assert scrap["chaos"]["lot_units"] == 1
-    assert scrap["cross"]["lot_units"] == pytest.approx(desk.bridge / scrap["cross"]["sell"], rel=1e-3)
+    chaos = scrap["chaos"]
+    assert (chaos["buy_order"]["currency_units"], chaos["buy_order"]["item_units"]) == (15, 8)
+    assert chaos["lot_units"] == 8
+    cross = scrap["cross"]
+    assert cross["sell_order"]["currency"] == "Divine" and cross["sell_order"]["currency_units"] == 1
+    assert cross["lot_units"] == cross["sell_order"]["item_units"] == round(desk.bridge / cross["sell_level"])
     # The Divine-only flip buys low and sells high in the same market: the cheaper buy sets the lot.
-    assert scrap["divine"]["lot_units"] == pytest.approx(desk.bridge / scrap["divine"]["buy"], rel=1e-3)
-    assert scrap["cross"]["slow"] is None, "a lot that fills within a sitting carries no warning"
+    divine = scrap["divine"]
+    assert divine["lot_units"] == divine["buy_order"]["item_units"] == round(desk.bridge / divine["buy_level"])
+    assert cross["slow"] is None, "a lot that fills within a sitting carries no warning"
+
+
+def test_the_patience_level_is_chosen_on_its_volume_not_on_lucky_rounding(desk):
+    """A level whose orders happen to round in your favour states a wider margin, but fills less often
+    than its level says. So the level is chosen, and must clear the minimum margin, before rounding.
+
+    Known answer: Test Scrap's Chaos-market levels at 35% patience (about 1.92 and 1.97, a 2.5% margin)
+    post as 17 for 9 and 2 for 1, a 5.9% margin. Chosen on posted orders, that level won; on its
+    volume, the 25% level (about 1.91 and 1.98, a 3.5% margin) earns more and is kept.
+    """
+    plans = desk.flips(min_margin=0.0)
+    chaos = next(p for p in plans if p["id"] == SCRAP and p["kind"] == "chaos")
+    assert chaos["reach"] == 0.25
+    for plan in desk.flips(min_margin=0.03):
+        assert plan["sell_level"] / plan["buy_level"] - 1 >= 0.03 - 1e-6
+        assert plan["margin"] >= 0.03 - 1e-6
 
 
 def test_a_level_too_slow_to_fill_one_lot_is_not_a_plan(desk):
@@ -154,16 +188,20 @@ def test_a_slow_plan_names_its_market_in_plain_words(desk):
 def test_a_plan_cut_to_a_bankroll_times_its_own_lot(desk):
     """With a bankroll the orders are re-cut to whole numbers at slightly different prices; the lot and
     its time follow those prices, not the uncut plan's."""
-    plans = desk.flips(min_margin=0.0, bankroll=500.0)
-    assert plans
-    for plan in plans:
-        buy_unit = desk.bridge if plan["kind"] == "divine" else 1.0
-        sell_unit = desk.bridge if plan["kind"] != "chaos" else 1.0
-        lot = max(1.0, buy_unit / plan["buy"], sell_unit / plan["sell"])
-        assert plan["lot_units"] == pytest.approx(lot, rel=1e-3)
-        assert plan["hours_per_lot"] == pytest.approx(lot / plan["units_per_hour"], rel=1e-2)
-        assert plan["hours_per_lot"] <= LOT_WINDOW
-        assert (plan["slow"] is None) == (plan["hours_per_lot"] <= 6)
+    for bankroll in (500.0, 10.0):
+        plans = desk.flips(min_margin=0.0, bankroll=bankroll)
+        assert plans
+        for plan in plans:
+            lot = max(plan["buy_order"]["item_units"], plan["sell_order"]["item_units"])
+            assert plan["lot_units"] == lot
+            assert plan["hours_per_lot"] == pytest.approx(lot_hours(plan), rel=1e-2)  # shown to three figures
+            assert plan["hours_per_lot"] <= LOT_WINDOW
+            assert (plan["slow"] is None) == (plan["hours_per_lot"] <= 6)
+    # Known answer: 10 Chaos cannot post the scrap's "15 Chaos for 8"; the closest order it can post is
+    # "2 for 1" (every ratio up to 10 for 5 states 2.0), so its lot is one scrap and its margin is gone.
+    chaos = next(p for p in desk.flips(min_margin=0.0, bankroll=10.0) if p["id"] == SCRAP and p["kind"] == "chaos")
+    assert (chaos["buy_order"]["currency_units"], chaos["buy_order"]["item_units"]) == (2, 1)
+    assert chaos["lot_units"] == 1 and chaos["margin"] == pytest.approx(0.0, abs=1e-9)
 
 
 def test_a_divine_market_far_above_the_chaos_market_is_flagged_not_dropped(desk):

@@ -50,6 +50,10 @@ SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fi
 # offered: its levels were read off the last SWING_WINDOW hours, and over those hours its share of what
 # traded there would not have made a single lot, so nothing says the order ever fills.
 LOT_WINDOW = SWING_WINDOW
+# A flip order states the smallest whole-number ratio within this of its level (`pricing.lot_ratio`).
+# The levels come from hourly averages that move 5 to 12% in an hour or two, so 2% costs little, and
+# it keeps lots small: on Covens it cut the median lot from 5 to 2 times the smallest the markets allow.
+RATIO_TOLERANCE = 0.02
 MAX_SWAPS = 4  # longest round trip `loops` walks; the number of paths grows quickly past this
 
 
@@ -614,12 +618,18 @@ class Desk:
         return out
 
     # ----------------------------------------------------------------- flips
-    def _order(self, price: float, in_divine: bool) -> dict:
-        """An integer exchange ratio close to `price` (reference currency per item)."""
+    def _order(self, price: float, in_divine: bool, max_currency: float = math.inf,
+               max_items: float = math.inf) -> dict | None:
+        """The order to post for a level of `price` Chaos per item: the smallest whole-number ratio
+        within `RATIO_TOLERANCE` of it, in Chaos or in Divines. The caps are in that currency's units
+        and in items; None when nothing fits them."""
         unit = self.bridge if in_divine else 1.0
-        pay, get = pricing.nice_ratio(price / unit)
+        pair = pricing.lot_ratio(price / unit, RATIO_TOLERANCE, max_currency, max_items)
+        if pair is None:
+            return None
+        pay, get = pair
         return {"currency": "Divine" if in_divine else "Chaos", "currency_units": pay, "item_units": get,
-                "price": _num(pay / get * unit)}
+                "price": _num(pay / get * unit), "exact": pay / get * unit}
 
     def _fit(self, plan: dict, bankroll: float, min_margin: float) -> dict | None:
         """Re-cut a plan's orders to whole numbers a purse of `bankroll` can actually post.
@@ -627,35 +637,33 @@ class Desk:
         The exchange trades whole lots: "64 decks for 1 Divine" cannot be sold by someone holding
         ten decks. Returns the plan with affordable orders, its margin recomputed from the prices
         those orders really state, and the smallest stake that runs it - or None if nothing fits.
+        The orders are cut again from the plan's levels, not from its uncut orders, so rounding
+        never piles on rounding.
         """
         buy_unit = self.bridge if plan["kind"] == "divine" else 1.0
-        sell_unit = self.bridge if plan["kind"] != "chaos" else 1.0
-        buy = pricing.fit_ratio(plan["buy"] / buy_unit, bankroll / buy_unit)
+        buy = self._order(plan["buy_level"], plan["kind"] == "divine", max_currency=bankroll / buy_unit)
         if not buy:
             return None
-        buy_price = buy[0] / buy[1] * buy_unit
-        sell = pricing.fit_ratio(plan["sell"] / sell_unit, 400, max_items=bankroll / buy_price)
+        buy_price = buy.pop("exact")
+        sell = self._order(plan["sell_level"], plan["kind"] != "chaos", max_items=bankroll / buy_price)
         if not sell:
             return None
-        sell_price = sell[0] / sell[1] * sell_unit
+        sell_price = sell.pop("exact")
         margin = sell_price / buy_price - 1
         if margin < min_margin:
             return None
-        # The re-cut prices move the smallest lot a little, so its time is worked out again (see `flips`).
-        lot = max(1.0, buy_unit / buy_price, sell_unit / sell_price)
+        # The re-cut orders can have other lots than the uncut plan's, so their time is worked out again.
+        lot = max(buy["item_units"], sell["item_units"])
         hours_per_lot = lot / plan["units_per_hour"] if plan["units_per_hour"] else math.inf
         if hours_per_lot > LOT_WINDOW:
             return None
         flow_value = plan["units_per_hour"] * buy_price
-        fitted = {"lot_units": _num(lot, 4), "hours_per_lot": _num(hours_per_lot, 3)}
+        fitted = {"lot_units": lot, "hours_per_lot": _num(hours_per_lot, 3)}
         return plan | fitted | {"slow": self._slow(plan | fitted)} | {
             "buy": _num(buy_price), "sell": _num(sell_price), "margin": _num(margin, 4),
-            "buy_order": {"currency": "Divine" if buy_unit != 1 else "Chaos", "currency_units": buy[0],
-                          "item_units": buy[1], "price": _num(buy_price)},
-            "sell_order": {"currency": "Divine" if sell_unit != 1 else "Chaos", "currency_units": sell[0],
-                           "item_units": sell[1], "price": _num(sell_price)},
+            "buy_order": buy, "sell_order": sell,
             # Enough to post the buy order, and to hold a full sell lot.
-            "lot_cost": _num(max(buy[0] * buy_unit, sell[1] * buy_price), 4),
+            "lot_cost": _num(max(buy["currency_units"] * buy_unit, sell["item_units"] * buy_price), 4),
             "flow_value": _num(flow_value, 4),
             "capital": _num(min(plan["capital"], bankroll), 4),
             # The purse turns over at most once per buy-then-sell, which takes as long as it takes
@@ -682,13 +690,18 @@ class Desk:
         than the published extremes. For every item and leg pair the patience level
         with the highest expected profit is kept.
 
-        Orders fill in whole lots, so each plan says how long one lot takes. The smallest lot a
-        market takes is one item, or one unit of its currency when the item is worth less (a
-        5 Chaos item sells in the Divine market about 40 at a time); a plan's lot is the larger of
-        its buy lot and its sell lot (`lot_units`), and `hours_per_lot` is that lot divided by the
-        units the plan takes per hour. A level slower than `LOT_WINDOW` is not a plan, and that is
-        decided per patience level, so a more patient level cannot win on a margin it has no
-        trade to back. A plan slower than one sitting (`SESSION_HOURS`) carries `slow`, a sentence
+        Each level is posted as the smallest whole-number order within `RATIO_TOLERANCE` of it
+        (`buy_order`, `sell_order`), and the plan's `buy`, `sell`, margin and profit are the prices
+        those orders state; the unrounded levels stay in `buy_level` and `sell_level`. How fast the
+        plan fills is still read at the level: rounding either way moves an order a little more or
+        a little less patient, and over the plans that evens out.
+
+        Orders fill in multiples of their ratio, so each plan says how long one lot takes. A
+        plan's lot is the larger of its two orders' item counts (`lot_units`: "7 Chaos for 3" is
+        three items, "1 Divine for 40" is forty), and `hours_per_lot` is that lot divided by the
+        units the plan takes per hour, as `lot_hours` and the session plan count it. A level
+        slower than `LOT_WINDOW` is not a plan, and that is decided per patience level, so a more
+        patient level cannot win on a margin it has no trade to back. A plan slower than one sitting (`SESSION_HOURS`) carries `slow`, a sentence
         naming its thinner market and what that market traded in the last day
         (`slow_market`, `slow_market_value_24h`). The queue of offers ahead of you is shown
         (`ask_queue_hours`) but not counted here: the exchange does not publish at what prices
@@ -713,9 +726,6 @@ class Desk:
             if not usable.any():
                 continue
             share_vec, sources = self._shares(share, share_by_item, PLAN_MARKETS[kind])
-            # What one unit of each market's currency is worth: the least an order there can state.
-            buy_unit = self.bridge if kind == "divine" else 1.0
-            sell_unit = self.bridge if kind != "chaos" else 1.0
             thin_is_buy = buy_leg.flow < sell_leg.flow
             for reach in PATIENCE:
                 # Volume-weighted: `reach` of the units traded at or beyond each level, so an hour in which
@@ -727,9 +737,6 @@ class Desk:
                 units = share_vec * reach * np.minimum(buy_leg.flow, sell_leg.flow)
                 with np.errstate(divide="ignore", invalid="ignore"):
                     margin = sell / buy - 1
-                    # One lot is at least one item and at least one unit of the market's currency.
-                    lot = np.maximum(1.0, np.maximum(buy_unit / buy, sell_unit / sell))
-                    hours_per_lot = lot / units
                 # How long one stake takes to go round: wait for an hour whose average reaches the buy,
                 # then for one that reaches the sell. Hours, not volume: a purse smaller than the flow
                 # turns over only as often as the levels are reached.
@@ -739,29 +746,44 @@ class Desk:
                     hit_sell = np.mean(sell_leg.dev >= high - 1e-12, axis=0)
                 floor = 1 / len(buy_leg.dev)
                 cycle = 1 / np.maximum(hit_buy, floor) + 1 / np.maximum(hit_sell, floor)
-                profit = margin * units * buy
-                ok = usable & np.isfinite(margin) & (margin >= min_margin) & (units > 0) & (hours_per_lot <= LOT_WINDOW)
+                # The patience level is chosen on what the volume shows at the level itself. Choosing on the
+                # posted orders would favour whichever level happened to round in your favour, and credit
+                # it with the fills of the level it no longer sits at.
+                level_profit = margin * units * buy
+                ok = usable & np.isfinite(margin) & (margin >= min_margin) & (units > 0)
                 for i in np.flatnonzero(ok):
                     current = best.get((kind, i))
-                    if current and current["profit_per_hour"] >= profit[i]:
+                    if current and current["level_profit"] >= level_profit[i]:
                         continue
+                    # The orders it would post must clear the margin too, and fill one lot in time. An order
+                    # fills in multiples of its ratio, so the larger of the two orders' item counts is one
+                    # lot, and a level that cannot fill one within `LOT_WINDOW` is not a plan.
+                    buy_order = self._order(float(buy[i]), kind == "divine")
+                    sell_order = self._order(float(sell[i]), kind != "chaos")
+                    buy_price, sell_price = buy_order.pop("exact"), sell_order.pop("exact")
+                    posted_margin = sell_price / buy_price - 1
+                    lot = max(buy_order["item_units"], sell_order["item_units"])
+                    hours_per_lot = lot / units[i]
+                    if posted_margin < min_margin or hours_per_lot > LOT_WINDOW:
+                        continue
+                    profit = posted_margin * units[i] * buy_price
                     with np.errstate(divide="ignore", invalid="ignore"):
                         ask_queue = sell_leg.ask_units[i] / sell_leg.flow[i]
                         bid_queue = buy_leg.bid_value[i] / (buy_leg.flow[i] * buy_leg.fair[-1, i])
                     best[(kind, i)] = {
                         "id": p.items[i], "name": p.names[i], "category": p.categories[i], "kind": kind,
-                        "buy": _num(buy[i]), "sell": _num(sell[i]), "margin": _num(margin[i], 4),
+                        "buy": _num(buy_price), "sell": _num(sell_price), "margin": _num(posted_margin, 4),
+                        "buy_level": _num(buy[i]), "sell_level": _num(sell[i]),
                         "reach": reach,
-                        "buy_order": self._order(float(buy[i]), kind == "divine"),
-                        "sell_order": self._order(float(sell[i]), kind != "chaos"),
+                        "buy_order": buy_order, "sell_order": sell_order,
                         "units_per_hour": _num(units[i], 4),
-                        "lot_units": _num(lot[i], 4), "hours_per_lot": _num(hours_per_lot[i], 3),
+                        "lot_units": lot, "hours_per_lot": _num(hours_per_lot, 3),
                         "slow_market": (buy_leg if thin_is_buy[i] else sell_leg).name,
                         "slow_market_value_24h": _num((buy_leg if thin_is_buy[i] else sell_leg).value_24h[i], 4),
                         "cycle_hours": _num(cycle[i], 3),
-                        "profit_per_hour": float(profit[i]),
+                        "profit_per_hour": float(profit), "level_profit": float(level_profit[i]),
                         "share": _num(share_vec[i], 4), "share_source": sources.get(i, f"default {share:.0%}"),
-                        "capital": _num(units[i] * buy[i] * 6, 4),  # about six hours of buying held as inventory
+                        "capital": _num(units[i] * buy_price * 6, 4),  # about six hours of buying held as inventory
                         "range_low": _num(buy_leg.low[i]), "range_high": _num(sell_leg.high[i]),
                         "bid_queue_hours": _num(bid_queue, 3), "ask_queue_hours": _num(ask_queue, 3),
                         "replay": replay.get((kind, p.items[i], reach)),
@@ -779,6 +801,7 @@ class Desk:
                 plan["warning"] = (f"The Divine market pays {gap:.0f}x the Chaos market here; it fills rarely."
                                    if math.isfinite(gap) and gap > OUT_OF_LINE else None)
             plan["slow"] = self._slow(plan)
+            del plan["level_profit"]  # chose the patience level; the posted orders' profit is the one shown
             plan["profit_per_hour"] = _num(plan["profit_per_hour"], 4)
             plan["flow_value"] = _num((plan["units_per_hour"] or 0) * (plan["buy"] or 0), 4)
             plan["lot_cost"] = _num(max(

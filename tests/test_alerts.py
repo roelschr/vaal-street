@@ -48,7 +48,9 @@ def test_each_kind_fires_on_the_known_answer_and_not_past_it(app):
                                                           "direction": "up", "min_move": 5}),
     ]
     misses = [
-        ledger.add_alert("New", kind="plan", params={"item": ITEM, "min_margin": 11}),
+        # The orb's best plan buys at "19 Chaos for 2" and sells at "1 Divine for 14": 11.1% as posted
+        # (10.1% at the levels those orders round).
+        ledger.add_alert("New", kind="plan", params={"item": ITEM, "min_margin": 12}),
         ledger.add_alert("New", kind="plan", params={"min_margin": 2, "min_profit": 60}),
         ledger.add_alert("New", kind="trip", params={"min_edge": 80}),
         ledger.add_alert("New", kind="trip", params={"item": OTHER, "min_resting": 6000}),

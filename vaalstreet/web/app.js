@@ -274,7 +274,7 @@ const flipCols = () => [
   { h: 'Margin', f: r => pct(r.margin), s: r => r.margin },
   { h: 'Volume beyond', f: r => plainPct(r.reach), s: r => r.reach, title: 'Share of the last two days’ volume that traded in hours averaging at or beyond each order level' },
   { h: 'Units / hour', f: r => `<span title="${esc(shareTitle(r))}">${fmt(r.units_per_hour)}${r.share_source?.startsWith('your fills') ? ' <span class="dim" title="Measured from your orders">✓</span>' : ''}</span>`, s: r => r.units_per_hour },
-  { h: 'One lot every', f: r => `<span class="${r.slow ? 'gold' : ''}" title="${esc(lotTitle(r))}">${dur(r.hours_per_lot)}</span>`, s: r => r.hours_per_lot, title: 'Orders fill in whole lots. How long your share of the trade takes to fill the smallest lot these two markets allow' },
+  { h: 'One lot every', f: r => `<span class="${r.slow ? 'gold' : ''}" title="${esc(lotTitle(r))}">${dur(r.hours_per_lot)}</span>`, s: r => r.hours_per_lot, title: 'An order fills in multiples of its ratio: "7 for 3" fills three items at a time. How long your share of the trade takes to fill one lot of the bigger order' },
   { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour },
   { h: 'Last 7 days', f: r => replayCell(r.replay), s: r => r.replay?.vs_divine ?? r.replay?.return, title: replayTitle },
   { h: 'Capital', f: r => money(r.capital), s: r => r.capital, title: 'Roughly six hours of buying held as inventory' },
@@ -301,8 +301,8 @@ const replayTitle = 'This plan’s rule replayed over the last 7 days on a 1,000
 // A flip whose one lot takes longer than a sitting to fill: slow, and it says how thin its market is.
 const flipWarn = r => (r.warning ? ` <span class="gold" title="${esc(r.warning)}">⚠ rare fills</span>` : '')
   + (r.slow ? ` <span class="gold" title="${esc(r.slow)}">⚠ slow</span>` : '');
-// The smallest lot a plan's markets allow: one item, or one Chaos or Divine worth of a cheaper one.
-const lotTitle = r => r.lot_units == null ? '' : `The smallest lot is about ${Math.ceil(r.lot_units - 1e-9).toLocaleString('en-US')} item${r.lot_units > 1 ? 's' : ''}. ${r.slow || ''}`.trim();
+// One lot: the item count of the bigger of the plan's two orders, which fill in multiples of their ratio.
+const lotTitle = r => r.lot_units == null ? '' : `One lot is ${r.lot_units.toLocaleString('en-US')} item${r.lot_units === 1 ? '' : 's'}, the item count of the bigger order. ${r.slow || ''}`.trim();
 const RANK = { profit: 7, gold: 12, own: 15 };
 
 async function viewFlips(main) {
