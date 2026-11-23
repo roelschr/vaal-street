@@ -69,6 +69,11 @@ const itemCell = (r, sub) => `<div class="item">${icon(r.id)}<div style="min-wid
 const order = (o, buying) => buying
   ? `${o.currency_units} ${curWord(o.currency)} <span class="dim">for</span> ${o.item_units}`
   : `${o.item_units} <span class="dim">for</span> ${o.currency_units} ${curWord(o.currency)}`;
+// Small icons for the buttons used most: weigh an offer, and the hideout window.
+const BI = {
+  check: '<svg class="bi" viewBox="0 0 24 24"><path d="M12 4v16M7 20h10M4 8h16M6.5 8l-3 6.5a3.2 3.2 0 006 0L6.5 8zM17.5 8l-3 6.5a3.2 3.2 0 006 0L17.5 8z"/></svg>',
+  hideout: '<svg class="bi" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M13 13h4v3h-4z"/></svg>',
+};
 const KIND = { chaos: 'Chaos market', divine: 'Divine market', cross: 'Chaos → Divine' };
 // Currency icons in place of unit words. The letter or word stays in the page, so copying a price keeps
 // its unit and the page still reads right if the icons cannot be fetched: style.css shows the icons
@@ -166,7 +171,7 @@ function renderTop() {
     <span class="grow"></span>
     <div class="sync" title="${esc(sync.error || '')}"><span class="dot ${sync.error ? 'err' : sync.running ? 'busy' : ''}"></span>${esc(sync.error ? 'Sync failed' : sync.message)}</div>
     <div class="seg" id="unitSeg" title="Show prices in Chaos or Divine"><button class="${state.unit === 'chaos' ? 'on' : ''}" data-u="chaos" title="Prices in Chaos"><i class="ci c"></i><span class="kt">Chaos</span></button><button class="${state.unit === 'divine' ? 'on' : ''}" data-u="divine" title="Prices in Divine"><i class="ci d"></i><span class="kt">Divine</span></button></div>
-    <button class="btn" id="hideoutBtn" title="Compact always-on-top view (H)">Hideout</button>`;
+    <button class="btn" id="hideoutBtn" title="Compact always-on-top view (H)">${BI.hideout}Hideout</button>`;
   $('#leagueSel').onchange = async e => { state.league = e.target.value; await api('/api/league', { league: state.league }); state.summary = null; route(); };
   $('#unitSeg').onclick = e => { const u = e.target.closest('[data-u]')?.dataset.u; if (u) { state.unit = localStorage.unit = u; route(); } };
   $('#hideoutBtn').onclick = openHideout;
@@ -248,7 +253,7 @@ async function viewDesk(main) {
 async function viewMarkets(main) {
   const d = await loadDesk(); renderTop();
   const f = state.filters, cats = [...new Set(d.market.map(r => r.category))].sort();
-  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div><span class="grow"></span><button class="btn" id="tcBtn" title="Is an offer in the order window a good deal? (C)">Check an offer</button></div>
+  main.innerHTML = `<div class="head"><div><h1>Markets</h1><p>Every item that trades on the exchange. Price is the model's fair value; “vs Chaos” and “vs Divine” are what the two markets for the item are actually paying.</p></div><span class="grow"></span><button class="btn" id="tcBtn" title="Is an offer in the order window a good deal? (C)">${BI.check}Check an offer</button></div>
     <div class="bar">
       <label class="f">Search<input type="search" id="q" placeholder="Item name" value="${esc(f.q)}"></label>
       <label class="f">Category<select id="cat"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
@@ -1260,7 +1265,7 @@ async function openItem(id, hours = 168) {
     </div>
     ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
-      <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
+      <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">${BI.check}Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
     <div class="legend"><span><i style="background:var(--fair)"></i>Fair value</span><span title="How sure the model is about the value now. Not a forecast: single trades often land outside."><i style="background:color-mix(in srgb,var(--fair) 25%,transparent);height:8px"></i>How sure the model is</span><span><i style="background:var(--chaos)"></i>Chaos market, hourly average</span><span><i style="background:var(--divine)"></i>Divine market, hourly average</span><span><i style="background:color-mix(in srgb,var(--vol) 19%,transparent)"></i>Value traded</span></div>
     <div id="pc"></div>
     <h2 style="margin:18px 0 8px">Flip plans</h2><div class="orders" id="plans"></div>
@@ -1555,7 +1560,7 @@ async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
   main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
-    <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">Check an offer <kbd>C</kbd></button>`;
+    <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">${BI.check}Check an offer <kbd>C</kbd></button>`;
   $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
   fp.append(table([
