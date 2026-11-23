@@ -31,6 +31,7 @@ from vaalstreet.rehearsal import PRACTICE_FILE, PracticeLedger, Rehearsal, leagu
 WEB = Path(__file__).parent / "web"
 HOUR = 3600
 REALM = "poe1"
+PASTE_LIMIT = 200_000  # characters in a pasted stash list: thousands of lines, and far under the request limit
 
 
 class ApiError(Exception):
@@ -719,6 +720,43 @@ class App:
         except (KeyError, ValueError, TypeError) as err:
             raise ApiError(f"Bad request: {err}") from err
 
+    def api_stash_paste(self, body: dict) -> dict:
+        """A pasted list of what you hold, read into stash lines. Written only with "write": true.
+
+        The answer says what every line was read as and what it would replace, so the page can show it
+        before anything changes: `lines` (each with the units the stash holds now, `was`), `unread`
+        (lines that could not be read, with the reason) and, with "replace", `dropped` (lines the stash
+        holds that the list does not name, which would go). Replacing is refused while a line is unread:
+        an item whose line could not be read would silently lose its place in the stash.
+        """
+        desk = self.desk(body.get("league"))
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ApiError("Bad request: paste a list first, one item per line.")
+        if len(text) > PASTE_LIMIT:
+            raise ApiError("Bad request: that list is too long to read in one go.")
+        holdings, unread = check.read_holdings(desk, text)
+        held, replace = self.ledger.stash(desk.league), bool(body.get("replace"))
+        lines = [{"id": item, "name": desk._name(item), "units": _num(entry["units"]), "was": _num(held.get(item)),
+                  "lines": entry["lines"]} for item, entry in holdings.items()]
+        dropped = [{"id": item, "name": desk._name(item), "units": _num(units)}
+                   for item, units in held.items() if replace and item not in holdings]
+        written = False
+        if body.get("write"):
+            if replace and unread:
+                raise ApiError("Bad request: some lines could not be read. Fix or delete them before replacing the "
+                               "whole stash, or the items on those lines would be removed from it.")
+            if not lines:
+                raise ApiError("Bad request: no line of that list could be read.")
+            try:
+                self.ledger.set_stash_many(desk.league, {item: entry["units"] for item, entry in holdings.items()},
+                                           replace=replace)
+            except (ValueError, TypeError) as err:
+                raise ApiError(f"Bad request: {err}") from err
+            written = True
+        return {"league": desk.league, "lines": sorted(lines, key=lambda row: row["lines"][0]), "unread": unread,
+                "dropped": dropped, "replace": replace, "written": written}
+
     def api_stash(self, q: dict) -> dict:
         """Your stash (or, with source=ledger, the ledger's positions) valued at today's prices."""
         desk = self.desk(q.get("league"))
@@ -1141,6 +1179,8 @@ def make_handler(app: App):
                 self._json(app.api_search(body))
             elif url.path == "/api/check":
                 self._json(app.api_check(body))
+            elif url.path == "/api/stash/paste":
+                self._json(app.api_stash_paste(body))
             elif url.path == "/api/event":
                 self._json(app.api_event(body))
             elif url.path == "/api/stash":

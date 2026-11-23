@@ -97,6 +97,9 @@ kbd{font:10.5px var(--mono);border:1px solid var(--line2);border-bottom-width:2p
 
 /* controls */
 select,input[type=text],input[type=number],input[type=search]{background:#0d0b08;border:1px solid var(--line2);border-radius:2px;padding:5px 9px;outline:none;min-width:0;box-shadow:inset 0 1px 3px #000c}
+/* The pasted stash list: the one multi-line field, in a fixed-width face so counts line up. */
+textarea{font:12px/1.5 var(--mono,ui-monospace,monospace);color:inherit;background:#0d0b08;border:1px solid var(--line2);border-radius:2px;padding:7px 9px;outline:none;width:min(620px,100%);resize:vertical;display:block}
+textarea:focus{border-color:var(--accent)}
 select:focus,input:focus{border-color:var(--accent);box-shadow:inset 0 1px 3px #000c,0 0 0 2px #d9b26033}
 input[type=number]{width:92px;font-family:var(--mono)}
 input[type=range],input[type=checkbox],input[type=radio]{accent-color:var(--accent)}

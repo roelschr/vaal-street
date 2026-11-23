@@ -618,6 +618,27 @@ class Ledger:
     def clear_stash(self, league: str) -> None:
         self._run("DELETE FROM stash WHERE league = ?", (league,))
 
+    def set_stash_many(self, league: str, holdings: dict[str, float], replace: bool = False,
+                       t: int | None = None) -> None:
+        """Set many stash lines in one step, for a pasted list: all of them are written, or none.
+
+        Zero units removes a line, as in `set_stash`. With `replace`, the lines the list does not
+        name are removed too, so the stash becomes exactly the list.
+        """
+        clean = {str(item): float(units) for item, units in holdings.items()}
+        if any(not math.isfinite(units) or units < 0 for units in clean.values()):
+            raise ValueError("Units must be zero or more.")
+        now = int(t or self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
+        with self._lock, self._db:
+            if replace:
+                self._db.execute("DELETE FROM stash WHERE league = ?", (league,))
+            for item, units in clean.items():
+                if units == 0:
+                    self._db.execute("DELETE FROM stash WHERE league = ? AND item = ?", (league, item))
+                else:
+                    self._db.execute("INSERT INTO stash VALUES (?, ?, ?, ?) ON CONFLICT(league, item) DO UPDATE SET "
+                                     "units = excluded.units, updated = excluded.updated", (league, item, units, now))
+
     # ---------------------------------------------------- your conversions
     def add_fixed(self, kind: str, inputs: list, output: str, gives: float = 1, note: str = "",
                   t: int | None = None) -> int:
