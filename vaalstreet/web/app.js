@@ -130,12 +130,21 @@ function ninjaLine() {
   const what = state.practice ? 'not used in practice (its prices are today’s)' : !n.on ? 'off' : n.last_run ? `${n.from_cache ? 'last fetched' : 'fetched'} ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
   return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
 }
+// The menu can fold into a rail of icons, which leaves the tables more room. Labels and the footer
+// stay a hover away, and the choice is remembered on this machine.
+const railOn = () => { try { return localStorage.navRail === '1'; } catch { return false; } };
+const FOLD = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>', INFO = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>';
 function renderNav(page) {
+  const rail = railOn();
+  $('#nav').classList.toggle('rail', rail);
   $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt=""><span>Vaal Street</span></div>
-    ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
+    ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}" aria-label="${label}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg><span class="lb">${label}</span></a>`).join('')}
     <span class="spacer"></span>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
+    <button class="railbtn" id="railBtn" title="${rail ? 'Show the menu labels' : 'Fold the menu into icons'}" aria-label="${rail ? 'Show the menu labels' : 'Fold the menu into icons'}">${FOLD}<span class="lb">Fold the menu</span></button>
+    <div class="footwrap"><button class="info" aria-label="Shortcuts and credits" title="Shortcuts and credits">${INFO}</button>
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div></div>`;
   $('#tourLink').onclick = e => { e.preventDefault(); openTour(); };
+  $('#railBtn').onclick = () => { try { localStorage.navRail = rail ? '0' : '1'; } catch { /* stays as it is */ } renderNav(page); };
 }
 function renderTop() {
   const s = state.status, sync = s.sync, sm = state.summary;

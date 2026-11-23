@@ -54,6 +54,25 @@ h2{font-size:13px}
 #nav .spacer{flex:1}
 #nav .foot{padding:10px 9px 8px;color:var(--dim);font-size:11px;line-height:1.5;border-top:1px solid;border-image:var(--rule) 1}
 #nav .foot a{color:var(--muted)}#nav .foot a:hover{color:var(--accent-hi)}
+#nav .info{display:none}
+.railbtn{display:flex;align-items:center;gap:10px;background:none;border:0;padding:6px 9px;color:var(--dim);cursor:pointer;font-size:11.5px}
+.railbtn:hover{color:var(--accent-hi)}
+.railbtn svg,#nav .info svg{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+/* folded: icons only, labels and footer on hover */
+#nav.rail{width:62px;padding:14px 8px}
+#nav.rail .brand{justify-content:center;padding:2px 0 14px}
+#nav.rail .brand span,#nav.rail .lb{display:none}
+#nav.rail>a{justify-content:center;padding:9px 0;position:relative}
+#nav.rail>a svg{width:20px;height:20px}
+#nav.rail>a:hover .lb,#nav.rail>a:focus-visible .lb{display:block;position:absolute;left:calc(100% + 10px);top:50%;translate:0 -50%;white-space:nowrap;padding:5px 10px;background:var(--panel2);border:1px solid var(--line2);box-shadow:0 0 0 1px #000,0 8px 20px #000a;color:var(--accent-hi);z-index:25}
+#nav.rail .railbtn{justify-content:center}
+#nav.rail .railbtn svg{rotate:180deg}
+#nav.rail .footwrap{position:relative;display:flex;justify-content:center}
+#nav.rail .info{display:flex;background:none;border:0;padding:6px;color:var(--dim);cursor:pointer}
+#nav.rail .info:hover{color:var(--accent-hi)}
+#nav.rail .foot{display:none;position:absolute;left:calc(100% + 10px);bottom:0;width:230px;background:var(--grain),var(--panel2);border:1px solid var(--line2);box-shadow:0 0 0 1px #000,0 10px 26px #000a;z-index:25}
+#nav.rail .footwrap:hover .foot,#nav.rail .footwrap:focus-within .foot{display:block}
+#nav.rail .foot::before{content:'';position:absolute;left:-12px;top:0;bottom:0;width:12px}  /* keeps the hover while the pointer crosses the gap */
 kbd{font:10.5px var(--mono);border:1px solid var(--line2);border-bottom-width:2px;border-radius:3px;padding:0 4px;color:var(--title);background:#0d0b08}
 
 /* shell */
