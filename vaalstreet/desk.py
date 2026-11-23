@@ -275,6 +275,19 @@ def replayed_rate(replay: dict | None, stake: float, against_divine: bool = True
     return ((stake + profit) / (1 + divines) - stake) / hours
 
 
+def _per_hour(returned: float, divines: float, stake: float, hours: int) -> dict:
+    """A replay's result in Chaos per hour on its stake: plain, and against holding Divines.
+
+    A return of +160% sounds like a fortune and is 10 Chaos an hour when the stake was 1,000 Chaos
+    and the week had 167 hours. It is the rate on that stake only. A plan's promise
+    (`profit_per_hour`) is at whatever capital its markets absorb, which for a deep market is
+    hundreds of times the stake, so the two are not the same measure; `replayed_rate` scales a
+    replay to a stake.
+    """
+    return {"per_hour": _num(returned * stake / hours, 4),
+            "vs_divine_per_hour": _num(((1 + returned) / (1 + divines) - 1) * stake / hours, 4)}
+
+
 def lot_hours(plan: dict) -> float:
     """Hours the plan's markets take to fill one whole lot at its share of the flow (inf if it never does)."""
     units = max(plan.get("buy_order", {}).get("item_units") or 1, plan.get("sell_order", {}).get("item_units") or 1)
@@ -827,6 +840,8 @@ class Desk:
         {(kind, item id, reach): entry}. An entry holds:
 
         - `return`: profit as a share of the stake, unsold inventory marked at fair value;
+        - `per_hour`: the same profit in Chaos per hour on the stake (not on the capital the
+          plan's promise assumes);
         - `realized`: the part of it from sales;
         - `sales`: hours with a sale;
         - `capital`: the most Chaos the item ever had tied up, which says how much of the stake the
@@ -837,7 +852,7 @@ class Desk:
         - `divines`: what holding Divines made over those hours, and `vs_divine`: the return
           against that. At a league start the Divine rises fast, so a flip that holds Chaos or
           items can show a large return in Chaos and still trail plain Divines. `vs_divine` is the
-          figure a plan is judged by.
+          figure a plan is judged by, and `vs_divine_per_hour` is it in Chaos per hour on the stake.
 
         A plan that looks good now but lost money all week is telling you something.
         """
@@ -868,8 +883,9 @@ class Desk:
                         out[(kind, item_id, reach)] = {
                             "return": _num(r, 3), "sales": int(sim.sales[i]),
                             "realized": _num(sim.realized[i] / REPLAY_STAKE, 3),
-                            "capital": _num(sim.peak_cost[i], 4), "hours": hours,
+                            "capital": _num(sim.peak_cost[i], 4), "hours": hours, "stake": REPLAY_STAKE,
                             "divines": _num(divines, 3), "vs_divine": _num((1 + r) / (1 + divines) - 1, 3),
+                            **_per_hour(r, divines, REPLAY_STAKE, hours),
                         }
         self._replays[key] = out
         self._replays[("model", days)] = base
@@ -919,6 +935,7 @@ class Desk:
                     "realized": _num(sim.realized[i] / s, 3), "capital": _num(sim.peak_cost[i], 4),
                     "stake": _num(s, 4), "hours": hours, "divines": _num(divines, 3),
                     "vs_divine": _num((1 + profit[i] / s) / (1 + divines) - 1, 3), "whole_lots": True,
+                    **_per_hour(profit[i] / s, divines, s, hours),
                     "at_stake": True,  # measured at this pick's stake: never rescaled
                 } for _, i, s in members}
             for k, i, _ in members:
@@ -1236,6 +1253,7 @@ class Desk:
                 "resting_value": _num(resting, 4),
                 # If you took `share` of what went through the thinnest swap at these rates.
                 "profit_per_day": _num(share * value * edge, 4),
+                "profit_per_hour": _num(share * value * edge / DAY, 4),  # the unit flips and conversions use
                 "swaps": len(rates), "via": list(hows),
                 "recipe_key": recipe_key("loop", path), "vendor_keys": [k for k in keys if k],
             })

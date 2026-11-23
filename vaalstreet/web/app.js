@@ -50,6 +50,9 @@ function money(v, unit = state.unit) {
   if (v == null) return '<span class="dim">–</span>';
   return unit === 'divine' && state.bridge ? `${fmt(v / state.bridge)}<span class="dim"> d</span>` : `${fmt(v)}<span class="dim"> c</span>`;
 }
+// What a replay made per hour, with the stake it was measured on: "9.8 c / h on 1,000 c". A plan's
+// "Est. / hour" is at whatever capital its markets absorb, so the stake has to be said.
+const replayRate = rp => rp.per_hour == null || rp.stake == null ? '' : `${money(rp.per_hour)} / h on ${Math.round(rp.stake).toLocaleString('en-US')} c`;
 const pct = (v, digits = 1) => v == null ? '<span class="dim">–</span>' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : 'muted'}">${v > 0 ? '+' : ''}${(v * 100).toFixed(digits)}%</span>`;
 const dur = h => h == null ? '–' : h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? h.toFixed(1) + ' h' : Math.round(h / 24) + ' d';
 // Minutes as people say them: "2 min", "1.5 min", never "2.000".
@@ -290,9 +293,10 @@ function replayCell(rp, sales = true) {
   if (!rp) return '<span class="dim">no fills</span>';
   const vs = rp.vs_divine == null ? '' : `${pct(rp.vs_divine, 0)} <span class="dim">vs Divines</span>`;
   const sold = rp.realized != null && rp.return != null && Math.abs(rp.realized - rp.return) > 0.005 ? ` · ${pct(rp.realized, 0)} sold` : '';
-  return `${vs || pct(rp.return, 0)}<div class="muted small">${pct(rp.return, 0)} in Chaos${sold} · Divines ${pct(rp.divines, 0)}${sales ? ` · ${rp.sales} sale${rp.sales === 1 ? '' : 's'}` : ''}</div>`;
+  const rate = replayRate(rp);
+  return `${vs || pct(rp.return, 0)}<div class="muted small">${pct(rp.return, 0)} in Chaos${rate ? `, ${rate}` : ''}${sold} · Divines ${pct(rp.divines, 0)}${sales ? ` · ${rp.sales} sale${rp.sales === 1 ? '' : 's'}` : ''}</div>`;
 }
-const replayTitle = 'This plan’s rule replayed over the last 7 days on a 1,000 Chaos stake, re-posting every 4 hours. First: its result against simply holding Divines over the same hours, the one that counts. Below: its return in Chaos (inventory still held valued at fair value), the part already sold, and what Divines made';
+const replayTitle = 'This plan’s rule replayed over the last 7 days on a 1,000 Chaos stake, re-posting every 4 hours. First: its result against simply holding Divines over the same hours, the one that counts. Below: its return in Chaos (inventory still held valued at fair value) and what that is per hour on the stake, the part already sold, and what Divines made. “Est. / hour” assumes as much capital as the markets absorb, so for a deep market it is far above the rate on 1,000 Chaos';
 // A flip whose Divine market pays far more than its Chaos market: the order fills rarely.
 // A flip whose one lot takes longer than a sitting to fill: slow, and it says how thin its market is.
 const flipWarn = r => (r.warning ? ` <span class="gold" title="${esc(r.warning)}">⚠ rare fills</span>` : '')
@@ -443,7 +447,7 @@ async function viewArbitrage(main) {
     { h: 'First swap', f: r => `${r.first_swap.give} <span class="dim">for</span> ${r.first_swap.get}`, title: 'Units of the first item you give, for units of the second' },
     { h: 'Buy at', f: r => money(r.buy), s: r => r.buy }, { h: 'Sell at', f: r => money(r.sell), s: r => r.sell },
     { h: 'Edge', f: r => r.edge > 3 ? `<span class="up">×${(1 + r.edge).toFixed(1)}</span>` : pct(r.edge, 0), s: r => r.edge },
-    { h: 'Est. / day', f: r => money(r.profit_per_day), s: r => r.profit_per_day },
+    { h: 'Est. / hour', f: r => money(r.profit_per_hour), s: r => r.profit_per_hour, title: `At ${plainPct(state.share)} of what went through the thinnest step of the path in the last day` },
     { h: 'Waiting now', f: r => r.resting_value > 0 ? money(r.resting_value) : '<span class="dim">nothing</span>', s: r => r.resting_value, title: 'Value of orders resting on the other side of the thinnest swap in the latest hour: what you could take immediately' },
     { h: 'Went through 24h', f: r => money(r.value_24h), s: r => r.value_24h, title: 'Value traded in the thinnest step of the path' },
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
@@ -814,6 +818,8 @@ async function viewLab(main) {
       { h: 'Days', f: r => r.summary.days }, { h: 'Return', f: r => pct(r.summary.return, 0), s: r => r.summary.return },
       { h: 'Against Divines', f: r => pct(r.summary.vs_divine, 0), s: r => r.summary.vs_divine, title: 'The return measured in Divines: what the strategy made beyond simply holding Divine Orbs. The one to judge it by' },
       { h: 'Hold Divine', f: r => pct(r.summary.divine_return, 0), title: 'The same Chaos converted to Divine Orbs after day one' },
+      { h: 'Per hour', f: r => fmt(r.summary.per_hour) + ' c', s: r => r.summary.per_hour, title: 'Chaos made per hour of the run, on the bankroll you set. Always in that league’s Chaos' },
+      { h: 'Per hour vs Divines', f: r => r.summary.vs_divine_per_hour == null ? '–' : fmt(r.summary.vs_divine_per_hour) + ' c', s: r => r.summary.vs_divine_per_hour, title: 'Chaos made per hour beyond simply holding Divines' },
       { h: 'Per day', f: r => fmt(r.summary.per_day) + ' c', s: r => r.summary.per_day },
       { h: 'Worst drawdown', f: r => plainPct(r.summary.max_drawdown, 1) },
       { h: 'Fills', f: r => r.summary.fills.toLocaleString('en-US') }, { h: 'Turnover', f: r => r.summary.turnover + '×', title: 'Traded value over bankroll' },
@@ -1240,9 +1246,9 @@ async function openItem(id, hours = 168) {
     bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
-      <div class="big">${pct(p.margin)} <span class="muted small">≈ ${money(p.profit_per_hour)} / hour</span></div>
+      <div class="big">≈ ${money(p.profit_per_hour)} <span class="muted small">/ hour · ${pct(p.margin)} margin</span></div>
       <div class="num small">Buy: ${order(p.buy_order, true)}<br>Sell: ${order(p.sell_order, false)}</div>
-      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour · one lot every ${dur(p.hours_per_lot)}<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}${p.slow ? `<br><span class="gold">⚠ ${esc(p.slow)}</span>` : ''}</div></div>`).join('')
+      <div class="muted small" style="margin-top:5px">${plainPct(p.reach)} of recent volume traded beyond these levels · ${fmt(p.units_per_hour)} units/hour · one lot every ${dur(p.hours_per_lot)}<br>${p.replay ? `Replayed over the last 7 days: ${p.replay.vs_divine != null ? `${pct(p.replay.vs_divine, 0)} against holding Divines, ` : ''}${pct(p.replay.return, 0)} in Chaos${replayRate(p.replay) ? ` (${replayRate(p.replay)})` : ''}, ${p.replay.sales} sale${p.replay.sales === 1 ? '' : 's'}` : 'Replayed over the last 7 days: no fills'}${p.warning ? `<br><span class="gold">⚠ ${esc(p.warning)}</span>` : ''}${p.slow ? `<br><span class="gold">⚠ ${esc(p.slow)}</span>` : ''}</div></div>`).join('')
     : '<div class="muted">Not enough steady two-sided trading to plan a flip.</div>';
   const cur = Object.keys(curve.curve);
   if (cur.length) $('#lgl', drawer).innerHTML = leagueChart($('#lc', drawer), curve.curve, state.league, div ? 'price_div' : 'price', yf);
