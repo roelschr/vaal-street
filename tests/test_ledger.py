@@ -92,10 +92,15 @@ def test_order_fills_create_trades_at_the_right_price(tmp_path):
 
     sell = ledger.add_order("L", "orb", "sell", "chaos", 4, 1, 500)
     with pytest.raises(ValueError):
-        ledger.fill_order(sell, 200)  # the ledger holds only 128
+        ledger.fill_order(sell, 501)  # more than the order holds
     assert ledger.order(sell)["status"] == "open" and ledger.order(sell)["filled"] == 0, "a refused fill changes nothing"
+    # The ledger holds 128 at 200/64 = 3.125 each. A fill of 200 sold them all, so 72 came from somewhere the
+    # ledger never saw: they cost nothing. Known answer: 128 × (4 − 3.125) + 72 × 4 = 112 + 288 = 400.
+    fill = ledger.fill_order(sell, 200, t=13)
+    assert ledger.uncovered("L") == {("trade", fill): pytest.approx(72)}
+    assert ledger.positions("L")["orb"]["realized"] == pytest.approx(400)
     ledger.fill_order(sell, 10, record_trade=False)
-    assert len(ledger.trades("L")) == 2
+    assert len(ledger.trades("L")) == 3
     ledger.set_order_status(sell, "cancelled")
     assert [o["id"] for o in ledger.orders("L")] == [buy]
     with pytest.raises(ValueError):
@@ -163,10 +168,6 @@ def test_an_item_you_made_carries_what_its_inputs_cost(tmp_path):
     """Known answer: 3 small essences bought at 10 each merge into 1 big one that cost 30; sold at 40 it realises 10."""
     ledger = Ledger(tmp_path)
     ledger.add_trade("L", "small", "buy", 3, 10, t=100)
-    with pytest.raises(ValueError, match="made this item from others"):
-        ledger.add_trade("L", "big", "sell", 1, 40, t=200)  # the report: the ledger never saw the big one arrive
-    with pytest.raises(ValueError, match="Cannot use 4 Small Essence: the ledger holds 3"):
-        ledger.add_made("L", [["small", 4]], "big", name=lambda item: "Small Essence")
     for bad in ([], [["small", 0]], [["small", -1]], [["", 1]], [["big", 1]]):
         with pytest.raises(ValueError):
             ledger.add_made("L", bad, "big")
@@ -221,13 +222,15 @@ def test_a_made_item_is_sold_once_even_after_a_trade_was_deleted(tmp_path):
     ledger.delete_trade(spare)
     sale = ledger.add_trade("L", "big", "sell", 1, 40)
     assert sale > spare, "the id a made entry remembers is not handed out again"
-    with pytest.raises(ValueError, match="Cannot sell 1: the ledger holds 0"):
-        ledger.add_trade("L", "big", "sell", 1, 40)
+    assert ledger.uncovered("L") == {}, "the sale sold the big one that was made"
     big = ledger.positions("L")["big"]
     assert big["units"] == 0 and big["realized"] == pytest.approx(10)
+    # A second sale finds nothing left: it is a big one from elsewhere, at no cost, not the made one sold twice.
+    extra = ledger.add_trade("L", "big", "sell", 1, 40)
+    assert ledger.uncovered("L") == {("trade", extra): pytest.approx(1)}
     # Deleting the newest trade and recording again keeps counting up when nothing remembers the id.
-    ledger.delete_trade(sale)
-    assert ledger.add_trade("L", "big", "sell", 1, 40) == sale
+    ledger.delete_trade(extra)
+    assert ledger.add_trade("L", "big", "sell", 1, 40) == extra
 
 
 def test_made_items_keep_their_order_after_a_trade_was_deleted(tmp_path):
@@ -247,37 +250,43 @@ def test_made_items_keep_their_order_after_a_trade_was_deleted(tmp_path):
     assert ledger.positions("L")["huge"]["realized"] == pytest.approx(15)
 
 
-def test_a_sale_dated_before_the_units_arrived_is_refused(tmp_path):
+def test_a_back_dated_sale_may_not_take_what_a_later_sale_sold(tmp_path):
+    """A sale is counted against the holdings at its own time, not today's. Known answers: a sale before the
+    buy holds nothing, so all 5 come at no cost; one between the buy and a later sale of those 5 is refused,
+    because the later sale would then sell units it had already lost."""
     ledger = Ledger(tmp_path)
     ledger.add_trade("L", "orb", "buy", 5, 2, t=100)
-    with pytest.raises(ValueError, match="did not hold that many at the time of the sale"):
-        ledger.add_trade("L", "orb", "sell", 5, 3, t=50)  # today's holdings would cover it; the history does not
-    assert len(ledger.trades("L")) == 1
+    early = ledger.add_trade("L", "orb", "sell", 5, 3, t=50)  # today's holdings would cover it; the history does not
+    assert ledger.uncovered("L") == {("trade", early): pytest.approx(5)}
     ledger.add_trade("L", "orb", "sell", 5, 3, t=150)
+    with pytest.raises(ValueError, match="A sale at that time would leave a sale selling more than the ledger held"):
+        ledger.add_trade("L", "orb", "sell", 5, 3, t=120)
+    assert len(ledger.trades("L")) == 3
 
 
-def test_sales_that_arrive_together_cannot_oversell(tmp_path):
-    """Eight sales of the one unit held, released at once (a double click, eight times over): exactly one is
-    recorded. The check and the insert are one step under the ledger's lock. This guards that step; on the
-    code before it, the race was too narrow to show up in this test."""
+def test_sales_that_arrive_together_cannot_merge_the_same_items(tmp_path):
+    """Eight sales of one big essence, released at once, with 3 small ones held: exactly one sale merges them.
+    Planning the merge, writing it and the sale are one step under the ledger's lock. Known answer: one merge
+    of 3 small into 1 big, one sale covered by it, and seven sales of 1 at no cost."""
     ledger = Ledger(tmp_path)
-    ledger.add_trade("L", "orb", "buy", 1, 2, t=1)
-    gate, sold, refused = threading.Barrier(8), [], []
+    ledger.add_trade("L", "small", "buy", 3, 2, t=1)
+    gate, sold, errors = threading.Barrier(8), [], []
 
     def sell():
         gate.wait()
         try:
-            sold.append(ledger.add_trade("L", "orb", "sell", 1, 3))
-        except ValueError as err:
-            refused.append(str(err))
+            sold.append(ledger.add_trade("L", "big", "sell", 1, 9, recipes=ESSENCES))
+        except Exception as err:  # noqa: BLE001 - any failure is the test's answer
+            errors.append(err)
 
     threads = [threading.Thread(target=sell) for _ in range(8)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=30)
-    assert len(sold) == 1 and len(refused) == 7 and all("Cannot sell" in text for text in refused)
-    assert ledger.positions("L")["orb"]["units"] == 0 and len(ledger.trades("L")) == 2
+    assert len(sold) == 8 and not errors
+    assert len(ledger.made("L")) == 1 and ledger.positions("L")["small"]["units"] == 0
+    assert sorted(ledger.uncovered("L").values()) == [pytest.approx(1)] * 7
 
 
 def test_made_items_chain_and_take_several_inputs(tmp_path):
@@ -306,15 +315,16 @@ def test_an_edit_may_not_leave_a_made_item_short_of_its_inputs(tmp_path):
         with pytest.raises(ValueError, match="an item you made using more than the ledger held"):
             ledger.edit_trade(buy, **change)
     assert ledger.trades("L")[0]["units"] == 3, "a refused edit changes nothing"
-    with pytest.raises(ValueError, match="more than the ledger held"):
-        ledger.edit_trade(sale, units=2)  # only one was ever made
+    ledger.edit_trade(sale, units=2)  # only one was made: the other came from elsewhere, as for a new sale
+    assert ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+    ledger.edit_trade(sale, units=1)
     ledger.edit_trade(buy, price=12)  # a plain correction still goes through, and the cost follows it
     ledger.edit_trade(sale, price=41)
     assert ledger.positions("L")["big"]["realized"] == pytest.approx(41 - 36)
     # Recorded for a time in the past, an entry may not take what a later sale already sold.
     ledger.add_trade("L", "ore", "buy", 3, 1, t=10)
     ledger.add_trade("L", "ore", "sell", 3, 2, t=20)
-    with pytest.raises(ValueError, match="more than the ledger held at the time"):
+    with pytest.raises(ValueError, match="An item made at that time would leave a sale selling more"):
         ledger.add_made("L", [["ore", 3]], "bar", t=15)
     assert [m["output"] for m in ledger.made("L")] == ["big"]
 
@@ -513,3 +523,199 @@ def test_a_recipe_key_reads_as_words():
     assert describe_key(fixed_key("vendor", [("a", 5)], "c", 1), name) == "5 Some Card buys 1 Some Orb"
     assert describe_key(recipe_key("loop", ["a", "b", "c"]), name) == "Some Card → Some Shard → Some Orb"
     assert describe_key("recipe:garbled", name) == "a recipe you deleted"
+
+
+# Three of one tier make one of the next, as the game's essences do: small -> big -> huge.
+ESSENCES = {"big": [{"inputs": [("small", 3)], "gives": 1}], "huge": [{"inputs": [("big", 3)], "gives": 1}]}
+
+
+def test_a_sale_merges_what_it_needs_from_lower_tiers(tmp_path):
+    """Known answers: 45 small bought at 2 (90). Selling 5 huge needs 15 big, which need 45 small. Lowest
+    tier first: 45 small make 15 big, then 15 big make 5 huge, which cost the 90 the small ones did."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 45, 2, t=1)
+    sale = ledger.add_trade("L", "huge", "sell", 5, 30, t=2, recipes=ESSENCES)
+    merges = ledger.merges_for(sale)
+    assert [(m["inputs"], m["output"], m["gives"]) for m in merges] == [
+        ([("small", 45.0)], "big", 15.0), ([("big", 15.0)], "huge", 5.0)]
+    assert {m["sale"] for m in merges} == {sale} and ledger.uncovered("L") == {}
+    positions = ledger.positions("L")
+    # 5 huge cost the 90 the small ones did; sold at 30 each they realise 150 − 90 = 60.
+    assert positions["huge"]["realized"] == pytest.approx(60) and positions["small"]["units"] == 0
+    assert positions["big"]["units"] == 0
+
+
+def test_a_sale_uses_what_it_holds_first_and_makes_only_whole_batches(tmp_path):
+    """Known answers: 2 big held at 7 and 29 small at 2. Selling 12 big needs 10 more: 30 small would make
+    them, but 29 make only 9 batches (27 small), so 1 big is uncovered and 2 small stay held. The sale's
+    cost: 2 × 7 + 27 × 2 = 68 for 11 big, the twelfth at nothing; it realises 12 × 10 − 68 = 52."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "big", "buy", 2, 7, t=1)
+    ledger.add_trade("L", "small", "buy", 29, 2, t=2)
+    sale = ledger.add_trade("L", "big", "sell", 12, 10, t=3, recipes=ESSENCES)
+    [merge] = ledger.merges_for(sale)
+    assert merge["inputs"] == [("small", 27.0)] and merge["gives"] == 9
+    assert ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+    positions = ledger.positions("L")
+    assert positions["big"]["realized"] == pytest.approx(52) and positions["small"]["units"] == pytest.approx(2)
+    assert positions["small"]["cost"] == pytest.approx(4)
+
+
+def test_a_sale_the_holdings_cover_merges_nothing(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "big", "buy", 2, 7, t=1)
+    ledger.add_trade("L", "small", "buy", 9, 2, t=2)
+    sale = ledger.add_trade("L", "big", "sell", 2, 10, t=3, recipes=ESSENCES)
+    assert ledger.merges_for(sale) == [] and ledger.positions("L")["small"]["units"] == 9
+    # Without recipes nothing is merged either: the sale is simply uncovered.
+    bare = ledger.add_trade("L", "big", "sell", 3, 10, t=4)
+    assert ledger.merges_for(bare) == [] and ledger.uncovered("L") == {("trade", bare): pytest.approx(3)}
+
+
+def test_deleting_a_sale_undoes_the_merges_recorded_for_it(tmp_path):
+    """A merge the ledger worked out wrongly (you kept the small ones and sold a big one you looted) is undone
+    with its sale. The merge alone cannot be deleted while its sale stands, and the sale's item and units
+    cannot change: the merge was worked out for them."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 3, 2, t=1)
+    sale = ledger.add_trade("L", "big", "sell", 1, 9, t=2, recipes=ESSENCES)
+    [merge] = ledger.merges_for(sale)
+    with pytest.raises(ValueError, match="recorded this merge for a sale. Delete the sale"):
+        ledger.delete_made(merge["id"])
+    with pytest.raises(ValueError, match="recorded merges for this sale"):
+        ledger.edit_trade(sale, units=2)
+    ledger.edit_trade(sale, price=10, note="fixed")  # the price and the note are fine
+    ledger.delete_trade(sale)
+    assert ledger.made("L") == [] and ledger.positions("L")["small"]["units"] == 3
+    again = ledger.add_trade("L", "big", "sell", 1, 9, t=3)  # recorded without recipes: nothing merged
+    assert ledger.merges_for(again) == [] and ledger.positions("L")["small"]["units"] == 3
+
+
+def test_a_sale_does_not_guess_between_recipes(tmp_path):
+    """Two card sets both make the reward and both are held: the ledger cannot know which you turned in.
+    Known answer: no merge, the whole sale uncovered. With only one set held, it is that one."""
+    recipes = {"orb": [{"inputs": [("card a", 5)], "gives": 1}, {"inputs": [("card b", 3)], "gives": 1}]}
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "card a", "buy", 5, 1, t=1)
+    ledger.add_trade("L", "card b", "buy", 3, 1, t=2)
+    sale = ledger.add_trade("L", "orb", "sell", 1, 10, t=3, recipes=recipes)
+    assert ledger.merges_for(sale) == [] and ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+    ledger.add_trade("L", "card b", "sell", 3, 1, t=4)
+    sale = ledger.add_trade("L", "orb", "sell", 1, 10, t=5, recipes=recipes)
+    assert [m["inputs"] for m in ledger.merges_for(sale)] == [[("card a", 5.0)]]
+
+
+def test_a_back_dated_sale_merges_from_the_holdings_of_its_time(tmp_path):
+    """The small ones were bought at hour 10. A sale dated hour 5 finds nothing to merge then; one at hour 20
+    merges them. A sale dated between the buy and a later merge-and-sale would take what that sale used, so
+    it is recorded without its merge, uncovered."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 3, 2, t=10)
+    early = ledger.add_trade("L", "big", "sell", 1, 9, t=5, recipes=ESSENCES)
+    assert ledger.merges_for(early) == []
+    late = ledger.add_trade("L", "big", "sell", 1, 9, t=20, recipes=ESSENCES)
+    assert len(ledger.merges_for(late)) == 1
+    between = ledger.add_trade("L", "big", "sell", 1, 9, t=15, recipes=ESSENCES)
+    assert ledger.merges_for(between) == [] and ledger.uncovered("L")[("trade", between)] == pytest.approx(1)
+    assert ("trade", late) not in ledger.uncovered("L")
+
+
+def test_an_order_fill_merges_like_a_sale(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 6, 2, t=1)
+    order = ledger.add_order("L", "big", "sell", "chaos", 9, 1, 2, t=2)
+    fill = ledger.fill_order(order, 2, t=3, recipes=ESSENCES)
+    [merge] = ledger.merges_for(fill)
+    assert merge["inputs"] == [("small", 6.0)] and merge["gives"] == 2
+    assert ledger.positions("L")["big"]["realized"] == pytest.approx(2 * 9 - 12)
+
+
+def test_an_item_made_from_more_than_was_held_counts_the_rest_at_no_cost(tmp_path):
+    """Recorded by hand, as before, but no longer refused. Known answer: 3 small held at 10, 4 used: the big
+    one costs 30, and 1 small was used at no cost."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 3, 10, t=1)
+    made = ledger.add_made("L", [["small", 4]], "big", t=2)
+    assert ledger.uncovered("L") == {("made", made): pytest.approx(1)}
+    assert ledger.positions("L")["big"]["cost"] == pytest.approx(30)
+
+
+def test_a_chain_the_holdings_only_partly_cover_merges_no_more_than_it_uses(tmp_path):
+    """Known answers. 15 small held, 2 huge sold: only 1 huge can be made, from 3 big made from 9 small, so 6
+    small stay held and 1 huge is uncovered (not 15 small into 5 big with 2 big left that never existed).
+    10 big and 9 small held, 5 huge sold: 4 huge need 12 big, 2 of them made from 6 small; 3 small stay."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 15, 1, t=1)
+    sale = ledger.add_trade("L", "huge", "sell", 2, 20, t=2, recipes=ESSENCES)
+    assert [(m["inputs"], m["output"], m["gives"]) for m in ledger.merges_for(sale)] == [
+        ([("small", 9.0)], "big", 3.0), ([("big", 3.0)], "huge", 1.0)]
+    positions = ledger.positions("L")
+    assert positions["small"]["units"] == pytest.approx(6) and positions["big"]["units"] == 0
+    assert ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+
+    other = Ledger(tmp_path / "mixed")
+    other.add_trade("L", "big", "buy", 10, 3, t=1)
+    other.add_trade("L", "small", "buy", 9, 1, t=2)
+    sale = other.add_trade("L", "huge", "sell", 5, 20, t=3, recipes=ESSENCES)
+    assert [(m["inputs"], m["output"], m["gives"]) for m in other.merges_for(sale)] == [
+        ([("small", 6.0)], "big", 2.0), ([("big", 12.0)], "huge", 4.0)]
+    positions = other.positions("L")
+    assert positions["small"]["units"] == pytest.approx(3) and positions["big"]["units"] == 0
+    assert other.uncovered("L") == {("trade", sale): pytest.approx(1)}
+
+
+def test_a_sale_the_holdings_cannot_make_at_all_merges_nothing(tmp_path):
+    """Known answers. 3 small held, 1 huge sold (looted): 3 small make a big one, but not the 3 big a huge one
+    needs, so nothing merges, the 3 small stay held and the huge one is uncovered. The same when one of two
+    inputs cannot be made: x needs an a and a b, each from 3 c, and 3 c make only one of them."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 3, 2, t=1)
+    sale = ledger.add_trade("L", "huge", "sell", 1, 30, t=2, recipes=ESSENCES)
+    assert ledger.merges_for(sale) == [] and ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+    positions = ledger.positions("L")
+    assert positions["small"]["units"] == 3 and "big" not in positions
+
+    recipes = {"x": [{"inputs": [("a", 1), ("b", 1)], "gives": 1}],
+               "a": [{"inputs": [("c", 3)], "gives": 1}], "b": [{"inputs": [("c", 3)], "gives": 1}]}
+    other = Ledger(tmp_path / "shared")
+    other.add_trade("L", "c", "buy", 3, 1, t=1)
+    sale = other.add_trade("L", "x", "sell", 1, 10, t=2, recipes=recipes)
+    assert other.merges_for(sale) == [] and other.positions("L")["c"]["units"] == 3
+    other.add_trade("L", "c", "buy", 3, 1, t=3)  # with 6 c both inputs can be made
+    sale = other.add_trade("L", "x", "sell", 1, 10, t=4, recipes=recipes)
+    assert [m["output"] for m in other.merges_for(sale)] == ["a", "b", "x"]
+
+
+def test_a_change_may_not_leave_a_sale_that_was_short_shorter(tmp_path):
+    """A sale with looted units on top of bought ones is short already. The guard compares by how much, so it
+    still protects such a sale. Known answers: a sale of 12 on 10 bought at 2, sold at 5, realises 60 − 20 = 40;
+    deleting the buy would make it 60."""
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "orb", "buy", 10, 2, t=1)
+    ledger.add_trade("L", "orb", "sell", 12, 5, t=3)
+    with pytest.raises(ValueError, match="would leave a sale selling more"):
+        ledger.delete_trade(buy)
+    with pytest.raises(ValueError, match="would leave a sale selling more"):
+        ledger.edit_trade(buy, units=5)
+    assert ledger.positions("L")["orb"]["realized"] == pytest.approx(40)
+    # A back-dated sale may not take what a later sale, 1 short already, sold.
+    with pytest.raises(ValueError, match="A sale at that time would leave a sale selling more"):
+        ledger.add_trade("L", "orb", "sell", 10, 5, t=2)
+    ledger.edit_trade(buy, units=11)  # less short is fine
+    assert ledger.uncovered("L") == {("trade", 2): pytest.approx(1)}
+
+
+def test_a_merge_recorded_for_a_sale_goes_only_with_its_sale(tmp_path):
+    """3 small held, 2 big sold: 1 merged, 1 uncovered. The merge cannot be deleted by itself, and deleting the
+    buy behind it is refused with the sale to delete, since the merge has no delete of its own."""
+    ledger = Ledger(tmp_path)
+    buy = ledger.add_trade("L", "small", "buy", 3, 2, t=1)
+    sale = ledger.add_trade("L", "big", "sell", 2, 9, t=2, recipes=ESSENCES)
+    [merge] = ledger.merges_for(sale)
+    with pytest.raises(ValueError, match="recorded this merge for a sale"):
+        ledger.delete_made(merge["id"])
+    with pytest.raises(ValueError, match="merge the ledger recorded for a sale.*Delete that sale first"):
+        ledger.delete_trade(buy)
+    ledger.delete_trade(sale)
+    ledger.delete_trade(buy)
+    assert ledger.made("L") == [] and ledger.trades("L") == []
