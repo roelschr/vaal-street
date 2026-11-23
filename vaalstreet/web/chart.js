@@ -1,7 +1,8 @@
 // A small canvas line chart: several series on one y axis, optional volume bars, hover readout.
 // series: [{label, color, x:[], y:[], width, dash, dots, emphasize}]   bars: {x:[], y:[], color}
 // band: {label, x:[], lo:[], hi:[], color}, a faint shaded range drawn under the lines (breaks where either side is missing)
-const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// Colours come from the CSS tokens in style.css, so the charts follow the page's palette.
+export const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function niceTicks(lo, hi, count) {
   const span = hi - lo || Math.abs(hi) || 1;
@@ -45,7 +46,7 @@ export function drawChart(host, { series, bars, band, xType = 'time', yFormat = 
     canvas.width = W * dpr; canvas.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.font = "11px 'Geist Mono', monospace"; ctx.textBaseline = 'middle';
+    ctx.font = `11px ${css('--mono')}`; ctx.textBaseline = 'middle';
     const grid = css('--line'), dim = css('--dim');
     const ticks = log ? niceTicks(y0, y1, 5).map(Math.exp) : niceTicks(y0, y1, 5);
     for (const v of ticks) {
@@ -61,11 +62,11 @@ export function drawChart(host, { series, bars, band, xType = 'time', yFormat = 
     }
     if (bars) {
       const bw = Math.max(1, (W - pad.l - pad.r) / bars.x.length - 1), base = H - pad.b, top = (H - pad.t - pad.b) * 0.2;
-      ctx.fillStyle = bars.color || '#ffffff14';
+      ctx.fillStyle = bars.color || css('--vol') + '18';
       bars.x.forEach((x, i) => { const v = bars.y[i]; if (v) ctx.fillRect(px(x) - bw / 2, base - v / barMax * top, bw, v / barMax * top); });
     }
     if (band) {
-      ctx.fillStyle = band.color || '#b2ef7822';
+      ctx.fillStyle = band.color || css('--fair') + '22';
       const ok = i => band.lo[i] != null && band.hi[i] != null && (!log || band.lo[i] > 0);
       for (let i = 0; i < band.x.length;) {
         if (!ok(i)) { i++; continue; }
@@ -129,5 +130,5 @@ export function spark(values, color) {
   if (v.length < 2) return '';
   const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
   const pts = v.map((y, i) => `${(i / (v.length - 1) * 82 + 1).toFixed(1)},${(20 - (y - lo) / span * 18).toFixed(1)}`).join(' ');
-  return `<svg class="spark" viewBox="0 0 84 22"><polyline fill="none" stroke="${color}" stroke-width="1.4" points="${pts}"/></svg>`;
+  return `<svg class="spark" viewBox="0 0 84 22"><polyline fill="none" style="stroke:${color}" stroke-width="1.4" points="${pts}"/></svg>`;
 }
