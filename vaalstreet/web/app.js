@@ -86,10 +86,17 @@ const marketTag = kind => {
   const icons = kind === 'cross' ? `${ic('c')}<i class="ia">→</i>${ic('d')}` : kind === 'divine' ? ic('d') : kind === 'chaos' ? ic('c') : '';
   return `<span class="tag mk ${kind}" title="${esc(KIND[kind] || kind)}">${icons}<span class="kt">${esc(KIND[kind] || kind)}</span></span>`;
 };
+// Tried at start and again after each new hour (see poll): on a first run the item list that names
+// the icons arrives with the first sync, and the letters should not stay until a reload.
+let iconsTrying = false;
 function showIcons() {
+  const root = document.documentElement;
+  if (iconsTrying || root.classList.contains('icons')) return;
+  iconsTrying = true;
   const urls = ['Metadata/Items/Currency/CurrencyRerollRare', 'Metadata/Items/Currency/CurrencyModValues'].map(id => `/icon?id=${encodeURIComponent(id)}`);
   Promise.all(urls.map(u => new Promise((ok, no) => { const im = new Image(); im.onload = ok; im.onerror = no; im.src = u; })))
-    .then(() => document.documentElement.classList.add('icons'), () => { /* letters stay */ });
+    .then(() => root.classList.add('icons'), () => { /* letters stay */ })
+    .finally(() => { iconsTrying = false; });
 }
 
 // A sortable table. cols: [{h, f(row)->html, s(row)->sortable value, l: left-aligned, title}]
@@ -1616,6 +1623,7 @@ async function poll(first) {
     state.status = s; state.league ||= s.league; state.generation = s.generation;
     announce(s.last_event);
     if (changed && state.hideout) pollEvents();  // right after the hourly refresh
+    if (changed) showIcons();
     if (first || changed) await route(); else if (!state.hideout && state.summary) renderTop();
     else if (!s.ready) route();
   } catch (err) { if (first) $('#main').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
