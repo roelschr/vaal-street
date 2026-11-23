@@ -921,8 +921,16 @@ async function stashPanel(names) {
     ${source === 'stash' ? `<form class="bar" style="margin:0 0 4px" autocomplete="off">
       <label class="f">Item<input type="text" name="what" list="items" placeholder="Start typing…" style="width:240px"></label>
       <label class="f">Units you hold<input type="number" name="units" min="0" step="any" title="0 removes the line"></label>
-      <button class="btn primary">Set</button><button type="button" class="btn ghost" data-clear>Clear the stash</button>
-      <span class="muted small" style="padding-bottom:7px">Setting 0 units removes a line. Kept on this machine, per league.</span></form>`
+      <button class="btn primary">Set</button><button type="button" class="btn" data-paste title="Paste a list of what you hold, or read it from a file, instead of typing each line">Paste a list…</button><button type="button" class="btn ghost" data-clear>Clear the stash</button>
+      <span class="muted small" style="padding-bottom:7px">Setting 0 units removes a line. Kept on this machine, per league.</span></form>
+    <form id="stpaste" hidden autocomplete="off" style="margin:8px 0 4px">
+      <textarea name="list" rows="7" spellcheck="false" placeholder="One item per line, the count and the name in either order:&#10;45 Screaming Essence of Greed&#10;Divine Orb 12&#10;Orb of Alchemy x300&#10;Rows copied from a spreadsheet or a CSV file work too."></textarea>
+      <div class="bar" style="margin:6px 0 0">
+        <button class="btn primary">Read the list</button>
+        <label class="btn ghost" style="cursor:pointer" title="A text or CSV file. It is read by this page and goes nowhere else">…or choose a file<input type="file" name="file" accept=".txt,.csv,.tsv,text/plain,text/csv" hidden></label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:7px" title="Unticked, the list only sets the lines it names and every other line stays"><input type="checkbox" name="replace"> The list is my whole stash: remove every line it does not name</label>
+      </div>
+      <div id="stread"></div></form>`
     : '<p class="note">Valued from the units your recorded trades leave you holding. Switch to “What I entered” to type in a stash instead.</p>'}
     ${d.unpriced ? `<p class="note">${d.unpriced} item${d.unpriced === 1 ? ' has' : 's have'} no price in this league and ${d.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
   const better = r => {
@@ -947,6 +955,7 @@ async function stashPanel(names) {
   if (form) {
     form.onsubmit = e => { e.preventDefault(); const item = form.elements.what.value.trim(); if (!item) return toast('Pick an item from the list.', true); set(item, +form.elements.units.value || 0); };
     $('[data-clear]', form).onclick = async () => { if (!confirm('Remove every line of the stash you entered?')) return; try { await api('/api/stash', { league: state.league, clear: true }); route(); } catch (err) { toast(err.message, true); } };
+    pasteStash($('#stpaste', body), $('[data-paste]', form));
   }
   tbl.addEventListener('click', e => {
     const rm = e.target.closest('[data-rm]'), ed = e.target.closest('[data-edit]');
@@ -954,6 +963,40 @@ async function stashPanel(names) {
     if (ed && form) { form.elements.what.value = ed.dataset.edit; form.elements.units.value = ed.dataset.units; form.elements.units.focus(); form.elements.units.select(); }
   });
   return p;
+}
+
+// A pasted list of holdings. It is read first and shown line by line with what it would replace;
+// nothing is written until you press the second button, and a changed list has to be read again.
+function pasteStash(form, opener) {
+  const out = $('#stread', form), list = form.elements.list, n = v => (+(+v).toFixed(2)).toLocaleString('en-US');
+  opener.onclick = () => { form.hidden = !form.hidden; if (!form.hidden) list.focus(); };
+  const stale = () => { out.replaceChildren(); };
+  list.oninput = stale; form.elements.replace.onchange = stale;
+  form.elements.file.onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    if (file.size > 200000) return toast('That file is too long to read in one go.', true);
+    list.value = await file.text(); e.target.value = ''; stale();
+  };
+  const send = write => api('/api/stash/paste', { league: state.league, text: list.value, replace: form.elements.replace.checked, write });
+  form.onsubmit = async e => {
+    e.preventDefault();
+    let d;
+    try { d = await send(false); } catch (err) { return toast(err.message, true); }
+    const change = r => r.was == null ? '<span class="muted">new line</span>' : r.was === r.units ? '<span class="dim">unchanged</span>' : `<span class="muted">was ${n(r.was)}</span>`;
+    const rows = d.lines.map(r => `<tr><td class="l">${esc(r.name)}${r.lines.length > 1 ? ` <span class="dim small" title="Lines ${r.lines.join(', ')} of the list name this item. Their counts are added.">${r.lines.length} lines added</span>` : ''}</td><td class="num">${n(r.units)}</td><td class="l">${change(r)}</td></tr>`).join('')
+      + d.dropped.map(r => `<tr><td class="l">${esc(r.name)}</td><td class="num">–</td><td class="l"><span class="gold">removed: not in the list (was ${n(r.units)})</span></td></tr>`).join('');
+    const blocked = d.replace && d.unread.length > 0, nothing = !d.lines.length;
+    out.innerHTML = `${rows ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th class="l">Item</th><th>Units</th><th class="l">In your stash now</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${d.unread.length ? `<p class="note" style="margin:8px 0 0"><b>${d.unread.length} line${d.unread.length === 1 ? ' was' : 's were'} not read</b> and will be skipped:${d.unread.map(u => `<br>Line ${u.line}, “${esc(u.text)}”: ${esc(u.why)}`).join('')}</p>` : ''}
+      ${blocked ? '<p class="note" style="margin:8px 0 0">Fix or delete the lines that were not read before replacing your whole stash, or the items on those lines would be removed from it.</p>' : ''}
+      <div class="bar" style="margin:8px 0 0"><button type="button" class="btn primary" data-write ${blocked || nothing ? 'disabled' : ''}>Write ${d.lines.length} line${d.lines.length === 1 ? '' : 's'}${d.dropped.length ? ` and remove ${d.dropped.length}` : ''}</button>
+        <span class="muted small" style="padding-bottom:7px">${nothing ? 'No line could be read.' : 'Nothing is written until you press this.'}</span></div>`;
+    $('[data-write]', out).onclick = async e2 => {
+      e2.target.disabled = true;  // one write per list read
+      try { const done = await send(true); toast(`Stash updated: ${done.lines.length} line${done.lines.length === 1 ? '' : 's'} written${done.dropped.length ? `, ${done.dropped.length} removed` : ''}.`); route(); }
+      catch (err) { e2.target.disabled = false; toast(err.message, true); }
+    };
+  };
 }
 
 // Every kind of alert the desk can watch, with its form fields in plain words.

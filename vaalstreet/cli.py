@@ -301,6 +301,41 @@ def _screen(args: argparse.Namespace) -> None:
         sys.exit(str(err))
 
 
+def _stash_import(args: argparse.Namespace, desk, ledger) -> None:
+    """Read a list of holdings from a file, show what it was read as, and write it only with --yes."""
+    from pathlib import Path
+
+    from vaalstreet import check
+
+    if not args.item:
+        sys.exit("Usage: stash import <file> [--replace] [--yes]   (one item per line: 45 Divine Orb)")
+    try:
+        text = Path(args.item).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError) as err:
+        sys.exit(f"Cannot read {args.item}: {err}")
+    holdings, unread = check.read_holdings(desk, text)
+    held = ledger.stash(desk.league)
+    for item, entry in holdings.items():
+        was = held.get(item)
+        note = "new" if was is None else "unchanged" if was == entry["units"] else f"was {was:g}"
+        print(f"  {entry['units']:>12g}  {desk._name(item)}  ({note})")
+    for row in unread:
+        print(f"  line {row['line']} not read: {row['text']}  ({row['why']})")
+    gone = [item for item in held if item not in holdings] if args.replace else []
+    for item in gone:
+        print(f"  removed: {held[item]:g} {desk._name(item)}  (not in the file)")
+    if not holdings:
+        sys.exit("No line of that file could be read.")
+    if args.replace and unread:
+        sys.exit("Some lines could not be read. Fix or delete them before using --replace, "
+                 "or the items on those lines would be removed from your stash.")
+    if not args.yes:
+        sys.exit(f"Nothing written. Run it again with --yes to write these {len(holdings)} lines"
+                 f"{f' and remove {len(gone)}' if gone else ''}.")
+    ledger.set_stash_many(desk.league, {item: entry["units"] for item, entry in holdings.items()}, replace=args.replace)
+    print(f"Wrote {len(holdings)} lines to your stash in {desk.league}.\n")
+
+
 def _stash(args: argparse.Namespace) -> None:
     from vaalstreet import check
     from vaalstreet.desk import Desk
@@ -315,6 +350,8 @@ def _stash(args: argparse.Namespace) -> None:
         ledger.set_stash(desk.league, check.resolve(desk, args.item), args.units)
     elif args.action == "clear":
         ledger.clear_stash(desk.league)
+    elif args.action == "import":
+        _stash_import(args, desk, ledger)
     if args.ledger:
         holdings = {k: p["units"] for k, p in ledger.positions(desk.league).items() if p["units"] > 1e-9}
     else:
@@ -895,10 +932,14 @@ def main(argv: list[str] | None = None) -> None:
         "stash", help="value what you hold, and say which market pays more for each item",
         description="Keep a list of what you hold and value it at fair value, with a low and a high. "
                     "The list is saved in your ledger file.")
-    p.add_argument("action", nargs="?", choices=["list", "set", "clear"], default="list",
-                   help='list (default); set "<item>" <units> to add or change a line (0 removes it); clear to empty it')
-    p.add_argument("item", nargs="?")
+    p.add_argument("action", nargs="?", choices=["list", "set", "clear", "import"], default="list",
+                   help='list (default); set "<item>" <units> to add or change a line (0 removes it); clear to empty it; '
+                        'import <file> to read a list with one item per line ("45 Divine Orb", or rows of a CSV file)')
+    p.add_argument("item", nargs="?", help="the item for set, or the file for import")
     p.add_argument("units", nargs="?", type=float)
+    p.add_argument("--yes", action="store_true", help="import: write the lines; without it they are only shown")
+    p.add_argument("--replace", action="store_true",
+                   help="import: also remove the lines the file does not name, so the stash becomes exactly the file")
     p.add_argument("--ledger", action="store_true", help="value the positions your recorded trades add up to instead")
     p.add_argument("--league")
     p.set_defaults(run=_stash)

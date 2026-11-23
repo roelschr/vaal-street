@@ -22,10 +22,19 @@ Each holding is valued at the item's fair value with its range, and at each mark
 so the player sees which market pays more for it. Its size is compared with that market's
 hourly volume: a holding worth many hours of a thin market cannot be sold at that price without
 moving it.
+
+A pasted list
+-------------
+Typing a stash in line by line is slow, so the list can also be pasted or read from a file
+(`read_holdings`): one item per line, the count and the name in either order, or rows copied
+from a spreadsheet. Reading is kept apart from writing. The caller first shows what every line
+was read as, what it would replace and which lines could not be read, and writes only when the
+player says so: a wrong guess about a line must be seen before it changes the list.
 """
 
 from __future__ import annotations
 
+import csv
 import difflib
 import math
 import re
@@ -192,6 +201,77 @@ def check(desk: Desk, item: str, market: str, side: str, item_units: float, curr
             verdict = "caution"
     out.update(verdict=verdict, reasons=reasons)
     return out
+
+
+# A count as a player or a spreadsheet writes it: 45, 2.5, or 2,448 with a mark between the thousands.
+_COUNT = r"\d{1,3}(?:[,.'\u00a0\u202f]\d{3})+|\d+(?:\.\d+)?"
+_NAME = r"[^,;\t]+?"  # a name never holds a comma, so a row of a CSV file is never taken for one name
+_COUNT_FIRST = re.compile(rf"^({_COUNT})\s*(?:[x×*]\s*|\s)({_NAME})$", re.I)
+_COUNT_LAST = re.compile(rf"^({_NAME})\s*(?:[:=]|\s[x×*]|\s)\s*({_COUNT})$", re.I)
+_ONLY_COUNT = re.compile(rf"^(?:{_COUNT})$")
+
+
+def _count(text: str) -> float:
+    """"2,448" and "2.448" are 2448: a mark followed by exactly three digits splits thousands. "2.5" is 2.5."""
+    if re.fullmatch(r"\d+(?:\.\d+)?", text) and not re.fullmatch(r"\d{1,3}\.\d{3}", text):
+        return float(text)
+    return float(re.sub(r"\D", "", text))
+
+
+def parse_holdings(text: str) -> tuple[list[dict], list[dict]]:
+    """A pasted list as (lines read, lines not read), without looking any name up.
+
+    One item per line, the count and the name in either order: "45 Screaming Essence of Greed",
+    "Divine Orb 12", "Divine Orb: 12", "Divine Orb x12", "2,448 Portal Scroll". A row copied from a
+    spreadsheet or a CSV file works too: its cells are split at tabs, semicolons or commas, the
+    first cell that is text is the name and the first that is a number is the count. Empty lines
+    and lines that start with # are skipped. A read line is {"line", "text", "name", "units"}; a
+    line not read is {"line", "text", "why"}.
+    """
+    read, unread = [], []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = units = None
+        cells = next((cells for sep in ("\t", ";", ",") if sep in line
+                      for cells in [[c.strip() for c in next(csv.reader([line], delimiter=sep))]]
+                      if sep != "," or not (_COUNT_FIRST.match(line) or _COUNT_LAST.match(line))), None)
+        if cells is not None:
+            names = [c for c in cells if c and not _ONLY_COUNT.match(c)]
+            counts = [c for c in cells if _ONLY_COUNT.match(c)]
+            if names and counts:
+                name, units = names[0], _count(counts[0])
+        elif match := _COUNT_FIRST.match(line):
+            name, units = match[2].strip(), _count(match[1])
+        elif match := _COUNT_LAST.match(line):
+            name, units = match[1].strip(), _count(match[2])
+        if name is None:
+            unread.append({"line": number, "text": line[:120], "why": "No count and item name found on this line."})
+        else:
+            read.append({"line": number, "text": line[:120], "name": name, "units": units})
+    return read, unread
+
+
+def read_holdings(desk: Desk, text: str) -> tuple[dict[str, dict], list[dict]]:
+    """A pasted list as holdings: item id -> {"units", "lines"}, and the lines that could not be read.
+
+    Names are looked up as everywhere else on the desk (`resolve`), so a line whose item does not
+    trade in the league is not read, and says which names are close. Two lines for one item are
+    two stacks of it: their counts add, and `lines` names both.
+    """
+    read, unread = parse_holdings(text)
+    holdings: dict[str, dict] = {}
+    for row in read:
+        try:
+            item = resolve(desk, row["name"])
+        except LookupError as err:
+            unread.append({"line": row["line"], "text": row["text"], "why": str(err)})
+            continue
+        entry = holdings.setdefault(item, {"units": 0.0, "lines": []})
+        entry["units"] += row["units"]
+        entry["lines"].append(row["line"])
+    return holdings, sorted(unread, key=lambda row: row["line"])
 
 
 def stash_value(desk: Desk, holdings: dict[str, float]) -> dict:
