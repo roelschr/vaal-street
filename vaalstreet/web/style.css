@@ -299,6 +299,7 @@ body.hideout #practice{position:sticky}
 #drawer:not([hidden]){animation:slidein .24s cubic-bezier(.2,.7,.3,1)}
 #tc:not([hidden]),#tour:not([hidden]),.pend{animation:popin .2s ease-out}
 .toast{animation:toastin .22s ease-out}
+#top .stat b:is(.flash-up,.flash-down){color:var(--accent-hi)}  /* the flash ends on the usual gold */
 #top .stat b.flash-up{animation:flashup 1.8s ease-out}
 #top .stat b.flash-down{animation:flashdown 1.8s ease-out}
 .dot.busy{background:none;box-shadow:none;border:1.5px solid var(--gold);border-right-color:transparent;width:9px;height:9px;animation:spin .8s linear infinite}

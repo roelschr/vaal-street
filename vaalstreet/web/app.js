@@ -1588,11 +1588,12 @@ async function route() {
   if (practiceStale) { practiceStale = false; drawPractice(); }
   const main = $('#main'), turn = ++routing;
   if (!state.status?.ready) {
+    main.classList.remove('enter');  // this message is redrawn on every poll; it should not fade in each time
     const s = state.status;
     main.innerHTML = `<div class="empty"><h1 style="margin-bottom:8px">Fetching market history</h1>${esc(s?.sync?.error || s?.sync?.message || 'Starting…')}<br><span class="dim">The first sync downloads the last two weeks of exchange hours. This takes a few minutes.</span></div>`;
     return;
   }
-  if (state.hideout) { document.body.classList.add('hideout'); try { await viewHideout(main); } catch (err) { main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; } return; }
+  if (state.hideout) { main.classList.remove('enter'); document.body.classList.add('hideout'); try { await viewHideout(main); } catch (err) { main.innerHTML = `<div class="empty">${esc(err.message)}</div>`; } return; }
   if (!tourSeen() && !$('#tour')) openTour();  // first visit, once the desk has data to show
   const page = (location.hash.replace('#/', '') || 'desk').split('?')[0];
   const view = VIEWS[page] || viewDesk;
