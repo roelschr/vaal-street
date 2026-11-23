@@ -68,6 +68,10 @@ class ScreenError(ValueError):
     """The recognised text could not be read with confidence; the message says what to do."""
 
 
+class DeskUnreachable(RuntimeError):
+    """The desk did not answer at all, as opposed to answering with an error."""
+
+
 @dataclasses.dataclass
 class Reading:
     item: str
@@ -252,8 +256,8 @@ class DeskClient:
                 message = str(err)
             raise RuntimeError(message) from err
         except urllib.error.URLError as err:
-            raise RuntimeError(f"Can't reach the desk at {self.base_url} ({err.reason}). Is `vaalstreet serve` "
-                               "running?") from err
+            raise DeskUnreachable(f"Can't reach the desk at {self.base_url} ({err.reason}). Is `vaalstreet serve` "
+                                  "running?") from err
 
     def names(self) -> tuple[str, list[str]]:
         query = "?" + urllib.parse.urlencode({"league": self.league}) if self.league else ""

@@ -25,8 +25,9 @@ without typing. One item can sit in several stacks, and the copied text does not
 came from. The rule is the owner's: a copy is compared with the copy just before it. The same item
 with a different count is another stack, and adds. The same item with the same count is the same
 stack pressed twice, and changes nothing. Any other copy sets the item's line to the count read.
-Two stacks of one item with equal counts therefore count once; the console prints the sum on every
-write so that this is seen. "Just before" is also bounded in time (`ROW_SECONDS`): checking one
+The rule has two gaps: two stacks of one item with equal counts count once, and one stack copied
+twice with its count changed in between is added to itself. The console prints the sum on every
+write so that both are seen. "Just before" is also bounded in time (`ROW_SECONDS`): checking one
 currency again an hour later must replace its count, not add to it.
 
 The parser and `handle_copy` are plain functions over an injected clipboard, so the tests run
@@ -40,6 +41,8 @@ import dataclasses
 import re
 import time
 from typing import Callable
+
+from vaalstreet.screen import DeskUnreachable
 
 # The game's copy key. Ctrl+Alt+C, the copy with advanced details, holds the same two keys and
 # copies the same header, so it counts too.
@@ -256,8 +259,10 @@ def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print,
         worth = desk.worth(stack.item, stack.units)
     except RuntimeError as err:
         say(f"  {err}")
-        if tally is not None:
-            tally.forget()  # an item the desk does not know: nothing is written for it
+        # An item the desk does not know is a copy in between, and ends the row. A desk that could
+        # not be reached is not: copying the stack again should carry on where the count stood.
+        if tally is not None and not isinstance(err, DeskUnreachable):
+            tally.forget()
         return None
     title, lines = describe_worth(stack, worth)
     for line in lines:

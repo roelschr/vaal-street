@@ -269,6 +269,12 @@ def test_an_unknown_item_writes_nothing_and_ends_the_row():
     desk._worth = WORTH
     handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)
     assert desk.kept[-1] == ("Test Orb", 40, "New"), "a copy came between, so this one sets the line"
+    # The desk not answering is no copy in between: the next copy carries on with the count.
+    desk._worth = screen.DeskUnreachable("Can't reach the desk")
+    assert handle_copy(FakeClip(text=orbs(7)), 7, desk, said.append, tally) is None
+    desk._worth = WORTH
+    handle_copy(FakeClip(text=orbs(7)), 7, desk, said.append, tally)
+    assert desk.kept[-1] == ("Test Orb", 47, "New")
 
 
 def test_copied_stacks_fill_the_stash_through_the_real_api(server):
