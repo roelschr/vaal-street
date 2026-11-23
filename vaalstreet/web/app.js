@@ -79,7 +79,7 @@ const curWord = name => name === 'Divine' ? `<span class="cur d word" title="Div
 const marketTag = kind => {
   const ic = k => `<i class="ci ${k}"></i>`;
   const icons = kind === 'cross' ? `${ic('c')}<i class="ia">→</i>${ic('d')}` : kind === 'divine' ? ic('d') : kind === 'chaos' ? ic('c') : '';
-  return `<span class="tag ${kind}" title="${esc(KIND[kind] || kind)}">${icons}<span class="kt">${esc(KIND[kind] || kind)}</span></span>`;
+  return `<span class="tag mk ${kind}" title="${esc(KIND[kind] || kind)}">${icons}<span class="kt">${esc(KIND[kind] || kind)}</span></span>`;
 };
 function showIcons() {
   const urls = ['Metadata/Items/Currency/CurrencyRerollRare', 'Metadata/Items/Currency/CurrencyModValues'].map(id => `/icon?id=${encodeURIComponent(id)}`);
