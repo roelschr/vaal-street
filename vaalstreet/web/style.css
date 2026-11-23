@@ -61,7 +61,9 @@ kbd{font:10.5px var(--mono);border:1px solid var(--line2);border-bottom-width:2p
 #top{display:flex;align-items:center;gap:18px;padding:9px 20px;background:var(--grain),linear-gradient(180deg,#19140e,#100d0a);border-bottom:1px solid #000;box-shadow:0 1px 0 #3a2e1f,0 6px 14px #0007;position:relative;z-index:2;min-height:52px}
 #top::after{content:'';position:absolute;left:0;right:0;bottom:-2px;height:1px;background:var(--rule);opacity:.6}
 #top .stat{display:flex;flex-direction:column;line-height:1.2;padding-left:14px;border-left:1px solid var(--line)}
-#top .stat b{font:500 14px var(--mono);color:var(--accent-hi)}
+#top .stat b{font:500 14px var(--mono)}
+/* gold only for plain figures: a profit, a loss or the practice hour keeps its own colour */
+#top .stat b:not([class]),.kpi b:not([class]){color:var(--accent-hi)}
 #top .stat span{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 #top .grow{flex:1}
 .sync{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
@@ -119,7 +121,7 @@ label.f,div.f.ctl{display:flex;flex-direction:column;gap:3px;font-size:11px;colo
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:16px}
 .kpi{background:linear-gradient(180deg,#1d1812,#14110d);border:1px solid #3d3020;border-top-color:#5c4728;border-radius:2px;box-shadow:0 0 0 1px #000,0 6px 16px #0007;padding:11px 14px}
 .kpi>span{display:block;font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
-.kpi b{font:500 19px var(--mono);letter-spacing:-.02em;color:var(--accent-hi)}
+.kpi b{font:500 19px var(--mono);letter-spacing:-.02em}
 .kpi i{font-style:normal;font-size:12px;margin-left:6px}
 .note{color:var(--muted);font-size:12px;line-height:1.55;border-left:2px solid var(--bronze);padding:2px 0 2px 11px;margin:0 0 12px;max-width:900px}
 .empty{color:var(--muted);padding:26px 14px;text-align:center;font-style:italic}

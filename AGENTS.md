@@ -62,6 +62,8 @@ These rules hold across the code base. If a change you want to make would break 
 
 Match the code around you. Modules open with a docstring that explains the model or the job of the module and why it works that way. Comments explain reasons, not mechanics. Python modules use `from __future__ import annotations` and type hints. Model code works on dense numpy arrays shaped hour × item, loaded through `Panel`.
 
+The UI's colours are tokens in `vaalstreet/web/style.css`. Chart code reads them through `css()` in `chart.js` and appends an alpha to some of them, so keep them six-digit hex. Next to a number, green means a gain and red a loss or an error. Gold is the accent, Vaal red is decoration only, and practice mode keeps its violet so that it never looks like the live market.
+
 User-facing text is written for a player and junior trader, in plain words. This covers UI labels, CLI help and the README. For example, write "the Divine market pays 16% more", not a term from the code such as "the b-leg premium".
 
 When a change affects what the user sees or how a number is computed, update the README in the same change. The README is the one place that describes the models.
