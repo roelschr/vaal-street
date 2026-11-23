@@ -300,3 +300,4 @@ The code is released under the [MIT License](LICENSE). That license does not cov
 - Item metadata comes from the community [RePoE](https://repoe-fork.github.io/) export of the game's data files.
 - Prices for card rewards the exchange does not trade come from [poe.ninja](https://poe.ninja)'s public economy API ([reference](https://poe.ninja/docs/api)), shown with the credit "prices from poe.ninja". The desk sends poe.ninja only the league and the price list it wants, with this project's User-Agent; poe.ninja is not affiliated with this project.
 - Geist, Geist Mono and Cinzel are distributed under the font licenses in `vaalstreet/web/fonts/`.
+- The desk's frames, buttons and logo are drawn in CSS and SVG for this project. They take after the game's look but copy none of its art.
