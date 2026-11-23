@@ -638,3 +638,27 @@ def test_an_item_made_from_more_than_was_held_counts_the_rest_at_no_cost(tmp_pat
     made = ledger.add_made("L", [["small", 4]], "big", t=2)
     assert ledger.uncovered("L") == {("made", made): pytest.approx(1)}
     assert ledger.positions("L")["big"]["cost"] == pytest.approx(30)
+
+
+def test_a_chain_the_holdings_only_partly_cover_merges_no_more_than_it_uses(tmp_path):
+    """Known answers. 15 small held, 2 huge sold: only 1 huge can be made, from 3 big made from 9 small, so 6
+    small stay held and 1 huge is uncovered (not 15 small into 5 big with 2 big left that never existed).
+    10 big and 9 small held, 5 huge sold: 4 huge need 12 big, 2 of them made from 6 small; 3 small stay."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "small", "buy", 15, 1, t=1)
+    sale = ledger.add_trade("L", "huge", "sell", 2, 20, t=2, recipes=ESSENCES)
+    assert [(m["inputs"], m["output"], m["gives"]) for m in ledger.merges_for(sale)] == [
+        ([("small", 9.0)], "big", 3.0), ([("big", 3.0)], "huge", 1.0)]
+    positions = ledger.positions("L")
+    assert positions["small"]["units"] == pytest.approx(6) and positions["big"]["units"] == 0
+    assert ledger.uncovered("L") == {("trade", sale): pytest.approx(1)}
+
+    other = Ledger(tmp_path / "mixed")
+    other.add_trade("L", "big", "buy", 10, 3, t=1)
+    other.add_trade("L", "small", "buy", 9, 1, t=2)
+    sale = other.add_trade("L", "huge", "sell", 5, 20, t=3, recipes=ESSENCES)
+    assert [(m["inputs"], m["output"], m["gives"]) for m in other.merges_for(sale)] == [
+        ([("small", 6.0)], "big", 2.0), ([("big", 12.0)], "huge", 4.0)]
+    positions = other.positions("L")
+    assert positions["small"]["units"] == pytest.approx(3) and positions["big"]["units"] == 0
+    assert other.uncovered("L") == {("trade", sale): pytest.approx(1)}

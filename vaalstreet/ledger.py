@@ -985,46 +985,62 @@ def _plan_merges(positions: dict[str, dict], item: str, units: float, recipes: d
     Only whole batches are made (29 held make 9, not 9.67), and the rest stays uncovered. A batch
     that makes more than the sale needs leaves the extra in the holdings, as it would in game.
 
+    When the holdings cannot make all of it, the plan is made again for exactly what they can make,
+    so the lower tiers merge only what that needs: 15 of the lowest tier make one of the tier two
+    above from 9 of them, and 6 stay held, rather than all 15 merging into 5 of which 2 sit unused.
+
     The ledger does not guess. An item that more than one recipe could make from what is held is not
     made at all, and nothing is made from the item being sold or from a step further up its chain.
     """
-    held = {k: v["units"] for k, v in positions.items()}
-    steps: list[tuple[list[tuple[str, float]], str, float]] = []
+    start = {k: v["units"] for k, v in positions.items()}
 
-    def reachable(thing: str, depth: int, path: frozenset) -> bool:
-        if thing in path:
-            return False
-        if held.get(thing, 0.0) > 1e-9:
-            return True
-        return depth < max_steps and any(all(reachable(i, depth + 1, path | {thing}) for i, _ in r["inputs"])
-                                         for r in recipes.get(thing, ()))
+    def plan(want: float) -> tuple[list[tuple[list[tuple[str, float]], str, float]], float]:
+        held = dict(start)
+        steps: list[tuple[list[tuple[str, float]], str, float]] = []
 
-    def make(thing: str, want: float, depth: int, path: frozenset) -> None:
-        if depth >= max_steps:
-            return
-        path = path | {thing}
-        usable = [r for r in recipes.get(thing, ())
-                  if r["inputs"] and all(reachable(i, depth + 1, path) for i, _ in r["inputs"])]
-        if len(usable) != 1:
-            return
-        recipe = usable[0]
-        gives = float(recipe["gives"])
-        batches = math.ceil(want / gives - 1e-9)
-        for i, n in recipe["inputs"]:
-            missing = batches * float(n) - held.get(i, 0.0)
-            if missing > 1e-9:
-                make(i, missing, depth + 1, path)
-        batches = min([batches] + [math.floor(held.get(i, 0.0) / float(n) + 1e-9) for i, n in recipe["inputs"]])
-        if batches <= 0:
-            return
-        for i, n in recipe["inputs"]:
-            held[i] = held.get(i, 0.0) - batches * float(n)
-        held[thing] = held.get(thing, 0.0) + batches * gives
-        steps.append(([(i, batches * float(n)) for i, n in recipe["inputs"]], thing, batches * gives))
+        def reachable(thing: str, depth: int, path: frozenset) -> bool:
+            if thing in path:
+                return False
+            if held.get(thing, 0.0) > 1e-9:
+                return True
+            return depth < max_steps and any(all(reachable(i, depth + 1, path | {thing}) for i, _ in r["inputs"])
+                                             for r in recipes.get(thing, ()))
 
-    short = float(units) - held.get(item, 0.0)
-    if short > 1e-9:
-        make(item, short, 0, frozenset())
+        def make(thing: str, want: float, depth: int, path: frozenset) -> None:
+            if depth >= max_steps:
+                return
+            path = path | {thing}
+            usable = [r for r in recipes.get(thing, ())
+                      if r["inputs"] and all(reachable(i, depth + 1, path) for i, _ in r["inputs"])]
+            if len(usable) != 1:
+                return
+            recipe = usable[0]
+            gives = float(recipe["gives"])
+            batches = math.ceil(want / gives - 1e-9)
+            for i, n in recipe["inputs"]:
+                missing = batches * float(n) - held.get(i, 0.0)
+                if missing > 1e-9:
+                    make(i, missing, depth + 1, path)
+            batches = min([batches] + [math.floor(held.get(i, 0.0) / float(n) + 1e-9) for i, n in recipe["inputs"]])
+            if batches <= 0:
+                return
+            for i, n in recipe["inputs"]:
+                held[i] = held.get(i, 0.0) - batches * float(n)
+            held[thing] = held.get(thing, 0.0) + batches * gives
+            steps.append(([(i, batches * float(n)) for i, n in recipe["inputs"]], thing, batches * gives))
+
+        make(item, want, 0, frozenset())
+        return steps, sum(gives for _, output, gives in steps if output == item)
+
+    want = float(units) - start.get(item, 0.0)
+    if want <= 1e-9:
+        return []
+    steps, made = plan(want)
+    for _ in range(3):  # each pass asks for no more than the one before could make
+        if made <= 1e-9 or made >= want - 1e-9:
+            break
+        want = made
+        steps, made = plan(want)
     return steps
 
 
