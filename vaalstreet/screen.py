@@ -269,6 +269,10 @@ class DeskClient:
         query = {"item": item, "units": f"{units:g}"} | ({"league": self.league} if self.league else {})
         return self._call("/api/worth?" + urllib.parse.urlencode(query))
 
+    def set_stash(self, item: str, units: float, league: str) -> dict:
+        """Set one line of the stash list (the stack check with --stash); answers with the list, valued."""
+        return self._call("/api/stash", {"league": league, "item": item, "units": units})
+
     def event(self, title: str, body: str, league: str) -> dict:
         return self._call("/api/event", {"title": title, "body": body, "league": league})
 
@@ -430,10 +434,11 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
-        do_calibrate: bool = False, region: str | None = None, stacks: bool = False) -> None:
+        do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False) -> None:
     """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
 
     With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
+    With `stash`, which turns `stacks` on, each copied stack is also written to the stash list.
     """
     mss, keyboard, RapidOCR = load_libraries()
     if do_calibrate:
@@ -461,13 +466,14 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         handle_press(capture, recognise, desk)
 
     hotkeys = {hotkey: gate.press}
-    if stacks:
+    if stacks or stash:
         from vaalstreet import clipboard
 
         clip = clipboard.open_clipboard()
+        tally = clipboard.Tally() if stash else None
 
         def copied(since: int) -> None:
-            clipboard.handle_copy(clip, since, desk)
+            clipboard.handle_copy(clip, since, desk, tally=tally)
 
         # The counter is noted here, inside the key press, before the game has written the clipboard.
         hotkeys[clipboard.COPY_KEY] = lambda: gate.press(functools.partial(copied, clip.sequence()))
@@ -476,6 +482,14 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         print("It reads the item's name and the size of the stack, and shows what the stack is worth. Anything "
               "else on the clipboard is dropped: never shown, never sent to the desk. You press the key; nothing is "
               "sent to the game.")
+        if stash:
+            print("Each copied stack is also written to your stash list on the desk (--stash). A copy sets the "
+                  "item's line to the count read, replacing what the line held.")
+            print(f"The same item copied again within {clipboard.ROW_SECONDS / 60:g} minutes with a different count "
+                  "is another stack and adds; with the same count it is the same stack and changes nothing.")
+            print("To start an item's count over, copy another item first, or edit the line on the Ledger page.")
+        else:
+            print("Nothing is saved. Start with --stash to write copied stacks to your stash list.")
     print("Press Ctrl+C here to stop.")
     listener = keyboard.GlobalHotKeys(hotkeys)
     listener.start()

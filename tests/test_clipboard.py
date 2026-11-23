@@ -16,12 +16,13 @@ import ctypes
 import sys
 import threading
 import types
+import urllib.request
 
 import pytest
 
-from conftest import call
+from conftest import NEW, call
 from vaalstreet import clipboard, screen
-from vaalstreet.clipboard import NotAnItem, Stack, describe_worth, handle_copy, parse_item, wait_changed
+from vaalstreet.clipboard import NotAnItem, Stack, Tally, describe_worth, handle_copy, parse_item, wait_changed
 from vaalstreet.screen import PressGate
 
 SCROLLS = ("Item Class: Stackable Currency\r\nRarity: Currency\r\nPortal Scroll\r\n--------\r\n"
@@ -92,8 +93,14 @@ WORTH = {"league": "New", "bridge": 150.0, "name": "Test Orb", "units": 100, "va
 
 
 class FakeDesk:
-    def __init__(self, worth=WORTH):
-        self.asked, self.events, self._worth = [], [], worth
+    def __init__(self, worth=WORTH, stash=None):
+        self.asked, self.events, self.kept, self._worth, self._stash = [], [], [], worth, stash or {}
+
+    def set_stash(self, item, units, league):
+        self.kept.append((item, units, league))
+        if isinstance(self._stash, Exception):
+            raise self._stash
+        return {"rows": [1, 2], "total": {"value": 450.0}, "bridge": 150.0, "was": None} | self._stash
 
     def worth(self, item, units):
         self.asked.append((item, units))
@@ -115,6 +122,7 @@ def test_one_press_is_one_read_one_valuation_one_event():
     clip, desk, said = FakeClip(), FakeDesk(), []
     assert handle_copy(clip, 7, desk, said.append)["value"] == 1000.0
     assert clip.reads == 1 and desk.asked == [("Test Orb", 100)]
+    assert desk.kept == [], "without --stash nothing is written to the stash"
     (title, body, league), = desk.events
     assert title == "100 Test Orb: 6.67 Divine, 10% more for Divines" and league == "New"
     assert body.startswith("Read: 100 Test Orb. Worth 6.67 Divine (1,000 Chaos) at fair value")
@@ -182,6 +190,109 @@ def test_worth_in_words():
     # A long name gives way; the amount and the better market stay whole.
     title, _ = describe_worth(Stack("Awakened Unbound Ailments Support of the Long Name", 12345), WORTH)
     assert len(title) <= 60 and title.endswith("…: 6.67 Divine, 10% more for Divines") and title.startswith("12,345 Awakened")
+
+
+# ------------------------------------------------------------------ the stash
+def orbs(count):
+    return ORBS.replace("100/20", f"{count:,}/20")
+
+
+def test_tally_adds_different_counts_in_a_row_and_nothing_else():
+    now = [0.0]
+    tally = Tally(clock=lambda: now[0])
+
+    def copy(item, units):
+        stack = Stack(item, units)
+        total, before = tally.plan(stack)
+        tally.done(stack, total if total is not None else before)
+        return total, before
+
+    assert copy("Chaos Orb", 500) == (500, None)  # the first copy sets the line
+    assert copy("Chaos Orb", 620) == (1120, 500)  # a different count right after: another stack
+    assert copy("Chaos Orb", 620) == (None, 1120)  # the same count again: the same stack, no write
+    assert copy("Chaos Orb", 7) == (1127, 1120)
+    assert copy("Test Orb", 3) == (3, None)
+    assert copy("Chaos Orb", 620) == (620, None)  # another item came between: the count starts over
+    # Three stacks, two of them equal but not next to each other: all three count.
+    assert [copy("Test Scrap", n)[0] for n in (20, 7, 20)] == [20, 27, 47]
+    # Two equal stacks next to each other count once. That is the rule's known gap.
+    assert [copy("Test Orb", n)[0] for n in (20, 20, 7)] == [20, None, 27]
+    # Checked again after some trading: that replaces the count, it does not add to it.
+    assert copy("Chaos Orb", 500) == (500, None)
+    now[0] += clipboard.ROW_SECONDS + 1
+    assert copy("Chaos Orb", 620) == (620, None)
+    now[0] += clipboard.ROW_SECONDS - 1
+    assert copy("Chaos Orb", 30) == (650, 620)
+
+
+def test_stash_switch_writes_the_copied_stack_and_prints_the_sum():
+    desk, tally, said = FakeDesk(stash={"was": 80.0}), Tally(), []
+    clip = FakeClip(text=orbs(100))
+    handle_copy(clip, 7, desk, said.append, tally)
+    assert clip.reads == 1 and desk.kept == [("Test Orb", 100, "New")]
+    assert any("Stash: Test Orb set to 100. It replaces the 80 the list held." in line for line in said)
+    assert any("Your stash list: 2 lines, worth 3 Divine (450 Chaos)." in line for line in said)
+    assert "Stash: Test Orb set to 100." in desk.events[-1][1], "the hideout window hears of the write too"
+
+    clip = FakeClip(text=orbs(40))
+    handle_copy(clip, 7, desk, said.append, tally)
+    assert clip.reads == 1 and desk.kept[-1] == ("Test Orb", 140, "New")
+    assert any("Stash: Test Orb 100 + 40 = 140 (another stack)." in line for line in said)
+
+    said.clear()
+    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)  # the same stack pressed twice
+    assert len(desk.kept) == 2 and any("Stash unchanged" in line and "stays at 140" in line for line in said)
+
+    handle_copy(FakeClip(text=orbs(1500)), 7, desk, said.append, tally)
+    assert desk.kept[-1] == ("Test Orb", 1640, "New")
+    assert any("Stash: Test Orb 140 + 1,500 = 1,640 (another stack)." in line for line in said)
+
+
+def test_a_failed_write_leaves_the_count_where_it_was():
+    desk, tally, said = FakeDesk(), Tally(), []
+    handle_copy(FakeClip(text=orbs(100)), 7, desk, said.append, tally)
+    desk._stash = RuntimeError("Can't reach the desk")
+    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)
+    assert any("The stash was not changed: Can't reach the desk" in line for line in said)
+    desk._stash = {}
+    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)  # copied again: the same sum is tried again
+    assert [k[1] for k in desk.kept] == [100, 140, 140]
+
+
+def test_an_unknown_item_writes_nothing_and_ends_the_row():
+    desk, tally, said = FakeDesk(), Tally(), []
+    handle_copy(FakeClip(text=orbs(100)), 7, desk, said.append, tally)
+    desk._worth = RuntimeError("No item called 'Doom Tether' traded in New.")
+    clip = FakeClip(text=RARE)
+    assert handle_copy(clip, 7, desk, said.append, tally) is None
+    assert clip.reads == 1 and len(desk.kept) == 1
+    desk._worth = WORTH
+    handle_copy(FakeClip(text=orbs(40)), 7, desk, said.append, tally)
+    assert desk.kept[-1] == ("Test Orb", 40, "New"), "a copy came between, so this one sets the line"
+
+
+def test_copied_stacks_fill_the_stash_through_the_real_api(server):
+    client, tally, said = screen.DeskClient(server), Tally(), []
+    assert call(f"{server}/api/stash", {"item": "Test Orb", "units": 80})[1]["was"] is None  # typed by hand first
+    handle_copy(FakeClip(text=orbs(100)), 7, client, said.append, tally)
+    assert any("It replaces the 80 the list held." in line for line in said)
+    handle_copy(FakeClip(text=orbs(40)), 7, client, said.append, tally)
+    handle_copy(FakeClip(text=orbs(40)), 7, client, said.append, tally)
+    rows = call(f"{server}/api/stash")[1]["rows"]
+    assert [(r["name"], r["units"]) for r in rows] == [("Test Orb", 140)]
+    assert any("Your stash list: 1 line, worth " in line for line in said)
+
+
+def test_a_copy_during_a_rehearsal_goes_to_the_practice_stash(server):
+    client, said = screen.DeskClient(server), []
+    assert call(f"{server}/api/rehearsal", {"league": NEW, "start_day": 2, "bankroll": 1000})[1]["running"]
+    handle_copy(FakeClip(text=orbs(100)), 7, client, said.append, Tally())
+    assert any("This is the practice stash: a rehearsal is running." in line for line in said)
+    assert [r["units"] for r in call(f"{server}/api/stash")[1]["rows"]] == [100]
+    request = urllib.request.Request(f"{server}/api/rehearsal", method="DELETE")
+    with urllib.request.urlopen(request, timeout=30) as response:
+        assert response.status == 200
+    assert call(f"{server}/api/stash")[1]["rows"] == [], "the real stash was never written"
 
 
 # ------------------------------------------------------------------ the Windows reader
@@ -322,7 +433,8 @@ def test_cli_passes_the_switch_and_it_is_off_unless_asked(monkeypatch, tmp_path)
 
     seen = []
     monkeypatch.setenv("VAAL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(screen, "run", lambda *args: seen.append(args[-1]))
+    monkeypatch.setattr(screen, "run", lambda *args: seen.append(args[-2:]))  # (stacks, stash)
     cli.main(["screen"])
     cli.main(["screen", "--stacks"])
-    assert seen == [False, True]
+    cli.main(["screen", "--stash"])  # writing to the stash turns the stack check on
+    assert seen == [(False, False), (True, False), (True, True)]
