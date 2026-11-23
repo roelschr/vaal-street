@@ -1,4 +1,4 @@
-import { drawChart, spark } from './chart.js';
+import { drawChart, spark, css } from './chart.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -7,7 +7,8 @@ const state = {
   generation: -1, filters: { q: '', category: '', minValue: 1000, watched: false, kind: 'all', minMargin: 0.03, capital: localStorage.bankroll || '', goldBudget: localStorage.goldBudget || '', rankBy: 'profit' },
   league_view: { horizon: 7, unit: 'divine' }, lab: null, hideout: new URLSearchParams(location.search).has('hideout'),
 };
-const PALETTE = ['#8fb8f2', '#b9a3ee', '#e8c66a', '#f0787f', '#5fd3a2', '#d9a05b', '#7fd6e0', '#c9cf7a'];
+// Series colours for charts that compare many lines; the tokens live in style.css.
+const palette = () => ['--s1', '--s2', '--s3', '--s4', '--s5', '--s6', '--s7', '--s8'].map(css);
 
 // ---------------------------------------------------------------- plumbing
 async function api(path, body) {
@@ -114,7 +115,7 @@ function ninjaLine() {
   return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
 }
 function renderNav(page) {
-  $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt="">Vaal Street</div>
+  $('#nav').innerHTML = `<div class="brand"><img src="/mark.svg" alt=""><span>Vaal Street</span></div>
     ${PAGES.map(([id, label]) => `<a href="#/${id}" class="${id === page ? 'on' : ''}"><svg viewBox="0 0 24 24">${ICONS[id]}</svg>${label}</a>`).join('')}
     <span class="spacer"></span>
     <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div>`;
@@ -237,7 +238,7 @@ async function viewMarkets(main) {
       { h: 'Divine premium', f: r => pct(r.premium), s: r => r.premium, title: 'How much more the Divine market pays than the Chaos market' },
       { h: 'Traded 24h', f: r => money(r.value_24h), s: r => r.value_24h },
       { h: 'Bids vs offers', f: r => r.imbalance == null ? '–' : `<span class="meter" title="${r.imbalance > 0 ? 'More Chaos bidding than items offered' : 'More items offered than Chaos bidding'}"><i style="left:${r.imbalance > 0 ? 50 : 50 + r.imbalance * 50}%;width:${Math.abs(r.imbalance) * 50}%;background:var(--${r.imbalance > 0 ? 'up' : 'down'})"></i></span>`, s: r => r.imbalance, title: 'Resting Chaos bids against resting item offers' },
-      { h: '3 days', f: r => spark(r.spark, r.change_24h >= 0 ? '#5fd3a2' : '#f0787f') },
+      { h: '3 days', f: r => spark(r.spark, r.change_24h >= 0 ? 'var(--up)' : 'var(--down)') },
     ], rows, { sort: 8, onRow: r => openItem(r.id), empty: 'No item matches these filters.' });
     t.addEventListener('click', async e => {
       const b = e.target.closest('[data-watch]'); if (!b) return;
@@ -504,10 +505,10 @@ async function viewArbitrage(main) {
 const unitOf = f => f(1).trim().slice(-1);
 function leagueChart(host, curves, current, key, yFormat) {
   const names = Object.keys(curves).sort((a, b) => (a === current) - (b === current));
-  let n = 0;
+  let n = 0; const others = palette(), fair = css('--fair');
   const series = names.map(name => ({
     label: name, x: curves[name].map(p => p.day), y: curves[name].map(p => p[key]),
-    color: name === current ? '#b2ef78' : PALETTE[n++ % PALETTE.length], width: name === current ? 2.4 : 1.3, alpha: name === current ? 1 : .8,
+    color: name === current ? fair : others[n++ % others.length], width: name === current ? 2.4 : 1.3, alpha: name === current ? 1 : .8,
   }));
   drawChart(host, { series, xType: 'day', yFormat, tickFormat: tick(unitOf(yFormat)), log: true });
   return `<div class="legend">${series.slice().reverse().map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('')}</div>`;
@@ -546,9 +547,9 @@ async function leagueExtras(g, d) {
   const dt = d.divine_timing;
   if (dt) {
     const tp = panel('When to buy Divines', 'c6');
-    tp.insertAdjacentHTML('beforeend', `<div class="body"><p style="margin:0 0 10px">${esc(dt.advice || `No past ${fam} to learn from yet.`)}</p><div class="legend"><span><i style="background:#8fb8f2"></i>How much dearer than its cheapest day the Divine was, median over past leagues</span></div><div id="dtc"></div></div>`);
+    tp.insertAdjacentHTML('beforeend', `<div class="body"><p style="margin:0 0 10px">${esc(dt.advice || `No past ${fam} to learn from yet.`)}</p><div class="legend"><span><i style="background:var(--divine)"></i>How much dearer than its cheapest day the Divine was, median over past leagues</span></div><div id="dtc"></div></div>`);
     g.append(tp);
-    if (dt.curve?.length) drawChart($('#dtc', tp), { series: [{ label: 'Dearer than its cheapest day', color: '#8fb8f2', x: dt.curve.map(c => c.day), y: dt.curve.map(c => c.dearer), width: 2 }], xType: 'day', yFormat: x => `+${(x * 100).toFixed(0)}%`, height: 200 });
+    if (dt.curve?.length) drawChart($('#dtc', tp), { series: [{ label: 'Dearer than its cheapest day', color: css('--divine'), x: dt.curve.map(c => c.day), y: dt.curve.map(c => c.dearer), width: 2 }], xType: 'day', yFormat: x => `+${(x * 100).toFixed(0)}%`, height: 200 });
   }
   const m = d.meta;
   if (m) {
@@ -795,8 +796,8 @@ async function viewLab(main) {
     out.innerHTML = `<div id="rt"></div><div class="legend" style="margin-top:14px" id="rl"></div><div id="rc"></div><div id="tops" class="small muted" style="margin-top:8px"></div><div id="mix" style="margin-top:12px"></div>`;
     const pick = r => {
       const s = r.summary;
-      $('#rl', out).innerHTML = `<span><i style="background:#b2ef78"></i>${esc(s.strategy.split(' + ').map(k => STRATS[k]?.label || k).join(' + '))} on ${esc(s.league)}</span><span><i style="background:#8fb8f2"></i>Same Chaos held as Divine Orbs</span>`;
-      drawChart($('#rc', out), { series: [{ label: 'Strategy', color: '#b2ef78', x: r.t, y: r.equity, width: 2 }, { label: 'Hold Divine', color: '#8fb8f2', x: r.t, y: r.divine, width: 1.3 }], yFormat: x => compact(x) + ' c', tickFormat: tick('c'), log: true, height: 280 });
+      $('#rl', out).innerHTML = `<span><i style="background:var(--fair)"></i>${esc(s.strategy.split(' + ').map(k => STRATS[k]?.label || k).join(' + '))} on ${esc(s.league)}</span><span><i style="background:var(--divine)"></i>Same Chaos held as Divine Orbs</span>`;
+      drawChart($('#rc', out), { series: [{ label: 'Strategy', color: css('--fair'), x: r.t, y: r.equity, width: 2 }, { label: 'Hold Divine', color: css('--divine'), x: r.t, y: r.divine, width: 1.3 }], yFormat: x => compact(x) + ' c', tickFormat: tick('c'), log: true, height: 280 });
       $('#tops', out).innerHTML = s.top_items.length ? 'Biggest contributors: ' + s.top_items.map(t => `${esc(t.name)} <span class="num ${t.profit >= 0 ? 'up' : 'down'}">${t.profit >= 0 ? '+' : ''}${compact(t.profit)}</span>`).join(' · ') : '';
       const mix = $('#mix', out); mix.replaceChildren();
       if (s.strategies?.length) {
@@ -1228,7 +1229,7 @@ async function openItem(id, hours = 168) {
     ${row.move != null ? `<p class="note">The model reads this item as moving about ±${(row.move * 100).toFixed(1)}% an hour for real, with prints bouncing ±${(row.noise * 100).toFixed(1)}% around that. ${row.z != null && Math.abs(row.z) >= 2 ? `The latest print was ${Math.abs(row.z).toFixed(1)} deviations ${row.z > 0 ? 'above' : 'below'} what the model expected.` : ''}</p>` : ''}
     <div class="bar"><div class="seg" id="rg">${[[48, '2 days'], [168, '7 days'], [720, '30 days']].map(([h, l]) => `<button data-h="${h}" class="${h === hours ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="grow"></span><button class="btn" id="tcItem" title="Is an offer for this item a good deal? (C)">Check an offer</button><button class="btn" id="watchBtn">${row.watched ? '★ Watching' : '☆ Watch'}</button></div>
-    <div class="legend"><span><i style="background:#b2ef78"></i>Fair value</span><span title="How sure the model is about the value now. Not a forecast: single trades often land outside."><i style="background:#b2ef7840;height:8px"></i>How sure the model is</span><span><i style="background:#d9a05b"></i>Chaos market, hourly average</span><span><i style="background:#8fb8f2"></i>Divine market, hourly average</span><span><i style="background:#ffffff30"></i>Value traded</span></div>
+    <div class="legend"><span><i style="background:var(--fair)"></i>Fair value</span><span title="How sure the model is about the value now. Not a forecast: single trades often land outside."><i style="background:color-mix(in srgb,var(--fair) 25%,transparent);height:8px"></i>How sure the model is</span><span><i style="background:var(--chaos)"></i>Chaos market, hourly average</span><span><i style="background:var(--divine)"></i>Divine market, hourly average</span><span><i style="background:color-mix(in srgb,var(--vol) 19%,transparent)"></i>Value traded</span></div>
     <div id="pc"></div>
     <h2 style="margin:18px 0 8px">Flip plans</h2><div class="orders" id="plans"></div>
     ${d.conversions.length ? `<h2 style="margin:18px 0 8px">Sets</h2><div class="orders">${d.conversions.map(c => `<div class="order"><b>${c.need} ${esc(c.name)}</b> → ${c.gives} ${esc(c.reward)}<div class="big">${pct(c.margin)}</div><span class="muted small">Costs ${money(c.cost)}, worth ${money(c.proceeds)}</span></div>`).join('')}</div>` : ''}
@@ -1239,10 +1240,10 @@ async function openItem(id, hours = 168) {
       <input type="number" id="at" step="any" placeholder="${row.price ?? ''}"><button class="btn" id="aa">Add alert</button><span class="muted small">Prices in Chaos; premium and change as fractions (0.1 = 10%).</span></div>`;
   drawChart($('#pc', drawer), {
     series: [
-      { label: 'Fair value', color: '#b2ef78', x: s.t, y: conv(s.fair), width: 2, bridge: true },
-      { label: 'Chaos market', color: '#d9a05b', x: s.t, y: conv(s.chaos), dots: true },
-      { label: 'Divine market', color: '#8fb8f2', x: s.t, y: conv(s.divine), dots: true },
-    ], band: { label: 'Model sure within', x: s.t, lo: conv(s.fair_low), hi: conv(s.fair_high), color: '#b2ef7826' },
+      { label: 'Fair value', color: css('--fair'), x: s.t, y: conv(s.fair), width: 2, bridge: true },
+      { label: 'Chaos market', color: css('--chaos'), x: s.t, y: conv(s.chaos), dots: true },
+      { label: 'Divine market', color: css('--divine'), x: s.t, y: conv(s.divine), dots: true },
+    ], band: { label: 'Model sure within', x: s.t, lo: conv(s.fair_low), hi: conv(s.fair_high), color: css('--fair') + '26' },
     bars: { x: s.t, y: s.value }, yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 300,
   });
   $('#plans', drawer).innerHTML = d.flips.length ? d.flips.map(p => `<div class="order"><span class="tag ${p.kind}">${KIND[p.kind]}</span>
