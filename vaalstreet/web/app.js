@@ -1860,7 +1860,7 @@ function openCheck(item) {
       const r = await api('/api/check', { league: state.league, item: v('what'), market: pick('market'), side: pick('side'), item_units: Math.round(+v('iu')), currency_units: Math.round(+v('cu')), stock: v('stock') || null });
       const [cls, word] = VERDICT[r.verdict] || ['muted', r.verdict];
       out.innerHTML = `<div class="verdict ${cls}">${word} <span class="muted small">${esc(r.name)} at ${fmt(r.price)}${CUR.c} each${r.trusted ? '' : ' · this market barely trades'}</span></div>
-        <ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+        ${offerLadder(r)}<ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
     } catch (err) { out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
   };
   ratioHelper(host, form);
@@ -1939,6 +1939,14 @@ function ratioHelper(host, form) {
       (form.elements.what.value.trim() ? $('.btn.primary', form) : form.elements.what).focus();
     }
   };
+}
+// Where a checked offer sits, dearest on top: both markets, fair value and its range, the plan's two
+// orders in the offer's market, and the offer. Neutral on purpose: the verdict above carries the colour.
+function offerLadder(r) {
+  if (!r.ladder?.length) return '';
+  return `<div class="ladder" aria-label="Where this offer sits">${r.ladder.map(row => `<div class="lr${row.offer ? ' me' : ''}">
+    <span>${esc(row.label)}${row.note || row.order ? `<span class="muted small"> · ${row.note ? esc(row.note) : ''}${row.order ? `${row.note ? ': ' : ''}${order(row.order, row.key === 'plan_buy')}` : ''}</span>` : ''}</span>
+    <b>${money(row.price)}</b></div>`).join('')}</div>`;
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 

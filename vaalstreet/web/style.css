@@ -231,6 +231,13 @@ html.icons :is(.sub,.small) .cur.d,html.icons body.hideout .cur.d{box-shadow:ins
 #tc .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
 #tc input[type=number]{width:90px}
 #tc ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.5}
+/* The offer ladder: plain rows, the offer's row in the accent colour. */
+#tc .ladder{display:grid;border:1px solid var(--line);border-radius:2px;font-size:12px}
+#tc .lr{display:flex;justify-content:space-between;gap:10px;padding:3px 8px}
+#tc .lr+.lr{border-top:1px solid var(--line)}
+#tc .lr b{font:500 12px var(--mono);white-space:nowrap}
+#tc .lr.me{background:#d9b2601a;color:var(--accent-hi);box-shadow:inset 3px 0 0 var(--accent)}
+#tc .lr.me b{font-weight:700}
 /* The ratio helper folds under the check form, so the card stays short for a plain check. */
 #tc .rh{margin:0 14px 14px;border-top:1px solid var(--line);padding-top:10px;display:grid;gap:10px}
 #tc .rh summary{cursor:pointer;color:var(--title);font-weight:600}

@@ -237,6 +237,15 @@ def check(desk: Desk, item: str, market: str, side: str, item_units: float, curr
         reasons.append(f"{PLAN_WORDS[level['kind']]} {'buys' if side == 'buy' else 'sells'} at {level['price']:.4g} Chaos"
                        f" each; this offer {status} it.")
 
+    # Both markets' own prices and the plan's two orders in this market, for the ladder. A market the
+    # market table would not quote (quiet, or never traded) is left out rather than shown at a price.
+    for name, key in MARKETS.items():
+        other = desk.legs[key]
+        value = float(other.fair[-1, i])
+        quoted = math.isfinite(value) and other.active[i] >= MIN_ACTIVE and other.age[i] < MAX_AGE
+        out[f"{name}_market"] = _num(value) if quoted else None
+    out["plan_levels"] = {s: _plan_level(plans, item_id, s, market) for s in ("buy", "sell")}
+
     flow = float(leg.flow[i]) if math.isfinite(leg.flow[i]) else 0.0
     out.update(volume_per_hour=_num(flow), active=_num(leg.active[i], 3), age=int(min(leg.age[i], 10**6)))
     if flow > 0:
@@ -256,7 +265,40 @@ def check(desk: Desk, item: str, market: str, side: str, item_units: float, curr
         if verdict == "go":
             verdict = "caution"
     out.update(verdict=verdict, reasons=reasons)
+    out["ladder"] = ladder(out)
     return out
+
+
+def ladder(r: dict) -> list[dict]:
+    """Where a checked offer sits among the prices around it, dearest first.
+
+    The rows are the Divine market's and the Chaos market's own prices, the item's fair value with
+    its low and high, the flip plan's sell and buy orders in the offer's market, and the offer
+    itself (`offer` true), which also says how far it is from its own market's price. A price that
+    is missing, such as a quiet market's or a plan that does not exist, has no row; it is never
+    shown as zero. Each row is {key, label, price (Chaos per item), offer, note}.
+    """
+    rows: list[dict] = []
+
+    def add(key: str, label: str, price, note: str = "", **extra) -> None:
+        if price is not None and math.isfinite(price) and price > 0:
+            rows.append({"key": key, "label": label, "price": price, "offer": False, "note": note} | extra)
+
+    add("divine_market", "Divine market", r.get("divine_market"))
+    add("fair_high", "Fair value, high end", r.get("fair_high"))
+    add("fair", "Fair value", r.get("fair"))
+    add("fair_low", "Fair value, low end", r.get("fair_low"))
+    add("chaos_market", "Chaos market", r.get("chaos_market"))
+    for side, label in (("sell", "Flip plan sells at"), ("buy", "Flip plan buys at")):
+        level = (r.get("plan_levels") or {}).get(side)
+        if level:
+            add(f"plan_{side}", label, level["price"], PLAN_WORDS[level["kind"]], order=level["order"])
+    word, own = r["market"].title(), r.get(f"{r['market']}_market")
+    note = (f"{abs(r['price'] / own - 1):.1%} {'under' if r['price'] < own else 'over'} the {word} market's price"
+            if own else f"the {word} market barely trades, so there is no price to compare with")
+    rows.append({"key": "offer", "label": "This offer", "price": r["price"], "offer": True, "note": note})
+    rows.sort(key=lambda row: -row["price"])  # stable: on a tie the offer stays below
+    return rows
 
 
 # A count as a player or a spreadsheet writes it: 45, 2.5, or 2,448 with a mark between the thousands.

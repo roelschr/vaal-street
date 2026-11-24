@@ -288,6 +288,11 @@ def _check(args: argparse.Namespace) -> None:
     print(f"\n  {r['verdict'].upper()}\n")
     for reason in r["reasons"]:
         print(f"  - {reason}")
+    if r.get("ladder"):
+        print("\n  Where it sits (Chaos each, dearest first):")
+        for row in r["ladder"]:
+            note = f"  ({row['note']})" if row["note"] else ""
+            print(f"  {'>' if row['offer'] else ' '} {row['price']:>10.4g}  {row['label']}{note}")
 
 
 def _ratio(args: argparse.Namespace) -> None:
