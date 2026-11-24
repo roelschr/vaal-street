@@ -139,3 +139,24 @@ def test_the_ledger_page_carries_the_proposal(archive_root, tmp_path, desk):
     assert measured["orders"] == 2
     assert rows[done]["proposed_fill"] is None
     assert app.ledger.order(oid)["filled"] == 300, "a proposal records nothing"
+
+
+def test_a_re_posted_order_teaches_nothing_while_its_replacement_is_open(archive_root, tmp_path):
+    """"Re-posted…" marks the old order cancelled. With nothing recorded on it, that looked like a settled
+    order that took nothing, and lowered the share for the very order that replaced it. Known answers: while
+    the replacement is open, the share is the default 10% from no orders; once the replacement has filled,
+    both stretches count: 50 filled of the volume both saw, so two orders teach the share."""
+    from vaalstreet.server import App
+
+    app = App(archive_root, sync=False)
+    app.ledger = Ledger(tmp_path)
+    end = app.desk(NEW).as_of + HOUR
+    old = app.ledger.add_order(NEW, ITEM, "buy", "chaos", 1000, 1, 5000, t=end - 20 * HOUR)
+    new = app.ledger.repost_order(old, 1001, 1, 5000, t=end - 10 * HOUR)
+    row = next(o for o in app.api_ledger({"league": NEW})["orders"] if o["id"] == new)
+    assert row["fill_share"] == pytest.approx(0.1) and row["fill_share_orders"] == 0
+    assert row["traded_through"] == pytest.approx(10_000) and row["proposed_fill"] == 1000
+    app.ledger.fill_order(new, 5000, t=end - HOUR, record_trade=False)
+    third = app.ledger.add_order(NEW, ITEM, "buy", "chaos", 1000, 1, 5000, t=end - 5 * HOUR)
+    row = next(o for o in app.api_ledger({"league": NEW})["orders"] if o["id"] == third)
+    assert row["fill_share_orders"] == 2, "the filled replacement and the stretch before it"

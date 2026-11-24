@@ -208,6 +208,8 @@ def from_ledger(ledger, league: str, panel: Panel, as_of: int, default: float = 
     `settled` keeps only orders whose record is final: filled, cancelled or collected. A proposed
     fill uses that share. An order still open may have fills the player has not recorded yet, and
     counting it as one that took little would lower the very guess that asks them to record it.
+    An order that a re-post replaced is one stretch of the same order: its record is final only
+    when the order that replaced it is, or "Re-posted…" would bring that loop back.
     """
     fills: dict[int, list[tuple[int, float]]] = {}
     for tr in ledger.trades(league):
@@ -215,5 +217,17 @@ def from_ledger(ledger, league: str, panel: Panel, as_of: int, default: float = 
             fills.setdefault(tr["order_id"], []).append((int(tr["t"]), float(tr["units"])))
     orders = ledger.orders(league, include_done=True)
     if settled:
-        orders = [order for order in orders if order["status"] not in ("open", "part-filled")]
+        still_open = {order["id"] for order in orders if order["status"] in ("open", "part-filled")}
+        replaced_by = {order["reposted_from"]: order["id"] for order in orders if order.get("reposted_from") is not None}
+
+        def final(order_id: int) -> bool:
+            seen: set[int] = set()
+            while order_id is not None and order_id not in seen:  # along the chain of re-posts; a loop ends it
+                if order_id in still_open:
+                    return False
+                seen.add(order_id)
+                order_id = replaced_by.get(order_id)
+            return True
+
+        orders = [order for order in orders if final(order["id"])]
     return calibrate(orders, fills, panel, as_of, default)
