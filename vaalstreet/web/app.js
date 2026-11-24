@@ -1170,11 +1170,15 @@ async function wealthPanel() {
     <div class="legend"><span><i style="background:var(--fair)"></i>Your worth</span><span><i style="background:var(--divine)"></i>Had you held Divines instead</span></div>
     <div id="wchart"></div>
     ${last.unpriced ? `<p class="note">${last.unpriced} item${last.unpriced === 1 ? ' had' : 's had'} no price at the last snapshot and ${last.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
-  const yf = x => fmt(x) + (div ? ' d' : ' c'), one = shown.length === 1;
-  drawChart($('#wchart', out), {
+  const yf = x => fmt(x) + (div ? ' d' : ' c');
+  if (shown.length === 1) {
+    // One point makes no line: say so rather than draw a dot on an empty time axis.
+    $('.legend', out).remove();
+    $('#wchart', out).outerHTML = '<p class="note">One snapshot in this range so far. The chart draws a line from the second one.</p>';
+  } else drawChart($('#wchart', out), {
     series: [
-      { label: 'Your worth', color: css('--fair'), x: shown.map(r => r.t), y: shown.map(r => inUnit(r.value, r.bridge)), width: 2, dots: one },
-      { label: 'Had you held Divines', color: css('--divine'), x: shown.map(r => r.t), y: shown.map(r => inUnit(held(r), r.bridge)), dash: [5, 4], dots: one },
+      { label: 'Your worth', color: css('--fair'), x: shown.map(r => r.t), y: shown.map(r => inUnit(r.value, r.bridge)), width: 2 },
+      { label: 'Had you held Divines', color: css('--divine'), x: shown.map(r => r.t), y: shown.map(r => inUnit(held(r), r.bridge)), dash: [5, 4] },
     ], yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 240,
   });
   const list = table([
@@ -1225,7 +1229,7 @@ function snapshotChanges(shown, source, signed, inUnit) {
     };
     const missing = { then: 'at the earlier snapshot', now: 'at the later snapshot', 'then and now': 'at either snapshot' };
     out.innerHTML = `<div class="kpis" style="margin-bottom:10px">
-        <div class="kpi" title="From the earlier snapshot to the later one, over the items priced at both"><span>Change in worth</span><b>${at(r.change)}</b>${r.per_hour != null ? `<div class="muted small">${at(r.per_hour)} an hour</div>` : ''}</div>
+        <div class="kpi" title="From the earlier snapshot to the later one, over the items priced at both. In Divines, every amount here uses the later snapshot’s Divine price, so it can differ from the chart’s change, which values each end at its own"><span>Change in worth</span><b>${at(r.change)}</b>${r.per_hour != null ? `<div class="muted small">${at(r.per_hour)} an hour</div>` : ''}</div>
         <div class="kpi" title="The change in units, at the later snapshot’s prices: what you gained, looted, bought, sold or used"><span>You hold more or less</span><b>${at(r.held_more)}</b></div>
         <div class="kpi" title="The units you held at the earlier snapshot, times how far each price moved by the later one"><span>Prices moved</span><b>${at(r.prices_moved)}</b></div>
         <div class="kpi" title="Time between the two snapshots"><span>Time between</span><b>${dur(r.hours)}</b></div>

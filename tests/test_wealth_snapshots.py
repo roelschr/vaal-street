@@ -96,11 +96,23 @@ def test_one_auto_snapshot_per_league_and_hour(archive_root, tmp_path):
     assert [len(r) for r in rows.values()] == [1, 1]
     assert rows[NEW][0]["hour"] == app.desk(NEW).as_of and rows[OLD][0]["hour"] == app.desk(OLD).as_of
     assert rows[NEW][0]["kind"] == "auto"
+    # The skip before building a desk matches the stored hour: the archive's last hour is the desk's.
+    last_hour = {l["league"]: l["last_hour"] for l in app.leagues()}
+    assert app.ledger.has_auto_snapshot(NEW, last_hour[NEW]) and app.ledger.has_auto_snapshot(OLD, last_hour[OLD])
     # The ledger itself refuses a second auto snapshot of one hour; one you take by hand is always kept.
     desk = app.desk(NEW)
     assert wealth.take(app.ledger, desk, "auto") is None
     assert wealth.take(app.ledger, desk, "manual") is not None
     assert len(app.ledger.snapshots(NEW)) == 2
+
+
+def test_a_new_hour_gives_a_new_auto_snapshot(desks, tmp_path):
+    early, late = desks
+    ledger = Ledger(tmp_path)
+    ledger.set_stash(NEW, ITEM, 10)
+    assert wealth.take(ledger, early, "auto") is not None and wealth.take(ledger, early, "auto") is None
+    assert wealth.take(ledger, late, "auto") is not None
+    assert [r["hour"] for r in ledger.snapshots(NEW)] == [early.as_of, late.as_of]
 
 
 def test_nothing_is_taken_when_there_is_nothing_to_hold(archive_root, tmp_path):
