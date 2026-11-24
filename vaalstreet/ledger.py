@@ -442,6 +442,24 @@ class Ledger:
                 " reposted_from) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (row["league"], row["item"], row["side"], row["market"], *ratio, gold, now, now, row["id"])).lastrowid
 
+    def order_chain(self, order_id: int) -> list[dict]:
+        """The orders this one re-posted, oldest first; empty for an order posted fresh.
+
+        The walk stops at an order that was deleted, and at a link it has seen already: a file
+        edited by hand could make the links go round, and that must not hang the Ledger page.
+        """
+        chain, seen = [], {int(order_id)}
+        rows = self._all("SELECT reposted_from FROM orders WHERE id = ?", (int(order_id),))
+        link = rows[0]["reposted_from"] if rows else None
+        while link is not None and link not in seen:
+            seen.add(link)
+            rows = self._all("SELECT * FROM orders WHERE id = ?", (int(link),))
+            if not rows:
+                break
+            chain.append(rows[0])
+            link = rows[0]["reposted_from"]
+        return chain[::-1]
+
     def orders(self, league: str, include_done: bool = False) -> list[dict]:
         done = "" if include_done else " AND status NOT IN ('cancelled','closed')"
         return self._all(f"SELECT * FROM orders WHERE league = ?{done} ORDER BY id", (league,))

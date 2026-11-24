@@ -1301,6 +1301,14 @@ async function viewLedger(main) {
     const lead = `The plan sells what this order bought at ${s.item_units} for ${s.currency_units} ${s.currency}. You hold ${itemCount(s.free)} that no sell order offers yet.`;
     return `<button class="btn ghost" data-post="${esc(JSON.stringify({ ...s, lead }))}" title="Posted the plan's sell order for what this order bought? Record it without typing it">Sell order posted…</button>`;
   };
+  // A re-posted order's past: the ratios it replaced, and the Gold every posting of it cost, since none is refunded.
+  const repostLine = r => {
+    if (!r.earlier?.length) return '';
+    const steps = [...r.earlier.map(e => `${e.item_units} for ${e.currency_units}`), `now ${r.item_units} for ${r.currency_units}`].join(' → ');
+    const gold = r.chain_gold == null ? 'not recorded' : `${r.chain_gold_known ? '' : 'at least '}${Math.round(r.chain_gold).toLocaleString('en-US')}${r.chain_gold_known ? ' in all' : ''}`;
+    const why = `Gold is not refunded when you cancel, so every posting of this order paid it again.${r.chain_gold_known ? '' : ' Some postings have no Gold recorded, so the real sum is higher.'}`;
+    return `<div class="muted small">${steps} · <span title="${esc(why)}">Gold on posting: ${gold}</span></div>`;
+  };
   // Re-pricing is cancel and post again in game. This records both at once: the old order is marked
   // cancelled and the new one points back at it. The plan's ratio is filled in, but you may have posted another.
   const repostButton = r => {
@@ -1313,7 +1321,8 @@ async function viewLedger(main) {
   };
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
-    { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
+    { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}${repostLine(r)}` },
+    { h: 'Age', f: r => `<span title="How long this order has stood at its ratio">${dur(r.age / 3600)}</span>${r.listed != null ? `<div class="muted small" title="Counted from the first order you re-posted into this one">listed ${dur(r.listed / 3600)} in all</div>` : ''}`, s: r => r.age, title: 'How long each order has stood at its ratio, by the desk’s clock. Click to put the oldest first' },
     { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
