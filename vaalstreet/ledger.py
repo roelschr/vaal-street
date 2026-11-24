@@ -472,8 +472,15 @@ class Ledger:
 
         `prices` is item -> {"fair": combined fair value, "chaos": Chaos-market price, "divine":
         Divine-market price}, all in Chaos; a market price may be None when that market is quiet.
-        `plans` is item -> side -> market -> {"currency_units", "item_units", "price"}: where the
-        flip plan would post today. Both come from the desk, so this file stays free of model code.
+        `plans` is item -> side -> market -> [{"currency_units", "item_units", "price"}, ...]: where
+        each flip plan would post today, the best plan first (one level alone may be given without
+        the list). Both come from the desk, so this file stays free of model code.
+
+        An item can have more than one plan on one side of one market: the Chaos → Divine plan and
+        the Divine-market plan both sell for Divines, at different levels. An order belongs to the
+        plan whose level is nearest to its price, and is judged against that one. Judged against the
+        best plan only, the other plan's own order would be told to re-price or cancel the moment
+        it was posted.
 
         The two markets of an item are different prices, so an order is judged against its own
         market's price, never the combined fair value when the market's own price is known.
@@ -498,9 +505,11 @@ class Ledger:
             market_name = "Divine" if order["market"] == "divine" else "Chaos"
             known = prices.get(order["item"]) or {}
             market = known.get(order["market"]) or known.get("fair")
-            level = ((plans.get(order["item"]) or {}).get(order["side"]) or {}).get(order["market"])
-            near_plan = bool(level and level.get("price")
-                             and abs(math.log(price / level["price"])) <= REPRICE_TOLERANCE)
+            levels = ((plans.get(order["item"]) or {}).get(order["side"]) or {}).get(order["market"]) or []
+            levels = [lv for lv in ([levels] if isinstance(levels, dict) else levels) if lv and lv.get("price")]
+            # The plan this order belongs to: the one posting nearest to it (the first of equals, so the best).
+            level = min(levels, key=lambda lv: abs(math.log(price / lv["price"])), default=None)
+            near_plan = bool(level and abs(math.log(price / level["price"])) <= REPRICE_TOLERANCE)
             if not market:
                 row["reason"] = "The desk has no recent price for this item, so it cannot judge this order."
                 continue

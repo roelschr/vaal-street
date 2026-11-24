@@ -719,3 +719,29 @@ def test_a_merge_recorded_for_a_sale_goes_only_with_its_sale(tmp_path):
     ledger.delete_trade(sale)
     ledger.delete_trade(buy)
     assert ledger.made("L") == [] and ledger.trades("L") == []
+
+
+def test_an_order_is_judged_against_the_plan_it_was_posted_from(tmp_path):
+    """Two plans sell the orb for Divines: the better one at 9 for 1 Divine (11.11 c), the other at 19 for 2
+    (10.53 c), and the Divine market stands at 10.7 c. Known answers: an order at either plan's own ratio is
+    kept. Judged against the better plan only, the second would be cancelled for asking 2% under the market.
+    An order near neither (12 for 1, 8.33 c) is still cancelled, and one 6% over the nearer plan (17 for 2,
+    11.76 c) is re-priced to that plan's ratio, not the other's."""
+    ledger = Ledger(tmp_path)
+    bridge = 100.0
+    prices = {"orb": {"fair": 10.5, "chaos": 9.8, "divine": 10.7}}
+    first = {"currency_units": 1, "item_units": 9, "price": bridge / 9}
+    second = {"currency_units": 2, "item_units": 19, "price": 2 * bridge / 19}
+    plans = {"orb": {"sell": {"divine": [first, second]}}}
+    at_first = ledger.add_order("L", "orb", "sell", "divine", 1, 9, 9)
+    at_second = ledger.add_order("L", "orb", "sell", "divine", 2, 19, 19)
+    far_under = ledger.add_order("L", "orb", "sell", "divine", 1, 12, 12)
+    over = ledger.add_order("L", "orb", "sell", "divine", 2, 17, 17)
+    advice = {o["id"]: o for o in ledger.advise_orders("L", prices, plans, bridge)}
+    assert advice[at_first]["advice"] == "keep" and advice[at_second]["advice"] == "keep"
+    assert advice[at_second]["reason"] == "Your price is where the plan would post it."
+    assert advice[far_under]["advice"] == "cancel"
+    assert advice[over]["advice"] == "re-price" and advice[over]["suggest"] == first
+    # The best plan alone, as before this rule: the second plan's own order is told to cancel.
+    alone = {o["id"]: o for o in ledger.advise_orders("L", prices, {"orb": {"sell": {"divine": first}}}, bridge)}
+    assert alone[at_second]["advice"] == "cancel"

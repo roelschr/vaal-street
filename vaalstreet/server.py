@@ -802,11 +802,11 @@ class App:
         prices = {r["id"]: {"fair": r["price"], "chaos": r["chaos"], "divine": r["divine"]} for r in desk.market()}
         plans: dict[str, dict] = {}
         markets = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
-        for plan in desk.flips():  # best first, so the first plan for a market wins
+        for plan in desk.flips():  # best first; every plan's level is kept, since two plans can share a market
             buy_market, sell_market = markets[plan["kind"]]
             sides = plans.setdefault(plan["id"], {})
-            sides.setdefault("buy", {}).setdefault(buy_market, plan["buy_order"])
-            sides.setdefault("sell", {}).setdefault(sell_market, plan["sell_order"])
+            sides.setdefault("buy", {}).setdefault(buy_market, []).append(plan["buy_order"])
+            sides.setdefault("sell", {}).setdefault(sell_market, []).append(plan["sell_order"])
         orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
         for order in orders:
             order["name"] = desk._name(order["item"])

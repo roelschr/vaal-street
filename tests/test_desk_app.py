@@ -426,3 +426,22 @@ def test_a_plan_carries_what_recording_its_order_needs(server):
     assert left["id"] == buy["id"] and left["filled"] == plan["buy_order"]["item_units"]
     assert call(f"{server}/api/order", {"fill": buy["id"], "units": 3 * plan["buy_order"]["item_units"]})[0] == 200
     assert call(f"{server}/api/flips")[1]["orders"] == []
+
+
+def test_every_plan_s_own_orders_are_kept_when_two_plans_share_a_market(flat_server):
+    """In this archive the Divine-market plan ranks first and sells at 9 for 1 Divine, while the Chaos → Divine
+    plan sells for Divines too, at 19 for 2, which is 2% under the Divine market's last price. Known answer:
+    an order recorded at any plan's own ratio is where a plan would post it, so the advice is "keep" for all six."""
+    flips = call(f"{flat_server}/api/flips")[1]["flips"]
+    assert {p["kind"] for p in flips} == {"chaos", "divine", "cross"}
+    sells = {(p["sell_order"]["item_units"], p["sell_order"]["currency_units"]) for p in flips if p["kind"] != "chaos"}
+    assert len(sells) == 2, "two plans sell for Divines at different ratios"
+    for plan in flips:
+        for side in ("buy", "sell"):
+            order = plan[f"{side}_order"]
+            assert call(f"{flat_server}/api/order", {
+                "item": plan["id"], "side": side, "market": order["currency"].lower(),
+                "currency_units": order["currency_units"], "item_units": order["item_units"],
+                "units": 4 * order["item_units"]})[0] == 200
+    orders = call(f"{flat_server}/api/ledger")[1]["orders"]
+    assert len(orders) == 6 and {o["advice"] for o in orders} == {"keep"}, [(o["side"], o["market"], o["reason"]) for o in orders]
