@@ -437,20 +437,28 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
         say(f"  {err}")
         tell_desk(desk, reading_report(lines, None, str(err), league, err.text))
         return None
+    except ValueError as err:
+        # The ratio rules' own refusal (a misread "O:1" reads as zero): shown on the page too, then
+        # reported in the console as before.
+        tell_desk(desk, reading_report(lines, None, str(err), league))
+        raise
     told = tell_desk(desk, reading_report(lines, reading, None, league))
+    hint = ("  Posting this order? Record it from the desk's hideout window: \"Posted this order…\" under "
+            "\"What the screen check read\". Nothing is recorded until you click it.")
     say(f"  Read: {reading.describe()}")
     try:
         result = desk.check(reading, league)
     except RuntimeError as err:
         say(f"  The desk could not check it: {err}")
+        if told:
+            say(hint)
         return None
     title = verdict_title(result)
     say(f"  {title}")
     for reason in result.get("reasons", []):
         say(f"    - {reason}")
     if told:
-        say("  Posting this order? Record it from the desk's hideout window: \"Posted this order…\" under "
-            "\"What the screen check read\". Nothing is recorded until you click it.")
+        say(hint)
     desk.event(title, f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
     return result
 

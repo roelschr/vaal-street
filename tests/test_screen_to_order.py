@@ -157,3 +157,17 @@ def test_the_console_says_where_to_record_the_order():
 
     screen.handle_press(lambda: "image", lambda image: GOOD, Silent(), said.append)
     assert not any("Posted this order" in s for s in said)
+
+
+def test_a_ratio_the_ratio_rules_refuse_still_reaches_the_page():
+    # Found while finishing this branch: "0:1" (a misread "O:1") is refused by the typed check's ratio
+    # rules with a plain ValueError, not a ScreenError, and was not posted to the desk.
+    from test_screen_readings import TellingDesk
+
+    desk = TellingDesk()
+    lines = ["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "0:1"]
+    with pytest.raises(ValueError, match="more than zero"):
+        screen.handle_press(lambda: "image", lambda image: lines, desk, lambda s: None)
+    (report,) = desk.readings
+    assert report["reading"] is None and "more than zero" in report["error"] and report["lines"] == lines
+    assert desk.checks == [] and desk.events == []

@@ -2275,7 +2275,7 @@ function readingsPanel(names, cls = '') {
     if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
     // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
     const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
-    if (!d.readings) return;
+    if (!d.readings || body.querySelector('form.teach')) return;  // a form opened while this was on its way
     last = d.last; data = d; draw();
   };
   const teach = (id, text) => {
