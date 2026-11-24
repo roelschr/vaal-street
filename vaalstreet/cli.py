@@ -424,6 +424,24 @@ def _stash(args: argparse.Namespace) -> None:
         print(f"{out['unpriced']} line(s) have no price in this league and are not counted.")
 
 
+def _export(args: argparse.Namespace) -> None:
+    """One ledger table as CSV: to a file with -o (with the byte order mark Excel needs), else to the screen."""
+    from vaalstreet import export
+    from vaalstreet.server import ApiError, App
+
+    try:
+        name, text = App(data_dir(), sync=False).export(args.what, args.league)
+    except (ApiError, LookupError) as err:
+        sys.exit(str(err))
+    if not args.output:
+        sys.stdout.write(text)
+        return
+    # newline="" keeps the csv module's own line ends, which spreadsheets expect.
+    with open(args.output, "w", encoding="utf-8", newline="") as f:
+        f.write(export.BOM + text)
+    print(f"Wrote {args.output} (the desk would name it {name}).", file=sys.stderr)
+
+
 def _arb(args: argparse.Namespace) -> None:
     from vaalstreet.desk import Desk
     from vaalstreet.ledger import Ledger
@@ -1003,6 +1021,15 @@ def main(argv: list[str] | None = None) -> None:
                    help="--plan: leave out lines worth less than this many Chaos (they are counted, not hidden)")
     p.add_argument("--league")
     p.set_defaults(run=_stash)
+
+    p = commands.add_parser(
+        "export", help="save your trades, positions, orders, items you made or stash as a CSV file for a spreadsheet",
+        description="Writes one of the Ledger page's tables as CSV, the same rows the page shows (all of them, not "
+                    "only the latest 200). It is a file on this machine; nothing is uploaded.")
+    p.add_argument("what", choices=["trades", "positions", "orders", "made", "stash"])
+    p.add_argument("-o", "--output", metavar="FILE", help="write to this file; without it the CSV is printed")
+    p.add_argument("--league")
+    p.set_defaults(run=_export)
 
     p = commands.add_parser(
         "ladder", help="what a small purse can run at each step up to 10 Divines, and when to switch plans",

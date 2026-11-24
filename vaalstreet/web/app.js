@@ -995,7 +995,7 @@ document.addEventListener('click', e => { const b = e.target.closest('[data-post
 // What you hold, valued now: typed in, or the positions your recorded trades add up to.
 async function stashPanel(names) {
   const source = localStorage.stashSource === 'ledger' ? 'ledger' : 'stash';
-  const p = panel('Stash', 'c12', `<div class="seg" id="stsrc" title="Value what you typed in, or the positions your recorded trades add up to">${[['stash', 'What I entered'], ['ledger', 'My ledger positions']].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === source ? 'on' : ''}">${l}</button>`).join('')}</div>`);
+  const p = panel('Stash', 'c12', `<div class="seg" id="stsrc" title="Value what you typed in, or the positions your recorded trades add up to">${[['stash', 'What I entered'], ['ledger', 'My ledger positions']].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === source ? 'on' : ''}">${l}</button>`).join('')}</div>${source === 'stash' ? exportLink('stash') : ''}`);
   let d;
   try { d = await api(withLeague('/api/stash', source === 'ledger' ? { source } : {})); }
   catch (err) { p.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); return p; }
@@ -1215,6 +1215,9 @@ function alertsPanel(d, names) {
   return al;
 }
 
+// A ledger table as a CSV file for a spreadsheet: the same rows, all of them. Saved on this machine, never uploaded.
+const exportLink = what => `<a href="${esc(withLeague('/api/export', { what }))}" download title="Save this table as a CSV file for a spreadsheet. It stays on this machine">Export</a>`;
+
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
   const d = await api(withLeague('/api/ledger', { share: state.share }));
@@ -1344,7 +1347,7 @@ async function viewLedger(main) {
   const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
   const selling = d.orders.some(r => r.side === 'sell' && r.status !== 'filled');
   const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>'
-    + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
+    + exportLink('orders') + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
   // The second half of a flip. A buy order knows the sell order its plan pairs it with (`then_sell`).
   // What can go on offer is what the ledger holds of the item, less what your open sell orders already
   // offer, in whole multiples of the sell ratio. `extra` is a fill the page has not drawn yet.
@@ -1451,14 +1454,14 @@ async function viewLedger(main) {
   ], d.recipe_checks, { empty: 'No recipe checked yet.' });
   rt.onclick = e => { const b = e.target.closest('[data-del]'); if (b) post('/api/recipe_check', { delete: +b.dataset.del }); };
   rc.append(rform, rt);
-  const pos = panel('Positions', 'c12');
+  const pos = panel('Positions', 'c12', exportLink('positions'));
   pos.append(table([
     { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name }, { h: 'Units', f: r => fmt(r.units), s: r => r.units },
     { h: 'Avg. cost', f: r => money(r.average), s: r => r.average }, { h: 'Fair value', f: r => money(r.mark), s: r => r.mark },
     { h: 'Value', f: r => money(r.value), s: r => r.value }, { h: 'Unrealised', f: r => r.unrealized == null ? '–' : `<span class="${r.unrealized >= 0 ? 'up' : 'down'}">${money(r.unrealized)}</span>`, s: r => r.unrealized },
     { h: 'Realised', f: r => `<span class="${r.realized >= 0 ? 'up' : 'down'}">${money(r.realized)}</span>${lootNote(r.realized, r.loot)}`, s: r => r.realized, title: 'Profit from what you sold of this item. Units sold that the ledger never saw you buy or make cost nothing: that part is shown apart as loot' },
   ], d.positions.filter(p => p.units > 0 || p.realized), { sort: 4, onRow: r => openItem(r.id), empty: 'No trades recorded in this league yet.' }));
-  const tr = panel('Trades', 'c12');
+  const tr = panel('Trades', 'c12', exportLink('trades'));
   const tt = table([
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() }, { h: 'Item', l: 1, f: r => esc(r.name) },
     { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Bought' : 'Sold' }, { h: 'Units', f: r => fmt(r.units) }, { h: 'Price', f: r => money(r.price) },
@@ -1476,7 +1479,7 @@ async function viewLedger(main) {
     try { await api('/api/trade', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
   };
   tr.append(tt);
-  const mk = panel('Items you made', 'c12', '<span class="muted small">Merges and turn-ins, recorded by you or worked out for a sale. The item made carries what the items used cost you.</span>');
+  const mk = panel('Items you made', 'c12', '<span class="muted small">Merges and turn-ins, recorded by you or worked out for a sale. The item made carries what the items used cost you.</span>' + exportLink('made'));
   const mt = table([
     { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString() },
     { h: 'Used', l: 1, f: r => r.inputs.map(x => `${+x.units} ${esc(x.name)}`).join(' + ') + (r.uncovered ? `<div class="muted small">${count(r.uncovered)} had no recorded cost</div>` : '') },

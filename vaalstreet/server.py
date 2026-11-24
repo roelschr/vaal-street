@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, search
+from vaalstreet import archive, backtest, calibrate, check, db, export, items, ninja, search
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -618,9 +618,8 @@ class App:
             row["name"] = desk._name(row["item"])
         return rows
 
-    def api_ledger(self, q: dict) -> dict:
-        desk = self.desk(q.get("league"))
-        share = float(q.get("share", 0.1))  # the share of the flow the page assumes, as Flips takes it
+    def _positions(self, desk) -> tuple[list[dict], dict]:
+        """Your positions valued at fair value now, and their totals, as the Ledger page and its export show them."""
         positions = []
         total_value = total_cost = total_realized = total_loot = 0.0
         for item_id, p in self.ledger.positions(desk.league).items():
@@ -638,6 +637,13 @@ class App:
                 "realized": _num(p["realized"]), "loot": _num(p["loot"]), "last": p["last"],
             })
         positions.sort(key=lambda r: -(r["value"] or 0))
+        totals = {"value": _num(total_value), "cost": _num(total_cost), "unrealized": _num(total_value - total_cost),
+                  "realized": _num(total_realized), "loot": _num(total_loot)}
+        return positions, totals
+
+    def _trades(self, desk) -> tuple[list[dict], list[dict]]:
+        """Every trade and every item made, oldest first, with names, the merges recorded for each sale, and
+        the units each took beyond what the ledger held (sold or used at no recorded cost)."""
         trades = self.ledger.trades(desk.league)
         uncovered = self.ledger.uncovered(desk.league)
         made = [self._made_row(desk, m) for m in self.ledger.made(desk.league)]
@@ -650,13 +656,18 @@ class App:
             tr["merges"], tr["uncovered"] = merges.get(tr["id"], []), _num(uncovered.get(("trade", tr["id"])))
         for m in made:
             m["uncovered"] = _num(uncovered.get(("made", m["id"])))
+        return trades, made
+
+    def api_ledger(self, q: dict) -> dict:
+        desk = self.desk(q.get("league"))
+        share = float(q.get("share", 0.1))  # the share of the flow the page assumes, as Flips takes it
+        positions, totals = self._positions(desk)
+        trades, made = self._trades(desk)
         fees = self.ledger.gold_fees(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
             "made": made[::-1][:200],
-            "totals": {"value": _num(total_value), "cost": _num(total_cost),
-                       "unrealized": _num(total_value - total_cost), "realized": _num(total_realized),
-                       "loot": _num(total_loot)},
+            "totals": totals,
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
             "fill_calibration": self.fill_calibration(desk, share),
             "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,
@@ -801,6 +812,38 @@ class App:
             raise ApiError(f"Bad request: {err}") from err
         return out | {"source": q.get("source") or "stash", "reaches": list(PATIENCE),
                       "orders": self._posted(desk.league)}
+
+    def export(self, what: str, league: str | None = None) -> tuple[str, str]:
+        """One of the Ledger page's tables as CSV text, with the file name to save it under.
+
+        The rows are the ones the page's API answers, so the file agrees with the page; where the page
+        shows only the latest 200 trades or items made, the file has them all, and orders that are done
+        (cancelled or collected) are in it too. During a rehearsal `self.ledger` is the practice ledger,
+        so the file holds practice records, and its name says so.
+        """
+        if what not in export.KINDS:
+            raise ApiError(f"Bad request: what must be one of {', '.join(export.KINDS)}.")
+        desk = self.desk(league)
+        if what == "trades":
+            rows = [[export.iso(t["t"]), t["t"], t["name"], t["item"], t["side"], t["units"], t["price"], t.get("gold"),
+                     t["note"], t.get("order_id"), t["uncovered"]] for t in self._trades(desk)[0]]
+        elif what == "positions":
+            rows = [[p["name"], p["id"], p["units"], p["average"], p["mark"], p["value"], p["unrealized"], p["realized"],
+                     p["loot"]] for p in self._positions(desk)[0] if p["units"] > 0 or p["realized"]]  # as the page lists
+        elif what == "orders":
+            rows = [[export.iso(o["created"]), desk._name(o["item"]), o["item"], o["side"], o["market"].title(),
+                     o["item_units"], o["currency_units"], o["units"], o["filled"], o["gold"], o["status"]]
+                    for o in self.ledger.orders(desk.league, include_done=True)]
+        elif what == "made":
+            rows = [[export.iso(m["t"]), " + ".join(f"{x['units']:g} {x['name']}" for x in m["inputs"]),
+                     f"{m['gives']:g} {m['name']}", m["note"]] for m in self._trades(desk)[1]]
+        else:
+            counted = self.ledger.stash_counted(desk.league)
+            rows = [[r["name"], r["id"], r["units"], export.iso(counted.get(r["id"])), r.get("value"), r.get("low"),
+                     r.get("high"), (r.get("chaos") or {}).get("value"), (r.get("divine") or {}).get("value"),
+                     (r.get("best") or "").title()]
+                    for r in check.stash_value(desk, self.ledger.stash(desk.league))["rows"]]
+        return export.filename(desk.league, what, practice=self._practice() is not None), export.text(what, rows)
 
     def api_worth(self, q: dict) -> dict:
         """What one holding is worth, for the stack check: valued like a stash line, and not saved."""
@@ -1176,9 +1219,12 @@ def make_handler(app: App):
         def log_message(self, fmt, *args):  # quiet
             pass
 
-        def _send(self, status: int, body: bytes, content_type: str, cache: str = "no-store") -> None:
+        def _send(self, status: int, body: bytes, content_type: str, cache: str = "no-store",
+                  headers: dict[str, str] | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", cache)
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -1236,6 +1282,11 @@ def make_handler(app: App):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             if url.path in GET_ROUTES:
                 self._json(getattr(app, GET_ROUTES[url.path])(q))
+            elif url.path == "/api/export":
+                # A file to save, not a page: the byte order mark lets Excel read the item names right.
+                name, text = app.export(q.get("what", ""), q.get("league"))
+                self._send(200, (export.BOM + text).encode("utf-8"), "text/csv; charset=utf-8",
+                           headers={"Content-Disposition": f'attachment; filename="{name}"'})
             elif url.path == "/icon":
                 data = app.icon(q.get("id", ""))
                 if data:
