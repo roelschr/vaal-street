@@ -197,6 +197,19 @@ html.icons #unitSeg button{display:flex;align-items:center;padding:4px 9px}
 #top .stat.orb{flex-direction:row;align-items:center}
 html.icons #top .stat.orb .ci.big{margin-right:8px;vertical-align:0}
 #top .stat.orb>div{display:flex;flex-direction:column}
+/* The Divine price opens the parts-of-a-Divine popover. */
+[data-divfrac]{cursor:pointer}
+[data-divfrac]:hover b,b[data-divfrac]:hover{text-decoration:underline dotted;text-underline-offset:3px}
+#dfrac{position:fixed;z-index:40;width:230px;background:var(--grain),var(--side);border:1px solid var(--bronze);border-radius:2px;box-shadow:0 0 0 1px #000,0 18px 50px #000b;padding:0 12px 12px;display:grid;gap:8px}
+#dfrac[hidden]{display:none}
+#dfrac header{display:flex;align-items:center;margin:0 -12px;padding:6px 6px 6px 12px;border-bottom:1px solid #3a2e1f;background:linear-gradient(180deg,#241d14,#18140f)}
+#dfrac header h2{font:700 12.5px var(--display);letter-spacing:.05em;color:var(--title)}
+#dfrac .grow{flex:1}
+#dfrac p{margin:0}
+#dfrac .parts{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:3px 10px;font:12px var(--mono)}
+#dfrac .parts b{font-weight:500;color:var(--accent-hi);text-align:right}
+#dfrac .conv{display:flex;align-items:flex-end;gap:8px;font:12px var(--mono)}
+#dfrac .conv span{padding-bottom:6px}
 /* Where every cell of a column shares a unit, the orb steps back so the numbers lead. Orders and
    market badges keep it at full strength, because there the currency changes from row to row. */
 html.icons td.num .cur:not(.word){width:16px;height:16px;background-size:11px,auto;vertical-align:-3px;margin-left:3px;opacity:.7}
