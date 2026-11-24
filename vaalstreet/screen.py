@@ -590,7 +590,8 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
-        do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False) -> None:
+        do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False,
+        why: bool = False) -> None:
     """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
 
     With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
@@ -629,7 +630,7 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         tally = clipboard.Tally() if stash else None
 
         def copied(since: int) -> None:
-            clipboard.handle_copy(clip, since, desk, tally=tally)
+            clipboard.handle_copy(clip, since, desk, tally=tally, why=why)
 
         # The counter is noted here, inside the key press, before the game has written the clipboard.
         hotkeys[clipboard.COPY_KEY] = lambda: gate.press(functools.partial(copied, clip.sequence()))
