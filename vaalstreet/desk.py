@@ -617,12 +617,14 @@ class Desk:
 
     # ----------------------------------------------------------------- flips
     def _order(self, price: float, in_divine: bool, max_currency: float = math.inf,
-               max_items: float = math.inf) -> dict | None:
+               max_items: float = math.inf, at_most: bool = False) -> dict | None:
         """The order to post for a level of `price` Chaos per item: the smallest whole-number ratio
         within `RATIO_TOLERANCE` of it, in Chaos or in Divines. The caps are in that currency's units
-        and in items; None when nothing fits them."""
+        and in items; None when nothing fits them. `at_most` asks instead for the highest price the
+        caps can state that is not above the level (`pricing.lot_ratio_at_most`)."""
         unit = self.bridge if in_divine else 1.0
-        pair = pricing.lot_ratio(price / unit, RATIO_TOLERANCE, max_currency, max_items)
+        pair = (pricing.lot_ratio_at_most(price / unit, max_currency, max_items) if at_most
+                else pricing.lot_ratio(price / unit, RATIO_TOLERANCE, max_currency, max_items))
         if pair is None:
             return None
         pay, get = pair

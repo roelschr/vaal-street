@@ -1099,7 +1099,7 @@ function sellPlan(source) {
       { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name },
       { h: 'Units', f: r => itemCount(r.units), s: r => r.units },
       { h: 'Sell in', l: 1, f: r => r.best ? marketTag(r.best) : `<span class="dim">${esc(r.why)}</span>`, s: r => r.best },
-      { h: 'Order', l: 1, f: r => sale(best(r)), title: 'The sell order to post: how many items for how much' },
+      { h: 'Order', l: 1, f: r => { const m = best(r); return sale(m) + (m && m.off_level < -0.02 ? `<div class="muted small" title="With so few items, whole numbers cannot state the plan's price exactly. The order asks a little less, never more: an order above the price would not sell at the pace shown">asks ${plainPct(-m.off_level)} under the plan's price: the nearest your ${itemCount(r.units)} can state</div>` : ''); }, title: 'The sell order to post: how many items for how much' },
       { h: 'Post', f: r => { const m = best(r); return !m ? '' : `${itemCount(m.units)}${m.left ? `<div class="muted small">${itemCount(m.left)} left over</div>` : ''}`; }, s: r => best(r)?.units, title: 'Units in whole lots of the order; what does not make a whole lot is left over' },
       { h: 'Brings in', f: r => money(best(r)?.value), s: r => best(r)?.value },
       { h: 'Takes about', f: r => { const m = best(r); return m ? takes(m) : ''; }, s: r => best(r)?.hours, title: 'The units posted, at your share of the volume that trades at or above this price' },

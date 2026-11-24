@@ -424,6 +424,36 @@ def trailing_sum(a: np.ndarray, window: int) -> np.ndarray:
     return csum[idx] - csum[np.maximum(idx - window, 0)]
 
 
+def lot_ratio_at_most(price: float, max_currency: float = math.inf, max_items: float = math.inf,
+                      max_units: int = 400) -> tuple[int, int] | None:
+    """The whole-number (currency, items) order that states the highest price not above `price`.
+
+    For a seller who holds only a few items. `lot_ratio` under a cap returns the closest order that
+    fits, and with few items that can be well above the level: one item at a level of 0.7 Chaos gives
+    "1 for 1 Chaos", 42% over. An order above its level does not fill at the pace the level was read
+    for. Asking a little less always fills at least that fast, so this rounds the price down: the
+    best price at or under `price` that the caps allow, None when not even the smallest order fits.
+    """
+    if not np.isfinite(price) or price <= 0 or max_currency < 1 or max_items < 1:
+        return None
+    best, best_price = None, 0.0
+    for n in range(1, max_units + 1):
+        if price >= 1:  # the items are the smaller side
+            currency, items = math.floor(price * n + 1e-9), n
+        else:
+            currency, items = n, math.ceil(n / price - 1e-9)
+        if currency > max_currency or items > max_items:
+            break  # both sides only grow with n
+        if currency < 1:
+            continue
+        stated = currency / items
+        if stated > best_price + 1e-12:
+            best, best_price = (currency, items), stated
+        if stated >= price * (1 - 1e-9):
+            break  # exact: nothing can be closer
+    return best
+
+
 def nice_ratio(price: float, max_units: int = 500, tolerance: float = 0.004) -> tuple[int, int]:
     """Whole-number (currency, items) pair with currency/items close to `price`.
 

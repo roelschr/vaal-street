@@ -141,3 +141,39 @@ def test_cli_stash_plan(flat_root, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "1 for 10 Chaos" in out and "Test Orb" in out
     assert "1 line(s) worth 15 Chaos in all are under your minimum." in out
+
+
+def test_a_ratio_for_few_items_never_asks_more_than_the_price():
+    """`lot_ratio_at_most` rounds the price down. Known answers: at 2.47 each, one item states "2 for 1"
+    (19% under) and five state "12 for 5" (2.4, under 3% below); at 0.7236 each, three items state "2 for 3"
+    (0.667), and one item cannot state a price under 1 at all."""
+    from vaalstreet import pricing
+
+    assert pricing.lot_ratio_at_most(2.47, max_items=1) == (2, 1)
+    assert pricing.lot_ratio_at_most(2.47, max_items=5) == (12, 5)
+    assert pricing.lot_ratio_at_most(0.7236, max_items=3) == (2, 3)
+    assert pricing.lot_ratio_at_most(0.7236, max_items=1) is None
+    assert pricing.lot_ratio_at_most(9.5, max_items=2) == (19, 2), "an exact ratio is taken as it is"
+    for price in (0.013, 0.7236, 2.47, 9.5, 77.06, 4661.9):
+        for cap in (1, 2, 3, 7, 50):
+            pair = pricing.lot_ratio_at_most(price, max_items=cap)
+            assert pair is None or (pair[0] / pair[1] <= price * (1 + 1e-9) and pair[1] <= cap)
+
+
+def test_a_small_holding_never_asks_more_than_its_level(desk):
+    """With one to seven items the nearest whole-number ratio can sit well above the level, and an order
+    above its level does not sell at the pace the plan states. Known answer for every line and market that
+    gets an order: it asks no more than the level beyond the usual 2% rounding, and gives away at most 10%;
+    a market where that is not possible says why instead."""
+    for units in range(1, 8):
+        plan = check.stash_plan(desk, {item: units for item in desk.panel.items})
+        for row in plan["rows"]:
+            for market in ("chaos", "divine"):
+                m = row.get(market)
+                if not m:
+                    continue
+                if "order" in m:
+                    assert -check.MAX_UNDER - 1e-9 <= m["off_level"] <= 0.02 + 1e-9, (row["name"], units, market, m)
+                    assert m["units"] <= units
+                else:
+                    assert m["why"]

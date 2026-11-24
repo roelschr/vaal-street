@@ -39,7 +39,7 @@ import difflib
 import math
 import re
 
-from vaalstreet.desk import LOT_WINDOW, PATIENCE, Desk, _num
+from vaalstreet.desk import LOT_WINDOW, PATIENCE, RATIO_TOLERANCE, Desk, _num
 from vaalstreet.ingest import ANCHORS
 
 MARKETS = {"chaos": "r", "divine": "b"}
@@ -61,6 +61,11 @@ PLAN_WORDS = {"chaos": "The Chaos-market flip", "divine": "The Divine-market fli
 # The stash's sell plan starts between selling fast and holding out: of the flip plans' patience
 # levels, the one nearest the middle of their range.
 DEFAULT_REACH = 0.35
+# A holding of a few items cannot always state its level in whole numbers. Its sell order may then
+# ask up to this much less than the level, and the line says so; a bigger gift than that is no plan.
+# It may never ask more than the level beyond the usual rounding: that order would not fill at the
+# pace the plan states.
+MAX_UNDER = 0.10
 
 
 def resolve(desk: Desk, item: str) -> str:
@@ -342,11 +347,18 @@ def _sell_in(desk: Desk, i: int, market: str, units: float, reach: float, level:
     out["level"] = _num(level)
     # As a flip's order: the smallest whole-number ratio near the level, here capped at the units held,
     # since a sell order can never ask for more items than you have.
-    order = desk._order(level, market == "divine", max_items=math.floor(units + 1e-9))
+    held = math.floor(units + 1e-9)
+    order = desk._order(level, market == "divine", max_items=held)
+    if order is not None and order["exact"] > level * (1 + RATIO_TOLERANCE):
+        # The nearest ratio these few items can state asks more than the level. Round the price down instead.
+        order = desk._order(level, market == "divine", max_items=held, at_most=True)
     if order is None:
         need = desk._order(level, market == "divine")
         return out | {"why": f"You hold {units:g}; the {word} market's order at this price sells "
                              f"{need['item_units']} at a time." if need else f"Too few to post in the {word} market."}
+    if order["exact"] < level * (1 - MAX_UNDER):
+        return out | {"why": f"You hold {units:g}: too few to ask this price in the {word} market. The nearest "
+                             f"whole-number order would give away {1 - order['exact'] / level:.0%}."}
     exact = order.pop("exact")
     lots = int((units + 1e-9) // order["item_units"])
     posted = lots * order["item_units"]
@@ -375,6 +387,8 @@ def stash_plan(desk: Desk, holdings: dict[str, float], reach: float = DEFAULT_RE
     market that does not trade steadily (the bar `stash_value` uses) gets no order.
 
     The order is cut to the line: units posted are whole lots of its ratio, and the rest is left over.
+    With only a few items the ratio cannot always state the level; then it asks a little less, never
+    more (see `MAX_UNDER`), and `off_level` says by how much.
     Time is the units posted over the units per hour your share of the flow gets at the level, with
     the share your own orders measured for that item and market where there is one (`share_by_item`,
     as `calibrate.shares` builds it). Lines worth less than `min_value` Chaos at fair value are left
