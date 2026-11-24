@@ -39,7 +39,7 @@ import difflib
 import math
 import re
 
-from vaalstreet.desk import Desk, _num
+from vaalstreet.desk import LOT_WINDOW, PATIENCE, Desk, _num
 from vaalstreet.ingest import ANCHORS
 
 MARKETS = {"chaos": "r", "divine": "b"}
@@ -58,6 +58,9 @@ THIN_HOURS = 3.0
 # The Flips page's three kinds of plan, as a player would say them.
 PLAN_WORDS = {"chaos": "The Chaos-market flip", "divine": "The Divine-market flip",
               "cross": "The flip that buys for Chaos and sells for Divines"}
+# The stash's sell plan starts between selling fast and holding out: of the flip plans' patience
+# levels, the one nearest the middle of their range.
+DEFAULT_REACH = 0.35
 
 
 def resolve(desk: Desk, item: str) -> str:
@@ -324,5 +327,117 @@ def stash_value(desk: Desk, holdings: dict[str, float]) -> dict:
         # Summing every line's low (and every high) treats all the errors as pointing the same way at once.
         # Real errors partly cancel across items, so the true range of the total is narrower: this one is
         # deliberately wide, the safe side for a player deciding what a stash can fund.
+        "total": {k: _num(v) for k, v in total.items()},
+    }
+
+
+def _sell_in(desk: Desk, i: int, market: str, units: float, reach: float, level: float,
+             share: float, source: str) -> dict:
+    """One line's sell order in one market at one level, or why there is none."""
+    leg = desk.legs[MARKETS[market]]
+    word = market.title()
+    out: dict = {"market": market}
+    if not math.isfinite(level):
+        return out | {"why": f"The {word} market has not traded enough in the last two days to set a price."}
+    out["level"] = _num(level)
+    # As a flip's order: the smallest whole-number ratio near the level, here capped at the units held,
+    # since a sell order can never ask for more items than you have.
+    order = desk._order(level, market == "divine", max_items=math.floor(units + 1e-9))
+    if order is None:
+        need = desk._order(level, market == "divine")
+        return out | {"why": f"You hold {units:g}; the {word} market's order at this price sells "
+                             f"{need['item_units']} at a time." if need else f"Too few to post in the {word} market."}
+    exact = order.pop("exact")
+    lots = int((units + 1e-9) // order["item_units"])
+    posted = lots * order["item_units"]
+    # Only the volume that trades at or beyond the level can fill an order resting there, as in a flip plan.
+    per_hour = share * reach * float(leg.flow[i])
+    hours = posted / per_hour if per_hour > 0 else math.inf
+    return out | {
+        "order": order, "lots": lots, "units": posted, "left": _num(units - posted),
+        # What the order states, not the level: whole-number ratios move it a little either way.
+        "value": _num(posted * exact), "currency_total": lots * order["currency_units"],
+        "off_level": _num(exact / level - 1, 4),
+        "units_per_hour": _num(per_hour, 4), "hours": _num(hours, 3),
+        "hours_per_lot": _num(order["item_units"] / per_hour, 3) if per_hour > 0 else None,
+        "thin": bool(hours > LOT_WINDOW), "share": _num(share, 4), "share_source": source,
+    }
+
+
+def stash_plan(desk: Desk, holdings: dict[str, float], reach: float = DEFAULT_REACH, min_value: float = 0.0,
+               share: float = 0.1, share_by_item: dict[str, dict[str, list]] | None = None) -> dict:
+    """A sell order for every line of a stash: the market, the whole-number order, and about how long.
+
+    The level is a flip plan's sell level at the same patience (`Desk._level`): the price at or above
+    which `reach` of the market's units traded over the last two days. A higher `reach` sells faster
+    and for less. Each line is planned in its Chaos market and its Divine market apart, since those are
+    different prices, and the market whose order brings in more for the whole line is recommended. A
+    market that does not trade steadily (the bar `stash_value` uses) gets no order.
+
+    The order is cut to the line: units posted are whole lots of its ratio, and the rest is left over.
+    Time is the units posted over the units per hour your share of the flow gets at the level, with
+    the share your own orders measured for that item and market where there is one (`share_by_item`,
+    as `calibrate.shares` builds it). Lines worth less than `min_value` Chaos at fair value are left
+    out, and counted in `skipped` so the page can say so.
+    """
+    if reach not in PATIENCE:
+        raise ValueError(f"reach must be one of {', '.join(f'{r:g}' for r in PATIENCE)}.")
+    if not (min_value >= 0 and math.isfinite(min_value)):
+        raise ValueError("The minimum must be zero or more.")
+    ref, bridge_id = ANCHORS[desk.realm]
+    levels = {m: desk._level(desk.legs[k], "sell", reach)[1] for m, k in MARKETS.items()}
+    shares = {m: desk._shares(share, share_by_item, (m,)) for m in MARKETS}
+    rows, skipped = [], {"lines": 0, "value": 0.0}
+    total = {"plan": 0.0, "worth": 0.0, "planned_worth": 0.0}
+    for item_id, units in holdings.items():
+        units = float(units)
+        row: dict = {"id": item_id, "name": desk._name(item_id), "units": _num(units)}
+        fair = desk.fair(item_id)
+        worth = units * fair if fair is not None else None
+        row["worth"] = _num(worth)
+        if worth is not None:
+            total["worth"] += worth
+            if worth < min_value:
+                skipped["lines"] += 1
+                skipped["value"] += worth
+                continue
+        if item_id == ref:
+            rows.append(row | {"why": "Chaos is what the desk counts in; there is nothing to sell it for."})
+            continue
+        if worth is None:
+            rows.append(row | {"why": f"No price in {desk.league}, so no level to sell at."})
+            continue
+        i = desk.panel.index(item_id)
+        markets = {}
+        for market, key in MARKETS.items():
+            leg = desk.legs[key]
+            if item_id == bridge_id and market == "divine":
+                continue
+            if not (math.isfinite(float(leg.fair[-1, i])) and leg.active[i] >= MIN_ACTIVE and leg.age[i] < MAX_AGE):
+                markets[market] = {"market": market, "why": f"The {market.title()} market does not trade steadily."}
+                continue
+            vec, sources = shares[market]
+            markets[market] = _sell_in(desk, i, market, units, reach, float(levels[market][i]),
+                                       float(vec[i]), sources.get(i, f"default {share:.0%}"))
+        row["chaos"], row["divine"] = markets.get("chaos"), markets.get("divine")
+        able = [m for m in markets.values() if "order" in m]
+        if not able:
+            reasons = [m["why"] for m in markets.values()]
+            rows.append(row | {"why": " ".join(reasons) or "No market to sell it in."})
+            continue
+        best = max(able, key=lambda m: m["value"])
+        row["best"] = best["market"]
+        other = next((m for m in able if m is not best), None)
+        if other:
+            row["other"] = other["market"]
+            row["best_by"] = _num(best["value"] / other["value"] - 1, 4) if other["value"] else None
+        total["plan"] += best["value"]
+        total["planned_worth"] += worth
+        rows.append(row)
+    # The planned lines first, the largest sale first; then the lines that could not be planned.
+    rows.sort(key=lambda r: (0, -r[r["best"]]["value"]) if r.get("best") else (1, -(r.get("worth") or 0)))
+    return {
+        "league": desk.league, "bridge": _num(desk.bridge), "reach": reach, "min_value": min_value,
+        "rows": rows, "skipped": {"lines": skipped["lines"], "value": _num(skipped["value"])},
         "total": {k: _num(v) for k, v in total.items()},
     }

@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from vaalstreet import archive, backtest, calibrate, check, db, items, ninja, search
-from vaalstreet.desk import Costs, Desk, _num, session_plan
+from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
 from vaalstreet.ledger import ALERT_FIELDS, ALERT_KINDS, SETTINGS, Ledger, describe_alert, describe_key, recipe_key
@@ -764,20 +764,43 @@ class App:
         return {"league": desk.league, "lines": sorted(lines, key=lambda row: row["lines"][0]), "unread": unread,
                 "dropped": dropped, "replace": replace, "written": written}
 
+    def _holdings(self, desk, source: str | None) -> dict[str, float]:
+        """What the Stash panel values: the stash you entered, or with source=ledger the ledger's positions."""
+        if source == "ledger":
+            return {k: p["units"] for k, p in self.ledger.positions(desk.league).items() if p["units"] > 1e-9}
+        return self.ledger.stash(desk.league)
+
     def api_stash(self, q: dict) -> dict:
         """Your stash (or, with source=ledger, the ledger's positions) valued at today's prices."""
         desk = self.desk(q.get("league"))
-        if q.get("source") == "ledger":
-            holdings = {k: p["units"] for k, p in self.ledger.positions(desk.league).items() if p["units"] > 1e-9}
-        else:
-            holdings = self.ledger.stash(desk.league)
-        out = check.stash_value(desk, holdings) | {"source": q.get("source") or "stash"}
+        out = check.stash_value(desk, self._holdings(desk, q.get("source"))) | {"source": q.get("source") or "stash"}
         if out["source"] == "stash":
             # How long ago each line was last set, by the ledger's own clock: in a rehearsal that is practice time.
             counted, now = self.ledger.stash_counted(desk.league), self.ledger.clock()
             for row in out["rows"]:
                 row["counted_ago"] = max(0, int(now - counted[row["id"]])) if row["id"] in counted else None
         return out
+
+    def api_stash_plan(self, q: dict) -> dict:
+        """A sell order for every line of the stash (or the ledger's positions), as `check.stash_plan` makes it.
+
+        `reach` is how patient the orders are (one of the flip plans' levels), `min_value` leaves out lines
+        worth less in Chaos. Each item sells at the share of the flow your own orders measured there, as on
+        the Flips page, and `orders` lists the orders still on the exchange so a posted line says so.
+        """
+        desk = self.desk(q.get("league"))
+        try:
+            reach = float(q["reach"]) if q.get("reach") else check.DEFAULT_REACH
+            min_value = float(q["min_value"]) if q.get("min_value") else 0.0
+            share = float(q.get("share", 0.1))
+            if not 0 < share <= 1:
+                raise ValueError("share must be above 0 and at most 1.")
+            out = check.stash_plan(desk, self._holdings(desk, q.get("source")), reach=reach, min_value=min_value,
+                                   share=share, share_by_item=calibrate.shares(self.fill_calibration(desk, share)))
+        except ValueError as err:
+            raise ApiError(f"Bad request: {err}") from err
+        return out | {"source": q.get("source") or "stash", "reaches": list(PATIENCE),
+                      "orders": self._posted(desk.league)}
 
     def api_worth(self, q: dict) -> dict:
         """What one holding is worth, for the stack check: valued like a stash line, and not saved."""
@@ -1140,7 +1163,7 @@ GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
-    "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/worth": "api_worth",
+    "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
     "/api/rehearsal": "api_rehearsal",
 }

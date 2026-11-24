@@ -629,6 +629,18 @@ class Desk:
         return {"currency": "Divine" if in_divine else "Chaos", "currency_units": pay, "item_units": get,
                 "price": _num(pay / get * unit), "exact": pay / get * unit}
 
+    def _level(self, leg: Leg, side: str, reach: float) -> tuple[np.ndarray, np.ndarray]:
+        """Per item, the price an order on `side` of one market rests at for patience `reach`.
+
+        Returns (log of the level against fair value, the level in Chaos). A buy level is the price
+        at or below which `reach` of the market's units traded over the last `SWING_WINDOW` hours, a
+        sell level the one at or above which `reach` of them traded. Volume-weighted, so an hour in
+        which three units changed hands at a silly ratio cannot set it. Flip plans and the stash's
+        sell plan both read their levels here, so the two never disagree about where an order goes.
+        """
+        dev = weighted_quantile(leg.dev.T, leg.weight.T, reach if side == "buy" else 1 - reach)
+        return dev, self.fv.fair[-1] * np.exp(dev)
+
     def _fit(self, plan: dict, bankroll: float, min_margin: float) -> dict | None:
         """Re-cut a plan's orders to whole numbers a purse of `bankroll` can actually post.
 
@@ -727,11 +739,8 @@ class Desk:
             share_vec, sources = self._shares(share, share_by_item, PLAN_MARKETS[kind])
             thin_is_buy = buy_leg.flow < sell_leg.flow
             for reach in PATIENCE:
-                # Volume-weighted: `reach` of the units traded at or beyond each level, so an hour in which
-                # three units changed hands at a silly ratio cannot set it.
-                low = weighted_quantile(buy_leg.dev.T, buy_leg.weight.T, reach)
-                high = weighted_quantile(sell_leg.dev.T, sell_leg.weight.T, 1 - reach)
-                buy, sell = fair * np.exp(low), fair * np.exp(high)
+                low, buy = self._level(buy_leg, "buy", reach)
+                high, sell = self._level(sell_leg, "sell", reach)
                 # Only the volume that trades beyond a level can fill an order resting there.
                 units = share_vec * reach * np.minimum(buy_leg.flow, sell_leg.flow)
                 with np.errstate(divide="ignore", invalid="ignore"):

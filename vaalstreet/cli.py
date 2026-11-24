@@ -337,6 +337,43 @@ def _stash_import(args: argparse.Namespace, desk, ledger) -> None:
     print(f"Wrote {len(holdings)} lines to your stash in {desk.league}.\n")
 
 
+def _stash_plan(args: argparse.Namespace, desk, ledger, holdings: dict[str, float]) -> None:
+    """The sell order to post for each line, as the Stash panel's sell plan shows it."""
+    from vaalstreet import calibrate, check
+    from vaalstreet.panel import HOUR
+
+    measured = calibrate.from_ledger(ledger, desk.league, desk.panel, desk.as_of + HOUR)
+    try:
+        out = check.stash_plan(desk, holdings, reach=args.reach, min_value=args.min_value,
+                               share_by_item=calibrate.shares(measured))
+    except ValueError as err:
+        sys.exit(str(err))
+    if not holdings:
+        print(f"Nothing held in {desk.league}. Add a line with: stash set \"<item>\" <units>")
+        return
+    rows = []
+    for row in out["rows"]:
+        best = row.get(row.get("best")) or {}
+        o = best.get("order")
+        rows.append({"name": row["name"], "units": row["units"],
+                     "market": row["best"].title() if o else "",
+                     "order": f"{o['item_units']} for {o['currency_units']} {o['currency']}" if o else "",
+                     "post": best.get("units"), "left": best.get("left") or None, "value": best.get("value"),
+                     "hours": best.get("hours"),
+                     # A line with no order says why in the last column, where a long sentence does not push the table.
+                     "note": ("thin market" if best.get("thin") else "") if o else row.get("why", "")})
+    print(f"{desk.league} - selling {'your ledger positions' if args.ledger else 'your stash'}: orders that "
+          f"{args.reach:.0%} of the last two days' volume traded at or above (Divine {desk.bridge:.1f}c)")
+    _table(rows, [("name", "Item", ""), ("units", "Units", ",.6g"), ("market", "Sell in", ""), ("order", "Order", ""),
+                  ("post", "Post", ",.6g"), ("left", "Left over", ",.6g"), ("value", "Brings in", ",.0f"),
+                  ("hours", "Hours", ",.1f"), ("note", "", "")], 200)
+    t, skipped = out["total"], out["skipped"]
+    print(f"\nThe plan brings in {t['plan']:,.0f} Chaos for lines worth {t['planned_worth']:,.0f} at fair value "
+          f"(the whole list is worth {t['worth']:,.0f}).")
+    if skipped["lines"]:
+        print(f"{skipped['lines']} line(s) worth {skipped['value']:,.0f} Chaos in all are under your minimum.")
+
+
 def _stash(args: argparse.Namespace) -> None:
     from vaalstreet import check
     from vaalstreet.desk import Desk
@@ -357,6 +394,9 @@ def _stash(args: argparse.Namespace) -> None:
         holdings = {k: p["units"] for k, p in ledger.positions(desk.league).items() if p["units"] > 1e-9}
     else:
         holdings = ledger.stash(desk.league)
+    if args.plan:
+        _stash_plan(args, desk, ledger, holdings)
+        return
     out = check.stash_value(desk, holdings)
     counted, now = ledger.stash_counted(desk.league), ledger.clock()  # when each line was last set
     if not out["rows"]:
@@ -954,6 +994,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--replace", action="store_true",
                    help="import: also remove the lines the file does not name, so the stash becomes exactly the file")
     p.add_argument("--ledger", action="store_true", help="value the positions your recorded trades add up to instead")
+    p.add_argument("--plan", action="store_true",
+                   help="say what sell order to post for each line, in which market, and about how long it takes")
+    p.add_argument("--reach", type=float, default=0.35, choices=[0.15, 0.25, 0.35, 0.5],
+                   help="--plan: how patient the orders are, as the share of the last two days' volume that traded "
+                        "at or above the price: 0.5 sells fastest, 0.15 holds out for most (default %(default)s)")
+    p.add_argument("--min-value", type=float, default=0.0,
+                   help="--plan: leave out lines worth less than this many Chaos (they are counted, not hidden)")
     p.add_argument("--league")
     p.set_defaults(run=_stash)
 
