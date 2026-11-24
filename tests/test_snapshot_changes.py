@@ -70,6 +70,9 @@ def test_a_farming_session_in_one_data_hour():
     out = wealth.compare(before, after)
     assert out["held_more"] == 40 and out["prices_moved"] == 0 and out["per_hour"] == 40 and out["data_hours"] == 0
     assert wealth.compare(before, after | {"t": before["t"]})["per_hour"] is None, "no time passed: no rate"
+    # Under a quarter of an hour apart there is no rate either: 40 in four seconds is not 36,000 an hour.
+    assert wealth.compare(before, after | {"t": before["t"] + 4})["per_hour"] is None
+    assert wealth.compare(before, after | {"t": before["t"] + 900})["per_hour"] == pytest.approx(160)
 
 
 def test_the_ledger_positions_compare_the_same_way():

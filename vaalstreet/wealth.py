@@ -27,6 +27,9 @@ from vaalstreet.desk import Desk, _num
 from vaalstreet.ledger import Ledger
 
 SOURCES = ("stash", "ledger")
+# Two snapshots closer together than this get no rate per hour: a change of 100 Chaos between two
+# snapshots taken four seconds apart is not 90,000 Chaos an hour.
+MIN_RATE_HOURS = 0.25
 _EPS = 1e-9
 
 
@@ -139,7 +142,7 @@ def compare(a: dict, b: dict, source: str = "stash") -> dict:
         "hours": hours, "data_hours": (now["hour"] - then["hour"]) / 3600,
         "worth_then": worth_then, "worth_now": worth_now, "change": change,
         "held_more": held_more, "prices_moved": prices_moved,
-        "per_hour": change / hours if hours > 0 else None,
+        "per_hour": change / hours if hours >= MIN_RATE_HOURS else None,
         "gained": gained, "gained_total": sum(r["worth"] for r in gained),
         "lost": lost, "lost_total": sum(r["worth"] for r in lost),
         "no_price": unpriced,
