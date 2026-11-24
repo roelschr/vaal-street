@@ -33,7 +33,7 @@ HEADERS = {
 # Characters a spreadsheet reads as the start of a formula, and the tab and carriage return that
 # some spreadsheets strip before looking.
 _FORMULA = ("=", "+", "-", "@", "\t", "\r")
-BOM = "﻿"
+BOM = "\ufeff"  # written as an escape: the character itself is invisible in an editor
 
 
 def iso(t: float | None) -> str:
