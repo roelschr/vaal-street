@@ -943,23 +943,35 @@ function postedLine(r, side, mine = []) {
   const ratios = [...new Set(open.map(x => `${x.item_units} for ${x.currency_units}`))].join(', ');
   return `<div class="post">${open.length ? `<span class="muted small" title="You recorded ${open.length === 1 ? 'an order' : `${open.length} orders`} here (${esc(ratios)} ${esc(o.currency)}), with ${itemCount(left)} still to fill. The Ledger says whether to keep, re-price, cancel or collect.">✓ ${itemCount(left)} posted</span> ` : ''}<button class="btn ghost small" data-post="${esc(JSON.stringify(ask))}" title="Posted this order in game? Record it without typing the item, the market or the ratio.">${open.length ? 'Posted more…' : 'Posted…'}</button></div>`;
 }
+// `o` is the order as the desk knows it: item, name, side, market, currency, currency_units, item_units
+// and units. Optional: `lead` (a sentence shown first), `title` (the heading before the item's name),
+// `editable` (the desk is not sure of the ratio, so its two numbers can be changed; `units` may then
+// be left out and must be typed) and `extra` (fields added to the request, for a caller that records
+// more than a plain new order).
 function askPosted(o) {
   $('.posted')?.remove();
   const box = document.createElement('form'); box.className = 'panel pend posted'; box.autocomplete = 'off';
-  box.innerHTML = `<header><h2>${o.lead ? 'The sell order for what you bought' : `${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted`}: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+  const heading = o.title || (o.lead ? 'The sell order for what you bought' : `${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted`);
+  const num = (name, value) => `<input type="number" name="${name}" min="1" step="1" value="${value ?? ''}" required style="width:74px">`;
+  // The ratio as the game words it: what you pay for how many (buying), how many for what you get (selling).
+  const ratio = !o.editable ? order(o, o.side === 'buy') : o.side === 'buy'
+    ? `${num('cu', o.currency_units)} ${curWord(o.currency)} <span class="dim">for</span> ${num('iu', o.item_units)}`
+    : `${num('iu', o.item_units)} <span class="dim">for</span> ${num('cu', o.currency_units)} ${curWord(o.currency)}`;
+  box.innerHTML = `<header><h2>${esc(heading)}: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
     <div class="body">${o.lead ? `<p style="margin:0 0 10px">${esc(o.lead)}</p>` : ''}<div class="bar" style="margin:0">
-      <div class="f ctl">Ratio<span class="num" style="padding:6px 0;color:var(--text)">${order(o, o.side === 'buy')}</span></div>
-      <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units}" required style="width:110px"></label>
+      <div class="f ctl">Ratio<span class="num" style="${o.editable ? 'display:flex;gap:6px;align-items:center;' : 'padding:6px 0;'}color:var(--text)">${ratio}</span></div>
+      <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units ?? ''}" required style="width:110px"></label>
       <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" style="width:110px"></label>
       <button class="btn primary">Record</button></div>
-      <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. If you posted a different ratio, record the order on the Ledger page instead.</p></div>`;
+      <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. ${o.editable ? 'Change the ratio to the one you posted.' : 'If you posted a different ratio, record the order on the Ledger page instead.'}</p></div>`;
   box.onsubmit = async e => {
     e.preventDefault();
     if (box.dataset.busy) return;  // a second click or Enter while the first is on its way must not record twice
     box.dataset.busy = '1';
     const units = +box.elements.units.value;
+    const currency_units = o.editable ? +box.elements.cu.value : o.currency_units, item_units = o.editable ? +box.elements.iu.value : o.item_units;
     try {
-      await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units: o.currency_units, item_units: o.item_units, units, gold: optional(box.elements.gold.value) });
+      await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units, item_units, units, gold: optional(box.elements.gold.value), ...(o.extra || {}) });
     } catch (err) { delete box.dataset.busy; return toast(err.message, true); }
     box.remove();
     toast(`Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
@@ -972,7 +984,7 @@ function askPosted(o) {
   box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); box.remove(); } });
   box.querySelector('[data-x]').onclick = () => box.remove();
   document.body.append(box);
-  box.elements.units.select();
+  (o.editable && o.units != null ? box.elements[o.side === 'buy' ? 'cu' : 'iu'] : box.elements.units).select();
 }
 document.addEventListener('click', e => { const b = e.target.closest('[data-post]'); if (b) askPosted(JSON.parse(b.dataset.post)); });
 
