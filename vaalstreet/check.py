@@ -16,6 +16,10 @@ model's uncertainty; "no-go" means it is on the wrong side by more than that; an
 between is "caution". A market that has not traded recently has no value worth trusting, so it
 never gets more than "caution".
 
+The check card also turns a price the player has in mind into the ratio to type (`ratio_helper`):
+the exchange takes only whole numbers, so 9.5 Chaos each is "19 Chaos for 2". It rounds the way flip
+plans post their orders, so a price from a plan comes back as that plan's order.
+
 Stash
 -----
 Each holding is valued at the item's fair value with its range, and at each market's own value,
@@ -39,6 +43,7 @@ import difflib
 import math
 import re
 
+from vaalstreet import pricing
 from vaalstreet.desk import LOT_WINDOW, PATIENCE, RATIO_TOLERANCE, Desk, _num
 from vaalstreet.ingest import ANCHORS
 
@@ -104,6 +109,49 @@ def parse_ratio(text: str, market: str | None = None) -> tuple[float, float]:
     if named and market and named != market:
         raise ValueError(f"The ratio names {named.title()} but the market is {market.title()}.")
     return items, currency
+
+
+def ratio_helper(price: float, currency: str = "chaos", max_items: float | None = None,
+                 max_currency: float | None = None) -> dict:
+    """The whole-number ratio to type for a price per item, for the check card and `vaalstreet ratio`.
+
+    The exchange takes whole numbers on both sides, so 9.5 Chaos each has to be typed as "19 Chaos
+    for 2". The rounding is the one flip plans post with (`pricing.ratio_choices`); `price` is in the
+    chosen currency, so a Divine price gives a ratio in Divines and needs no Divine price. `max_items`
+    (the items you hold) and `max_currency` (what you can pay) cap the ratio, and each choice's
+    `max_lots` says how many times it fits them (None without caps). A ValueError is a question that makes no sense; caps too small
+    for any ratio are a fair question, answered with no ratio and a `note`.
+    """
+    def positive(value, what: str) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{what} must be a number, not {value!r}.") from None
+        if not (math.isfinite(number) and number > 0):
+            raise ValueError(f"{what} must be a number more than zero.")
+        return number
+
+    price = positive(price, "The price")
+    if price is None:
+        raise ValueError("Give a price per item.")
+    currency = str(currency or "chaos").lower()
+    if currency not in MARKETS:
+        raise ValueError("The currency must be chaos or divine.")
+    max_items, max_currency = positive(max_items, "Items you hold"), positive(max_currency, "What you can pay")
+    caps = {"max_items": max_items or math.inf, "max_currency": max_currency or math.inf}
+    choices = pricing.ratio_choices(price, **caps)
+    capped = bool(max_items or max_currency)
+    for c in [choices["ratio"], *choices["alternatives"]]:
+        if c is not None:
+            lots = min(caps["max_items"] / c["item_units"], caps["max_currency"] / c["currency_units"])
+            c.update(currency=currency.title(), price=_num(c["price"], 6), error=_num(c["error"], 6),
+                     max_lots=int(lots) if capped else None)
+    ratio = choices["ratio"]
+    return {"price": price, "currency": currency, "max_items": max_items, "max_currency": max_currency, **choices,
+            "max_lots": ratio["max_lots"] if ratio else None,
+            "note": None if ratio else "No ratio fits: even the smallest one needs more than you hold or can pay."}
 
 
 def _plan_level(plans: list[dict], item_id: str, side: str, market: str) -> dict | None:

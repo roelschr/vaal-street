@@ -515,6 +515,48 @@ def lot_ratio(
     return best
 
 
+# The closer choices `ratio_choices` offers next to the posted one: within a quarter and a twentieth
+# of LOT_TOLERANCE. Closer than 0.1% is below what any price the desk shows can tell apart.
+CLOSER_TOLERANCES = (LOT_TOLERANCE / 4, LOT_TOLERANCE / 20)
+
+
+def ratio_choices(price: float, max_currency: float = math.inf, max_items: float = math.inf) -> dict:
+    """The ratio to type for `price` per item, and a few others to choose from, for the ratio helper.
+
+    `ratio` is what the desk itself would post (`lot_ratio` at LOT_TOLERANCE). The alternatives are the
+    closest ratio with a smaller lot ("rounder": "10 for 1" next to "19 for 2") and the smallest
+    ratios within CLOSER_TOLERANCES ("closer", with bigger numbers), all under the same caps, without
+    repeats, ordered by lot size, smallest first. A choice is {currency_units, item_units, price,
+    error, kind}, where `price` is what the ratio states and `error` how far that is from `price`
+    (+0.05 is 5% more). `ratio` is None when not even one unit of each side fits the caps.
+    """
+    def choice(pair: tuple[int, int] | None, kind: str) -> dict | None:
+        if pair is None:
+            return None
+        currency, items = pair
+        return {"currency_units": currency, "item_units": items, "price": currency / items,
+                "error": currency / items / price - 1, "kind": kind}
+
+    main = lot_ratio(price, LOT_TOLERANCE, max_currency, max_items)
+    if main is None:
+        return {"ratio": None, "alternatives": []}
+    found = [choice(lot_ratio(price, tol, max_currency, max_items), "closer") for tol in CLOSER_TOLERANCES]
+    lot = min(main)  # the smaller side, the one a lot is counted in
+    if lot > 1:  # the closest ratio whose smaller side is smaller than the posted one's
+        smaller = (dict(max_items=min(max_items, lot - 1)) if price >= 1
+                   else dict(max_currency=min(max_currency, lot - 1)))
+        found.append(choice(lot_ratio(price, 0.0, **({"max_currency": max_currency, "max_items": max_items} | smaller)),
+                            "rounder"))
+    alternatives, seen = [], {main}
+    for c in found:
+        pair = None if c is None else (c["currency_units"], c["item_units"])
+        if pair is not None and pair not in seen:
+            seen.add(pair)
+            alternatives.append(c)
+    alternatives.sort(key=lambda c: min(c["currency_units"], c["item_units"]))
+    return {"ratio": choice(main, "posted"), "alternatives": alternatives}
+
+
 def forward_vwap(price: np.ndarray, value: np.ndarray, horizon: int) -> np.ndarray:
     """Value-weighted mean log price over the `horizon` hours after each row: [T, N], NaN if none traded."""
     seen = np.isfinite(price) & (price > 0)

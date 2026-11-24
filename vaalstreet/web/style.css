@@ -231,6 +231,18 @@ html.icons :is(.sub,.small) .cur.d,html.icons body.hideout .cur.d{box-shadow:ins
 #tc .row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
 #tc input[type=number]{width:90px}
 #tc ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px;line-height:1.5}
+/* The ratio helper folds under the check form, so the card stays short for a plain check. */
+#tc .rh{margin:0 14px 14px;border-top:1px solid var(--line);padding-top:10px;display:grid;gap:10px}
+#tc .rh summary{cursor:pointer;color:var(--title);font-weight:600}
+#tc .rh p{margin:0}
+#tc .rhpair{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:15px}
+#tc .rhpair b{font:600 20px var(--mono);color:var(--accent-hi)}
+#tc .rhpair .btn{padding:2px 6px;font-size:11px}
+#tc .rhlots{align-items:center}
+#tc .rhlots .btn{padding:2px 10px}
+#tc .rhalt{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+#tc .rhalt .btn{padding:2px 6px;border:1px solid var(--line2);font-family:var(--mono);font-size:12px}
+#tc .rhalt .btn.on{border-color:var(--accent);color:var(--accent-hi)}
 #tour{position:fixed;right:20px;bottom:20px;width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 100px);overflow:auto;background:var(--grain),var(--side);border:1px solid var(--accent);border-radius:2px;box-shadow:0 0 0 1px #000,0 0 24px #d9b26026,0 18px 50px #000b;z-index:31}
 #tour[hidden]{display:none}
 #tour header,#tour footer{display:flex;align-items:center;gap:8px;padding:10px 14px}

@@ -290,6 +290,30 @@ def _check(args: argparse.Namespace) -> None:
         print(f"  - {reason}")
 
 
+def _ratio(args: argparse.Namespace) -> None:
+    from vaalstreet import check
+
+    try:
+        r = check.ratio_helper(args.price, args.currency, args.max_items, args.max_currency)
+    except ValueError as err:
+        sys.exit(str(err))
+    word = args.currency.title()
+
+    def line(c: dict) -> str:
+        return (f"buying: {c['currency_units']} {word} for {c['item_units']}   selling: {c['item_units']} for "
+                f"{c['currency_units']} {word}   = {c['price']:.6g} {word} each ({c['error']:+.1%})")
+
+    print(f"{args.price:g} {word} each")
+    if r["ratio"] is None:
+        print(f"  {r['note']}")
+        return
+    print(f"  {line(r['ratio'])}")
+    if r["max_lots"] is not None:
+        print(f"  With the limits you gave, that ratio fits {r['max_lots']} times.")
+    for c in r["alternatives"]:
+        print(f"  {'rounder' if c['kind'] == 'rounder' else 'closer'}: {line(c)}")
+
+
 def _screen(args: argparse.Namespace) -> None:
     # Only the companion's own settings file; never the archive or the ledger, which may live in
     # another operating system's filesystem when this runs under Windows next to a desk in WSL.
@@ -976,6 +1000,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--stock", type=float, help="how many items are on offer at that ratio, if the window shows it")
     p.add_argument("--league")
     p.set_defaults(run=_check)
+
+    p = commands.add_parser(
+        "ratio", help="the whole-number ratio to type for a price per item, e.g. 9.5 -> 19 Chaos for 2",
+        description="The exchange takes whole numbers only. Give the price you want per item and see the "
+                    "smallest ratio within 2%% of it (the one flip plans post), how far it is off, and a "
+                    "rounder and a closer choice.")
+    p.add_argument("price", type=float, help="the price per item, in the currency below")
+    p.add_argument("--currency", choices=["chaos", "divine"], default="chaos", help="the price is in Chaos (default) or Divines")
+    p.add_argument("--max-items", type=float, help="the items you hold: no ratio may ask for more")
+    p.add_argument("--max-currency", type=float, help="what you can pay: no ratio may ask for more")
+    p.set_defaults(run=_ratio)
 
     p = commands.add_parser(
         "screen", help="press a key to read an offer off the exchange window and check it (optional extra)",

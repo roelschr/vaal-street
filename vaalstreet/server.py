@@ -836,6 +836,14 @@ class App:
         except (KeyError, ValueError, TypeError) as err:
             raise ApiError(f"Bad request: {err}") from err
 
+    def api_ratio(self, q: dict) -> dict:
+        """The whole-number ratio to type for a price per item. Needs no league: it is arithmetic."""
+        try:
+            return check.ratio_helper(q.get("price"), q.get("currency") or "chaos", q.get("max_items"),
+                                      q.get("max_currency"))
+        except ValueError as err:
+            raise ApiError(f"Bad request: {err}") from err
+
     def api_stash_paste(self, body: dict) -> dict:
         """A pasted list of what you hold, read into stash lines. Written only with "write": true.
 
@@ -1354,7 +1362,7 @@ GET_ROUTES = {
     "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
     "/api/snapshots": "api_snapshots", "/api/snapshot_diff": "api_snapshot_diff",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
-    "/api/rehearsal": "api_rehearsal",
+    "/api/rehearsal": "api_rehearsal", "/api/ratio": "api_ratio",
 }
 
 
