@@ -38,9 +38,19 @@ reported as measured and counted as 100% in the share used: no plan can take mor
 Causality: `calibrate(..., as_of=t)` uses only orders posted before t, eligible volume from
 hours before t, and fills recorded before t (from the trades each fill wrote). A plan at hour t
 therefore never learns from a fill that came later.
+
+Proposed fills
+--------------
+The same count runs forward for orders still open. The desk cannot see your fills, but an order
+has likely taken the share of the flow the desk uses for its item and market, times the units that
+traded through its price since you posted it, in whole lots and never more than its size
+(`likely_filled`). The Ledger proposes that, less what you already recorded, and records nothing
+until you confirm it. It counts only hours published up to the desk's last one.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -97,7 +107,22 @@ def order_sample(order: dict, fills: list[tuple[int, float]], panel: Panel, as_o
         end = start + 1  # filled within the hour it was posted
     if filled <= 0 and (end - start) / HOUR < MIN_HOURS:
         return None
+    return {"filled": float(filled), "eligible": traded_through(order, panel, start, end, i), "complete": complete}
 
+
+def traded_through(order: dict, panel: Panel, start: int, end: int, i: int | None = None) -> float:
+    """Units of the order's market that traded at or beyond its price between `start` and `end`.
+
+    An hour counts when its average price was at or beyond the order's price (at or below it for a
+    buy, at or above it for a sell), in proportion to the part of the hour inside the window. A
+    Divine-market price is compared at that hour's Divine price. Only hours that begin before `end`
+    can count, so nothing at or after `end` is used. `i` is the item's column, when the caller has it.
+    """
+    if i is None:
+        try:
+            i = panel.index(order["item"])
+        except KeyError:
+            return 0.0
     hours = panel.hours.astype(np.int64)
     overlap = np.clip(np.minimum(hours + HOUR, end) - np.maximum(hours, start), 0, None) / HOUR
     rows = np.flatnonzero(overlap > 0)
@@ -109,8 +134,24 @@ def order_sample(order: dict, fills: list[tuple[int, float]], panel: Panel, as_o
         level = level * panel.bridge[rows]
     with np.errstate(invalid="ignore"):
         through = price <= level if order["side"] == "buy" else price >= level
-    eligible = float(np.sum(volume * overlap[rows] * np.nan_to_num(through)))
-    return {"filled": float(filled), "eligible": eligible, "complete": complete}
+    return float(np.sum(volume * overlap[rows] * np.nan_to_num(through)))
+
+
+def likely_filled(order: dict, panel: Panel, share: float, as_of: int) -> dict:
+    """How much of an open order has probably filled by `as_of`, which the player has not recorded yet.
+
+    The desk cannot see fills; it counts them the way calibration measures them afterwards. The
+    order has likely taken `share` of the units that traded through its price since it was posted
+    (`traded_through`, up to `as_of`), never more than its size, and in whole lots: an order fills
+    in multiples of its ratio. `more` is that, less what is already recorded, and never below zero.
+    `as_of` is a unix time: give the end of the desk's last published hour, so nothing later is used.
+    """
+    start = int(order["created"])
+    through = traded_through(order, panel, start, as_of) if start < as_of else 0.0
+    lot = float(order["item_units"])
+    likely = min(max(share, 0.0) * through, float(order["units"]))
+    likely = math.floor(likely / lot + 1e-9) * lot  # whole lots only, rounded down
+    return {"through": through, "likely": likely, "more": max(0.0, likely - float(order["filled"] or 0))}
 
 
 def calibrate(orders: list[dict], fills: dict[int, list[tuple[int, float]]], panel: Panel,
