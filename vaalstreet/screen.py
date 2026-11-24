@@ -18,6 +18,10 @@ GGG's rules for tools that read the screen shape the whole design (see docs/data
   lines (at most `MAX_LINES` of `MAX_CHARS`), what it understood or why not. The page shows the last
   few, so a misread can be seen and taught (a correction: "when it reads this, it means that item").
   The desk keeps them in memory only. The screenshot itself is never sent, stored or shown.
+- An understood reading can be recorded as an order you posted, from the desk's page, by a click
+  there. The companion records nothing itself. When the amounts you typed under "I Want" and "I Have"
+  can be read without doubt (`player_amounts`), the form starts from them; where they appear in the
+  recognised text has not been seen in game, so that reading is strict and gives nothing when unsure.
 
 The parser is the testable core. It is a pure function from recognised text lines to one offer,
 matched against the desk's item names. The layout it assumes is the exchange window's labels:
@@ -96,6 +100,10 @@ class Reading:
     item_units: float
     currency_units: float
     stock: float | None = None
+    # The amounts the player typed into the window, under "I Want" and "I Have", when both were read
+    # without doubt (`player_amounts`); otherwise both None. Not used by the check: the ratio above is.
+    want_amount: int | None = None
+    have_amount: int | None = None
 
     def describe(self) -> str:
         """What was read, in the words a player would say it, so a misread is easy to spot."""
@@ -254,7 +262,66 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     item_side, money_side = (want_units, have_units) if side == "buy" else (have_units, want_units)
     ratio = f"{item_side:g}:{money_side:g}"
     item_units, currency_units = parse_ratio(ratio, market)  # the typed check's own ratio rules
-    return Reading(item, market, side, item_units, currency_units, stock)
+    want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
+    return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount)
+
+
+# The player's own amounts. Where the window shows them in the recognised text is untested, so this is
+# strict: a whole number with at least one real digit, standing alone on a line or right after the
+# item's name, between the side's label and the next label. Anything less sure gives nothing.
+_CLOSERS = ("iwant", "ihave", "marketratio", "stock")
+_AMOUNT = re.compile(r"(?<![A-Za-z0-9])([0-9OolI|]{1,3}(?:,[0-9OolI|]{3})+|[0-9OolI|]+)\s*$")
+
+
+def _amount(token: str) -> int | None:
+    if not re.search(r"\d", token):
+        return None  # a lone "O", "l" or "I" is a letter, not a number
+    try:
+        value = _number(token)
+    except ValueError:
+        return None
+    return int(value) if value == int(value) and value > 0 else None
+
+
+def _side_amount(lines: list[str], at: int, label: str, item: str, names: list[str],
+                 corrections: dict[str, str] | None) -> int | None:
+    """The one amount under a label, or None when there is none, more than one, or the region has no end."""
+    end = next((k for k in range(at + 1, len(lines)) if _key(lines[k]).startswith(_CLOSERS)), None)
+    if end is None:
+        return None
+    item_ends_in_digit = _key(item)[-1:].isdigit()
+    found = []
+    for k in range(at, end):
+        text = lines[k]
+        if k == at:
+            text = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", text, flags=re.I)
+        m = _AMOUNT.search(text)
+        if not m:
+            continue
+        before = text[:m.start()].strip()
+        if before:
+            # "Exalted Orb 5": the number must follow the item's own name, and must not be part of it.
+            if item_ends_in_digit or match_name(before, names, corrections) != item:
+                return None
+        value = _amount(m.group(1))
+        if value is None:
+            return None
+        found.append(value)
+    return found[0] if len(found) == 1 else None
+
+
+def player_amounts(lines: list[str], names: list[str], want: str, have: str,
+                   corrections: dict[str, str] | None = None) -> tuple[int | None, int | None]:
+    """(amount under "I Want", amount under "I Have"): both read without doubt, or (None, None)."""
+    try:
+        want_at, have_at = _label(lines, "iwant"), _label(lines, "ihave")
+        if want_at is None or have_at is None:
+            return None, None
+        a = _side_amount(lines, want_at, "iwant", want, names, corrections)
+        b = _side_amount(lines, have_at, "ihave", have, names, corrections)
+    except Exception:  # the amounts are extra: they must never cost the player the reading itself
+        return None, None
+    return (a, b) if a is not None and b is not None else (None, None)
 
 
 # ------------------------------------------------------------------ verdict
@@ -370,7 +437,7 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
         say(f"  {err}")
         tell_desk(desk, reading_report(lines, None, str(err), league, err.text))
         return None
-    tell_desk(desk, reading_report(lines, reading, None, league))
+    told = tell_desk(desk, reading_report(lines, reading, None, league))
     say(f"  Read: {reading.describe()}")
     try:
         result = desk.check(reading, league)
@@ -381,6 +448,9 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
     say(f"  {title}")
     for reason in result.get("reasons", []):
         say(f"    - {reason}")
+    if told:
+        say("  Posting this order? Record it from the desk's hideout window: \"Posted this order…\" under "
+            "\"What the screen check read\". Nothing is recorded until you click it.")
     desk.event(title, f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
     return result
 

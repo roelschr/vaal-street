@@ -420,11 +420,14 @@ class App:
                 row["unmatched"] = _clip(body.get("unmatched"), screen.MAX_CHARS)
                 got = body.get("reading")
                 if got:
-                    stock = got.get("stock")
+                    stock, want, have = got.get("stock"), got.get("want_amount"), got.get("have_amount")
+                    if want is None or have is None:
+                        want = have = None  # both amounts or neither, as the companion reads them
                     reading = screen.Reading(
                         str(got["item"])[:120], str(got["market"]), str(got["side"]),
                         _positive(got["item_units"]), _positive(got["currency_units"]),
-                        _positive(stock) if stock not in (None, "") else None)
+                        _positive(stock) if stock not in (None, "") else None,
+                        _whole(want) if want is not None else None, _whole(have) if have is not None else None)
                     if reading.market not in ("chaos", "divine") or reading.side not in ("buy", "sell"):
                         raise ValueError("market must be chaos or divine, side buy or sell")
                     row["reading"], row["said"] = vars(reading), reading.describe()
@@ -440,11 +443,33 @@ class App:
         return {"ok": True, "id": row["id"]}
 
     def api_readings(self, q: dict) -> dict:
-        """The screen check's last readings, newest first, and your corrections."""
+        """The screen check's last readings, newest first, and your corrections.
+
+        Each understood screen reading carries `order`: the "Posted this order…" form's prefill
+        (`posted_prefill`). With `since` equal to the newest reading's id the answer is only that
+        nothing changed, so the page can look often without the desk working out plans each time.
+        """
         with self._lock:
             rows = [dict(r) for r in reversed(self._readings)]
-        return {"readings": rows, "last": rows[0]["id"] if rows else 0,
-                "corrections": self.ledger.screen_corrections()}
+        last = rows[0]["id"] if rows else 0
+        if q.get("since") not in (None, "") and str(q["since"]) == str(last):
+            return {"readings": None, "last": last}
+        plans: dict[str | None, dict] = {}
+        for row in rows:
+            row["order"] = None
+            if row["kind"] != "screen" or not row["reading"]:
+                continue
+            try:
+                desk = self.desk(row["league"])
+                item = check.resolve(desk, row["reading"]["item"])
+                if desk.league not in plans:
+                    plans[desk.league] = plan_orders(desk.flips())
+            except (ApiError, LookupError, ValueError):
+                continue  # a league or an item this desk does not know: no prefill, the reading still shows
+            reading = row["reading"]
+            row["order"] = posted_prefill(reading, item, desk._name(item),
+                                          plans[desk.league].get((item, reading["side"], reading["market"])))
+        return {"readings": rows, "last": last, "corrections": self.ledger.screen_corrections()}
 
     def api_screen_correction(self, body: dict) -> dict:
         """Save "when the screen check reads this text, it means that item", or delete one by its key."""
@@ -1435,6 +1460,60 @@ class App:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return data
+
+
+def plan_orders(plans: list[dict]) -> dict[tuple[str, str, str], dict]:
+    """(item id, side, market) -> the order the best flip plan posts there. Plans come best first, and each
+    plan buys in one market and sells in the other (or the same), as `App._advise` reads them."""
+    markets = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
+    out: dict[tuple[str, str, str], dict] = {}
+    for plan in plans:
+        buy_market, sell_market = markets[plan["kind"]]
+        out.setdefault((plan["id"], "buy", buy_market), plan["buy_order"])
+        out.setdefault((plan["id"], "sell", sell_market), plan["sell_order"])
+    return out
+
+
+def posted_prefill(reading: dict, item: str, name: str, plan_order: dict | None) -> dict:
+    """What the "Posted this order…" form opens with for a screen reading.
+
+    The ratio and the count come from, in this order: the amounts you typed into the window, if the
+    screen check read both (reduced to lowest terms; the count is the item amount); else the flip plan's
+    order for this item, side and market; else the market ratio read off the window, which is the
+    market's suggestion, not your order. In the last two cases the ratio can be changed in the form, the
+    count is left empty, and the lead sentence says where the numbers came from.
+    """
+    side, market = reading["side"], reading["market"]
+    currency = "Divine" if market == "divine" else "Chaos"
+    base = {"item": item, "name": name, "side": side, "market": market, "currency": currency,
+            "title": f"{'Buy' if side == 'buy' else 'Sell'} order you posted"}
+    want, have = reading.get("want_amount"), reading.get("have_amount")
+    if want and have:
+        items, money = (want, have) if side == "buy" else (have, want)
+        common = math.gcd(int(items), int(money))
+        return base | {"source": "amounts", "item_units": int(items) // common, "currency_units": int(money) // common,
+                       "units": int(items),
+                       "lead": f"Read from the amounts in the exchange window: {int(items):,} {name} for "
+                               f"{int(money):,} {currency}. Check them against what you posted."}
+    change = "Change the ratio and the count to what you posted."
+    if plan_order:
+        return base | {"source": "plan", "editable": True, "item_units": plan_order["item_units"],
+                       "currency_units": plan_order["currency_units"],
+                       "lead": f"The ratio is the flip plan's for this item and market; the screen check did not "
+                               f"read your own amounts. {change}"}
+    # A ratio with a part of a unit in it cannot be posted: those fields are left empty to type in.
+    items, money = float(reading["item_units"]), float(reading["currency_units"])
+    return base | {"source": "market", "editable": True, "item_units": int(items) if items.is_integer() else None,
+                   "currency_units": int(money) if money.is_integer() else None,
+                   "lead": f"The ratio is the market ratio the screen check read, the market's suggestion, not "
+                           f"your order; it did not read your own amounts. {change}"}
+
+
+def _whole(value) -> int:
+    number = _positive(value)
+    if number != int(number):
+        raise ValueError("amounts must be whole numbers")
+    return int(number)
 
 
 def _clip(value, limit: int) -> str | None:
