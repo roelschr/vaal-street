@@ -276,6 +276,17 @@ html.icons :is(.sub,.small) .cur.d,html.icons body.hideout .cur.d{box-shadow:ins
 @media(max-width:600px){#tour{right:16px;bottom:16px}}
 .verdict{font:600 20px var(--sans);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 body.hideout #tc{top:6px;right:6px;left:6px;width:auto}
+/* The search string panel sits where the trade check does, and looks like it. */
+#ss{position:fixed;top:60px;right:20px;width:min(440px,calc(100vw - 20px));max-height:calc(100vh - 80px);overflow:auto;background:var(--grain),var(--side);border:1px solid var(--bronze);border-radius:2px;box-shadow:0 0 0 1px #000,0 18px 50px #000b;z-index:31}
+#ss[hidden]{display:none}
+#ss header{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(180deg,#241d14,#18140f);border-bottom:1px solid #3a2e1f}
+#ss header h2{font:700 13.5px var(--display);letter-spacing:.05em;color:var(--title)}
+#ss .grow{flex:1}
+#ss .body{display:grid;gap:10px;padding:10px 14px 14px}
+#ss p{margin:0}
+#ss .ssrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:6px 0;border-top:1px solid var(--line)}
+#ss .ssrow code{font:12.5px var(--mono);color:var(--accent-hi);word-break:break-all}
+#ss .ssrow>div{flex-basis:100%}
 
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50}
 .toast{background:var(--grain),var(--panel2);border:1px solid var(--line2);border-left:3px solid var(--accent);border-radius:2px;box-shadow:0 0 0 1px #000,0 10px 26px #000a;padding:9px 13px;max-width:340px}
