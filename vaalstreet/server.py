@@ -888,6 +888,21 @@ class App:
         return {"league": league, "source": source, "auto": auto, "paused": False,
                 "rows": wealth.chart_rows(self.ledger, league, source)}
 
+    def api_snapshot_diff(self, q: dict) -> dict:
+        """What changed between snapshots `a` and `b`, item by item, from what they stored (`wealth.compare`)."""
+        if self.rehearsal is not None:
+            raise ApiError("Snapshots pause during a practice run. Stop the practice to compare them.", 409)
+        try:
+            out = wealth.compare(self.ledger.snapshot(int(q["a"])), self.ledger.snapshot(int(q["b"])),
+                                 q.get("source") or "stash")
+        except (KeyError, ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+        name = self.desk(out["league"])._name  # for the names only; nothing is valued again
+        for key in ("gained", "lost", "no_price"):
+            for row in out[key]:
+                row["name"] = name(row["id"])
+        return out
+
     def api_snapshot_post(self, league: str, body: dict) -> dict:
         """Take a snapshot now (`note` optional), or delete one (`delete`: its id)."""
         if self.rehearsal is not None:
@@ -1266,7 +1281,7 @@ GET_ROUTES = {
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
-    "/api/snapshots": "api_snapshots",
+    "/api/snapshots": "api_snapshots", "/api/snapshot_diff": "api_snapshot_diff",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
     "/api/rehearsal": "api_rehearsal",
 }

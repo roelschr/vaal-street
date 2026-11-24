@@ -1190,7 +1190,53 @@ async function wealthPanel() {
     try { await api('/api/snapshot', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
   };
   out.append(list);
+  if (shown.length >= 2) out.append(snapshotChanges(shown, source, signed, inUnit));
   return p;
+}
+
+// What changed between two snapshots, item by item. Amounts are at the later snapshot's prices, and in
+// Divines at its Divine price. `signed` and `inUnit` come from the Wealth panel, so both read alike.
+function snapshotChanges(shown, source, signed, inUnit) {
+  const box = document.createElement('div'); box.style.marginTop = '16px';
+  const label = r => `${new Date(r.t * 1000).toLocaleString()}${r.kind === 'manual' ? ' · by you' : ''}${r.note ? ' · ' + r.note : ''}`;
+  const options = chosen => [...shown].reverse().map(r => `<option value="${r.id}" ${r.id === chosen ? 'selected' : ''}>${esc(label(r))}</option>`).join('');
+  box.innerHTML = `<h2 style="margin:0 0 8px">What changed</h2>
+    <div class="bar" style="margin:0 0 10px"><label class="f">From<select name="a">${options(shown[0].id)}</select></label>
+      <label class="f">To<select name="b">${options(shown[shown.length - 1].id)}</select></label></div><div></div>`;
+  const out = box.lastElementChild, [a, b] = box.querySelectorAll('select');
+  const draw = async () => {
+    if (a.value === b.value) { out.innerHTML = '<p class="note" style="margin:0">Pick two different snapshots.</p>'; return; }
+    let r;
+    try { r = await api(`/api/snapshot_diff?${new URLSearchParams({ a: a.value, b: b.value, source })}`); }
+    catch (err) { out.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+    const later = r.now.bridge, at = v => signed(inUnit(v, later));
+    const units = v => (v > 0 ? '+' : '') + itemCount(v);
+    const cols = [
+      { h: 'Item', l: 1, f: x => itemCell(x), s: x => x.name },
+      { h: 'Then', f: x => itemCount(x.units_then), s: x => x.units_then }, { h: 'Now', f: x => itemCount(x.units_now), s: x => x.units_now },
+      { h: 'Change', f: x => units(x.change), s: x => x.change },
+      { h: 'Worth', f: x => at(x.worth), s: x => Math.abs(x.worth), title: 'The change in units at the later snapshot’s price' },
+    ];
+    const side = (title, rows, total, empty) => {
+      const el = document.createElement('div');
+      el.innerHTML = `<h3 style="margin:0 0 6px;font-size:13px">${title} <span class="muted" style="font-weight:400">${rows.length ? at(total) : ''}</span></h3>`;
+      el.append(table(cols, rows, { sort: 4, onRow: x => openItem(x.id), empty, limit: 50 }));
+      return el;
+    };
+    const missing = { then: 'at the earlier snapshot', now: 'at the later snapshot', 'then and now': 'at either snapshot' };
+    out.innerHTML = `<div class="kpis" style="margin-bottom:10px">
+        <div class="kpi" title="From the earlier snapshot to the later one, over the items priced at both"><span>Change in worth</span><b>${at(r.change)}</b>${r.per_hour != null ? `<div class="muted small">${at(r.per_hour)} an hour</div>` : ''}</div>
+        <div class="kpi" title="The change in units, at the later snapshot’s prices: what you gained, looted, bought, sold or used"><span>You hold more or less</span><b>${at(r.held_more)}</b></div>
+        <div class="kpi" title="The units you held at the earlier snapshot, times how far each price moved by the later one"><span>Prices moved</span><b>${at(r.prices_moved)}</b></div>
+        <div class="kpi" title="Time between the two snapshots"><span>Time between</span><b>${dur(r.hours)}</b></div>
+      </div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:14px"></div>
+      ${r.no_price.length ? `<p class="note" style="margin:10px 0 0">No price then, so not counted: ${r.no_price.map(x => `${esc(x.name)} (${itemCount(x.units_then)} → ${itemCount(x.units_now)}, no price ${missing[x.missing]})`).join('; ')}.</p>` : ''}
+      ${source === 'stash' ? '<p class="muted small" style="margin:8px 0 0">Count your stash before a farming session and after it, with a snapshot each time: the loot shows here under Gained, which the ledger cannot see.</p>' : ''}`;
+    out.children[1].append(side('Gained', r.gained, r.gained_total, 'Nothing gained.'), side('Lost', r.lost, r.lost_total, 'Nothing lost.'));
+  };
+  a.onchange = b.onchange = draw;
+  draw();
+  return box;
 }
 
 // A pasted list of holdings. It is read first and shown line by line with what it would replace;

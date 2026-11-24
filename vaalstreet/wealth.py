@@ -14,6 +14,10 @@ but no longer hold (`known`). Without that, an item you sold between two snapsho
 price at the later one, and the comparison of two snapshots could not say what the change is worth.
 
 The worth of each picture is `check.stash_value`'s total, so it agrees with the Stash panel.
+
+Two snapshots compare item by item (`compare`), from what they stored and nothing else. The change in
+worth splits into what you hold more or less, at the later prices, and how the prices of what you held
+moved. For the stash list that also measures a farming session, which the ledger cannot see.
 """
 
 from __future__ import annotations
@@ -67,6 +71,79 @@ def take(ledger: Ledger, desk: Desk, kind: str = "auto", note: str = "") -> int 
         stash_unpriced=pictures["stash"][2], positions_unpriced=pictures["positions"][2],
         realized=_num(sum(p["realized"] for p in positions.values())),
         loot=_num(sum(p["loot"] for p in positions.values())), note=note)
+
+
+def _prices(snapshot: dict) -> dict[str, float | None]:
+    """Every price a snapshot stored, from both pictures and from the items it no longer held."""
+    out = dict(snapshot.get("known") or {})
+    for key in ("positions", "stash"):
+        out.update({item: price for item, (_, price) in snapshot[key].items()})
+    return out
+
+
+def compare(a: dict, b: dict, source: str = "stash") -> dict:
+    """What changed between two snapshots of one league, item by item, from their stored values only.
+
+    The earlier of the two is "then", the later "now". For each item: units then and now, the change, and
+    what the change is worth at the later snapshot's price. The change in worth splits in two parts that
+    add up to it exactly:
+
+      you hold more or less  = (units now - units then) x price now
+      prices moved           = units then x (price now - price then)
+
+    An item with no price at one of the hours it needs one is listed apart, in `no_price`, and left out
+    of every total: counting it as zero would read as a loss or a gain that never happened. So the totals
+    differ from the stored worths by what is set apart there.
+    """
+    if source not in SOURCES:
+        raise ValueError("source must be stash or ledger.")
+    if a["id"] == b["id"]:
+        raise ValueError("Pick two different snapshots.")
+    if a["league"] != b["league"]:
+        raise ValueError("The two snapshots are of different leagues.")
+    then, now = sorted((a, b), key=lambda s: (s["t"], s["id"]))
+    key = "stash" if source == "stash" else "positions"
+    price_then, price_now = _prices(then), _prices(now)
+    gained, lost, unpriced = [], [], []
+    worth_then = worth_now = held_more = prices_moved = 0.0
+    for item in sorted(set(then[key]) | set(now[key])):
+        units_then = float(then[key].get(item, [0.0])[0])
+        units_now = float(now[key].get(item, [0.0])[0])
+        p_then, p_now = price_then.get(item), price_now.get(item)
+        change = units_now - units_then
+        row = {"id": item, "units_then": units_then, "units_now": units_now, "change": change}
+        missing = [word for word, gone in (("then", units_then > _EPS and p_then is None), ("now", p_now is None)) if gone]
+        if missing:
+            unpriced.append(row | {"missing": " and ".join(missing)})
+            continue
+        part_held = change * p_now
+        part_moved = units_then * (p_now - p_then) if units_then > _EPS else 0.0
+        worth_then += units_then * p_then if units_then > _EPS else 0.0
+        worth_now += units_now * p_now
+        held_more += part_held
+        prices_moved += part_moved
+        if abs(change) > _EPS:
+            (gained if change > 0 else lost).append(
+                row | {"price_then": p_then if units_then > _EPS else None, "price_now": p_now, "worth": part_held})
+    gained.sort(key=lambda r: -r["worth"])
+    lost.sort(key=lambda r: r["worth"])
+    hours = (now["t"] - then["t"]) / 3600
+    change = worth_now - worth_then
+
+    def side(s: dict) -> dict:
+        return {k: s.get(k) for k in ("id", "t", "hour", "kind", "note", "bridge")} | {
+            "worth": s.get(f"{key}_value"), "unpriced": s.get(f"{key}_unpriced")}
+
+    return {
+        "league": then["league"], "source": source, "then": side(then), "now": side(now),
+        "hours": hours, "data_hours": (now["hour"] - then["hour"]) / 3600,
+        "worth_then": worth_then, "worth_now": worth_now, "change": change,
+        "held_more": held_more, "prices_moved": prices_moved,
+        "per_hour": change / hours if hours > 0 else None,
+        "gained": gained, "gained_total": sum(r["worth"] for r in gained),
+        "lost": lost, "lost_total": sum(r["worth"] for r in lost),
+        "no_price": unpriced,
+    }
 
 
 def chart_rows(ledger: Ledger, league: str, source: str = "stash") -> list[dict]:
