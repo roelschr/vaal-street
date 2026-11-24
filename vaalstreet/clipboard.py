@@ -18,7 +18,8 @@ GGG's rules for tools that read the clipboard shape the design, as they do for t
   If it does not change, the game copied nothing and the companion reads nothing.
 - Ctrl+C is pressed in every program. A press counts only while the game is the window in front,
   and anything on the clipboard that is not item text is dropped: never printed, never sent to the
-  desk. Only the item's name and the size of the stack leave this module.
+  desk. Only the item's name and the size of the stack leave this module, to the valuation and to
+  the desk's list of recent readings (`stack_report`), which the page shows so a misread is seen.
 
 With `--stash` each copied stack is also written to the stash list on the desk, so the list fills
 without typing. One item can sit in several stacks, and the copied text does not say which stack it
@@ -53,7 +54,7 @@ import re
 import time
 from typing import Callable
 
-from vaalstreet.screen import DeskUnreachable
+from vaalstreet.screen import DeskUnreachable, tell_desk
 
 # The game's copy key. Ctrl+Alt+C, the copy with advanced details, holds the same two keys and
 # copies the same header, so it counts too.
@@ -243,6 +244,15 @@ def keep(stack: Stack, league: str, desk, tally: Tally, say: Callable[[str], Non
 
 
 # ------------------------------------------------------------------ one press
+def stack_report(stack: Stack, league: str | None, error: str | None = None) -> dict:
+    """What the desk's list of readings is told about a copy: the name and the count, nothing else.
+
+    The copied text itself is never part of it: the clipboard can hold anything.
+    """
+    return {"kind": "stack", "league": league, "item": stack.item, "units": stack.units,
+            "said": stack.describe(), "error": error}
+
+
 def wait_changed(sequence: Callable[[], int], since: int, timeout: float = WAIT, tick: float = TICK,
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> bool:
     """True once the clipboard's change counter has moved on from `since`; False after `timeout`.
@@ -286,11 +296,14 @@ def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print,
         worth = desk.worth(stack.item, stack.units)
     except RuntimeError as err:
         say(f"  {err}")
+        if not isinstance(err, DeskUnreachable):
+            tell_desk(desk, stack_report(stack, getattr(desk, "league", None), str(err)))
         # An item the desk does not know is a copy in between, and ends the row. A desk that could
         # not be reached is not: copying the stack again should carry on where the count stood.
         if tally is not None and not isinstance(err, DeskUnreachable):
             tally.forget()
         return None
+    tell_desk(desk, stack_report(stack, worth["league"]))
     title, lines = describe_worth(stack, worth)
     for line in lines:
         say(f"    {line}")

@@ -14,6 +14,10 @@ GGG's rules for tools that read the screen shape the whole design (see docs/data
 - Nothing is sent to the game: no keys, clicks, chat or mouse moves. The verdict appears in the
   companion's console and as a desk event, which the hideout window shows and can read aloud.
 - No game memory or files are read, and the screenshot lives in memory only.
+- After each press the companion tells the local desk what the recognition returned: the text
+  lines (at most `MAX_LINES` of `MAX_CHARS`), what it understood or why not. The page shows the last
+  few, so a misread can be seen and taught (a correction: "when it reads this, it means that item").
+  The desk keeps them in memory only. The screenshot itself is never sent, stored or shown.
 
 The parser is the testable core. It is a pure function from recognised text lines to one offer,
 matched against the desk's item names. The layout it assumes is the exchange window's labels:
@@ -58,6 +62,10 @@ SETTINGS_FILE = "screen.json"
 # best one: "Orb of Alteration" and "Orb of Augmentation" must never be confused.
 NAME_CUTOFF = 0.85
 NAME_MARGIN = 0.06
+# What one reading may send to the desk: plenty for one exchange window, and a bound on what is kept.
+MAX_LINES = 60
+MAX_CHARS = 120
+LABELS = ("iwant", "ihave")
 TRY_AGAIN = "press the key again, or type the offer with `vaalstreet check`."
 INSTALL = ('The screen check needs its optional libraries. On Windows, in the Python you run it with:\n'
            '    pip install "vaalstreet[screen]"\n'
@@ -65,7 +73,15 @@ INSTALL = ('The screen check needs its optional libraries. On Windows, in the Py
 
 
 class ScreenError(ValueError):
-    """The recognised text could not be read with confidence; the message says what to do."""
+    """The recognised text could not be read with confidence; the message says what to do.
+
+    `text` is the item text that matched no name, when that was the trouble: the page offers it as
+    the text of a correction.
+    """
+
+    def __init__(self, message: str, text: str | None = None):
+        super().__init__(message)
+        self.text = text
 
 
 class DeskUnreachable(RuntimeError):
@@ -94,14 +110,34 @@ def _key(text: str) -> str:
     return re.sub(r"[^0-9a-z]", "", text.casefold())
 
 
-def match_name(text: str, names: Iterable[str]) -> str | None:
-    """The one item name `text` is, or None when no name is close enough or two are about as close."""
+def correction_key(text: str) -> str:
+    """The key a correction is saved under: the text as `match_name` sees it, without a leading label.
+
+    "I Want: Exaltd Orb" on one line reaches `match_name` as "Exaltd Orb", so both are keyed "exaltdorb".
+    """
+    key = _key(text)
+    for label in LABELS:
+        if key.startswith(label) and len(key) > len(label):
+            return key[len(label):]
+    return key
+
+
+def match_name(text: str, names: Iterable[str], corrections: dict[str, str] | None = None) -> str | None:
+    """The one item name `text` is, or None when no name is close enough or two are about as close.
+
+    `corrections` (normalised text -> item name) are the player's own: "when it reads this, it means
+    that item". Only an exact match of the text counts, and only for an item among `names`; a text
+    merely like a corrected one still goes through the similarity rule below.
+    """
     key = _key(text)
     if len(key) < 3:
         return None
     keys = {}
     for name in names:
         keys.setdefault(_key(name), name)
+    meant = (corrections or {}).get(key)
+    if meant is not None and _key(meant) in keys:
+        return keys[_key(meant)]
     if key in keys:
         return keys[key]
     scored = sorted(((difflib.SequenceMatcher(None, key, k).ratio(), k) for k in keys), reverse=True)
@@ -139,24 +175,28 @@ def _label(lines: list[str], label: str) -> int | None:
     return None
 
 
-def _item_after(lines: list[str], at: int, label: str, names: list[str], what: str) -> str:
+def _item_after(lines: list[str], at: int, label: str, names: list[str], what: str,
+                corrections: dict[str, str] | None = None) -> str:
     """The item named on the label's own line, or failing that on the next line."""
     rest = lines[at]
     stripped = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", rest, flags=re.I)
     for text in (stripped, lines[at + 1] if at + 1 < len(lines) else ""):
         if _key(text):
-            name = match_name(text, names)
+            name = match_name(text, names, corrections)
             if name:
                 return name
-            raise ScreenError(f"Couldn't tell which item \"{text.strip()}\" is (the {what} side); {TRY_AGAIN}")
+            raise ScreenError(f"Couldn't tell which item \"{text.strip()}\" is (the {what} side); {TRY_AGAIN}",
+                              text=text.strip())
     raise ScreenError(f"Couldn't read the item on the {what} side; {TRY_AGAIN}")
 
 
-def parse_screen(text: str | Iterable[str], names: Iterable[str]) -> Reading:
+def parse_screen(text: str | Iterable[str], names: Iterable[str],
+                 corrections: dict[str, str] | None = None) -> Reading:
     """One offer from the recognised text of the exchange window.
 
-    `names` are the desk's item names for the league. Raises ScreenError with a plain message
-    whenever a part cannot be read with confidence.
+    `names` are the desk's item names for the league, `corrections` the player's own (see
+    `match_name`). Raises ScreenError with a plain message whenever a part cannot be read with
+    confidence.
     """
     lines = [ln for ln in (text.splitlines() if isinstance(text, str) else list(text)) if ln.strip()]
     names = list(dict.fromkeys([CHAOS, DIVINE, *names]))
@@ -164,8 +204,8 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str]) -> Reading:
     if want_at is None or have_at is None:
         raise ScreenError("Couldn't find the \"I Want\" and \"I Have\" labels. Check the captured area covers the "
                           f"exchange window (vaalstreet screen --calibrate), then {TRY_AGAIN}")
-    want = _item_after(lines, want_at, "iwant", names, "\"I Want\"")
-    have = _item_after(lines, have_at, "ihave", names, "\"I Have\"")
+    want = _item_after(lines, want_at, "iwant", names, "\"I Want\"", corrections)
+    have = _item_after(lines, have_at, "ihave", names, "\"I Have\"", corrections)
     if want == have:
         raise ScreenError(f"Read {want} on both sides; {TRY_AGAIN}")
 
@@ -241,6 +281,7 @@ class DeskClient:
         self.base_url = base_url.rstrip("/")
         self.league = league
         self.timeout = timeout
+        self.corrections: dict[str, str] = {}  # the player's own, refreshed with every `names()`
 
     def _call(self, path: str, body: dict | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()
@@ -262,6 +303,7 @@ class DeskClient:
     def names(self) -> tuple[str, list[str]]:
         query = "?" + urllib.parse.urlencode({"league": self.league}) if self.league else ""
         out = self._call("/api/names" + query)
+        self.corrections = dict(out.get("corrections") or {})  # an older desk sends none
         return out["league"], out["names"]
 
     def check(self, reading: Reading, league: str) -> dict:
@@ -280,6 +322,34 @@ class DeskClient:
     def event(self, title: str, body: str, league: str) -> dict:
         return self._call("/api/event", {"title": title, "body": body, "league": league})
 
+    def reading(self, report: dict) -> dict:
+        """Tell the desk what one press read (`reading_report`); it keeps the last few in memory."""
+        return self._call("/api/reading", report)
+
+
+def reading_report(lines: Iterable[str], reading: Reading | None, error: str | None, league: str,
+                   unmatched: str | None = None) -> dict:
+    """What the desk is told about one press: the recognised lines, cut to `MAX_LINES` of `MAX_CHARS`,
+    in the order the recognition returned them, and what was understood or why not. Never the screenshot."""
+    kept = [str(line)[:MAX_CHARS] for line in list(lines)[:MAX_LINES]]
+    return {"kind": "screen", "league": league, "lines": kept,
+            "reading": dataclasses.asdict(reading) if reading else None,
+            "said": reading.describe() if reading else None, "error": error,
+            "unmatched": unmatched[:MAX_CHARS] if unmatched else None}
+
+
+def tell_desk(desk, report: dict) -> bool:
+    """Send a reading to the desk; True if it took it. A desk that cannot take it (one older than the
+    companion, or a test stand-in) is not told, and the press goes on as before."""
+    send = getattr(desk, "reading", None)
+    if send is None:
+        return False
+    try:
+        send(report)
+    except RuntimeError:
+        return False
+    return True
+
 
 # ------------------------------------------------------------------ one press
 def handle_press(capture: Callable[[], object], recognise: Callable[[object], list[str]],
@@ -287,16 +357,20 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
     """Everything one key press does: one capture, one recognition pass, one check, one event.
 
     The screenshot is a local variable and is dropped when this returns; nothing is written to disk.
+    The desk is told the recognised lines and what they were understood as, success or not, so the
+    player can see a misread on the page; the screenshot itself is never sent.
     """
     image = capture()
     lines = recognise(image)
     del image
     league, names = desk.names()
     try:
-        reading = parse_screen(lines, names)
+        reading = parse_screen(lines, names, getattr(desk, "corrections", None))
     except ScreenError as err:
         say(f"  {err}")
+        tell_desk(desk, reading_report(lines, None, str(err), league, err.text))
         return None
+    tell_desk(desk, reading_report(lines, reading, None, league))
     say(f"  Read: {reading.describe()}")
     try:
         result = desk.check(reading, league)

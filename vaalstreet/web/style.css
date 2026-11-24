@@ -326,6 +326,16 @@ body.hideout #practice{position:sticky}
 .plan-orders>div{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
 .plan-orders .post{margin-top:0}
 .posted{width:min(560px,94vw)}
+/* What the screen check read: the recognised lines in a fixed-width face, so a misread digit shows. */
+.readings .rd{padding:8px 0;border-bottom:1px solid var(--line)}
+.readings .rd:first-child{padding-top:0}
+.readings .rd>*+*{margin-top:4px}
+.readings .ocr{font:11.5px/1.45 var(--mono);background:#0d0b08;border:1px solid var(--line);border-radius:2px;padding:6px 8px;margin:6px 0;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.readings .ocr span{cursor:pointer}
+.readings .ocr span:hover{color:var(--gold)}
+.readings .teach{margin:6px 0 0}
+.readings .rdc{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.readings code{font-family:var(--mono)}
 
 /* Motion. Short and one-off: a page fades in when you open it, panels slide in when they open,
    gold answers the pointer, and a price flashes when a new hour moves it. Nothing loops while the
