@@ -50,13 +50,14 @@ class PracticeLedger:
 
     Trades, items you made, orders, fills, sessions, alerts and their events, and the stash are practice: they go to
     `rehearsal.sqlite`. Your settings, the Gold fees your real trades taught the desk, your own recipes and
-    vendor prices, recipe checks and the watchlist are facts about the game and about you, not practice: they
-    are read from the real ledger, and a change to them made during a rehearsal is written there too.
+    vendor prices, recipe checks, the watchlist and your baskets are facts about the game and about you, not
+    practice: they are read from the real ledger, and a change to them made during a rehearsal is written there too.
     """
 
     FACTS = frozenset({
         "get", "set", "settings", "costs", "gold_fees", "fixed_conversions", "add_fixed", "delete_fixed",
         "recipe_checks", "check_recipe", "delete_recipe_check", "watchlist", "watch",
+        "baskets", "add_basket", "delete_basket",
     })
 
     def __init__(self, practice: Ledger, real: Ledger) -> None:

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, calibrate, check, db, export, items, ninja, search, wealth
+from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, search, wealth
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -519,6 +519,77 @@ class App:
             _flag(row, checks)
             out.append(row)
         return out
+
+    def api_baskets(self, q: dict) -> dict:
+        """Your baskets, each priced in the league being viewed: cost now, its changes and its series."""
+        desk = self.desk(q.get("league"))
+        out = []
+        for b in self.ledger.baskets():
+            out.append(basket.cost(desk, b["items"]) | {"id": b["id"], "name": b["name"], "note": b["note"],
+                                                        "saved": b["t"]})
+        return {"league": desk.league, "bridge": _num(desk.bridge), "baskets": out}
+
+    def _read_basket(self, desk, text: str) -> tuple[dict[str, dict], list[dict]]:
+        """A pasted list read as basket lines: item id -> {"units", "lines"}, and the lines not read.
+
+        Names are matched as for a pasted stash (`check.read_holdings`). A basket is kept for every
+        league, so a line whose item does not trade here is still kept when the item export knows the
+        name exactly: it may trade in another league, and the basket names it as having no price here.
+        """
+        lines, unread = check.read_holdings(desk, text)
+        still = []
+        for row in unread:
+            parsed, _ = check.parse_holdings(row["text"])
+            try:
+                item = self._item_ref(parsed[0]["name"]) if len(parsed) == 1 else None
+            except ApiError:
+                item = None
+            if item is None:
+                still.append(row)
+                continue
+            entry = lines.setdefault(item, {"units": 0.0, "lines": []})
+            entry["units"] += parsed[0]["units"]
+            entry["lines"].append(row["line"])
+        return lines, still
+
+    def api_basket(self, body: dict) -> dict:
+        """Read a basket from a name and a pasted list, and save it unless "preview" is set; or delete one.
+
+        A preview answers with what every line was read as, priced in the league, and the lines that could
+        not be read, so the page shows them before anything is saved. Saving reads the list again and keeps
+        only the lines read; it is refused when no line could be read.
+        """
+        if body.get("delete") is not None:
+            try:
+                self.ledger.delete_basket(int(body["delete"]))
+            except (ValueError, TypeError) as err:
+                raise ApiError(f"Bad request: {err}") from err
+            return {"ok": True}
+        desk = self.desk(body.get("league"))
+        name, text = str(body.get("name") or "").strip(), body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ApiError("Bad request: paste a list first, one item per line.")
+        if len(text) > PASTE_LIMIT:
+            raise ApiError("Bad request: that list is too long to read in one go.")
+        lines, unread = self._read_basket(desk, text)
+        items = [(item, entry["units"]) for item, entry in sorted(lines.items(), key=lambda kv: kv[1]["lines"][0])]
+        priced = basket.cost(desk, items) if items else {"items": [], "cost": None, "cheaper": None, "unpriced": []}
+        for row, (item, _) in zip(priced["items"], items):
+            row["lines"] = lines[item]["lines"]
+        answer = {"league": desk.league, "name": name, "lines": priced["items"], "unread": unread,
+                  "cost": priced["cost"], "cheaper": priced["cheaper"], "unpriced": priced["unpriced"],
+                  "saved": None}
+        if body.get("preview"):
+            return answer
+        if not name:
+            raise ApiError("Bad request: give the basket a name.")
+        if not items:
+            raise ApiError("Bad request: no line of that list could be read.")
+        try:
+            answer["saved"] = self.ledger.add_basket(name, items, str(body.get("note") or ""))
+        except (ValueError, TypeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+        return answer
 
     def api_ladder(self, q: dict) -> dict:
         from vaalstreet import ladder
@@ -1278,7 +1349,7 @@ def _flag(row: dict, checks: dict) -> None:
 
 GET_ROUTES = {
     "/api/status": "api_status", "/api/desk": "api_desk", "/api/item": "api_item", "/api/flips": "api_flips",
-    "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
+    "/api/arbitrage": "api_arbitrage", "/api/baskets": "api_baskets", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
     "/api/snapshots": "api_snapshots", "/api/snapshot_diff": "api_snapshot_diff",
@@ -1398,6 +1469,8 @@ def make_handler(app: App):
                 self._json(app.api_check(body))
             elif url.path == "/api/stash/paste":
                 self._json(app.api_stash_paste(body))
+            elif url.path == "/api/basket":
+                self._json(app.api_basket(body))
             elif url.path == "/api/event":
                 self._json(app.api_event(body))
             elif url.path == "/api/stash":
