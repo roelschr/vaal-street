@@ -31,6 +31,10 @@ the ledger only learns fees from what you recorded (`gold_fees`) and says nothin
 The stash is what you say you hold, typed in by hand: it is separate from the positions the
 trades build, so you can value loot you never recorded buying.
 
+A snapshot is a picture of both at one hour, valued then and never again (`wealth.py` takes them).
+The desk takes one itself after each new hour, at most one per league and hour (`snapshots_auto`),
+and thins its own to one a day after `SNAPSHOT_KEEP_HOURLY`; the ones you take are never removed.
+
 Recipe checks are game facts, not market state, so they are kept once for all leagues. So are
 the conversions you enter yourself (`fixed_conversions`): a recipe (N of A, and maybe more inputs,
 make M of B) or a vendor price (a vendor sells B for N of A). No public source we may use carries
@@ -54,7 +58,8 @@ from vaalstreet.paths import ledger_file
 # publish the schedule. Minutes per order is a rough guess at your clicking speed.
 # `ninja_prices`: 1 lets the desk fetch prices from poe.ninja for card rewards the exchange does
 # not trade (uniques, gems, base types); 0 turns that off. On unless you turn it off.
-SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
+# `auto_snapshots`: 1 lets the desk take a picture of what you hold after every new hour (see `wealth.py`).
+SETTINGS = {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0, "auto_snapshots": 1.0}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades(
@@ -97,6 +102,14 @@ CREATE TABLE IF NOT EXISTS made(
     output TEXT NOT NULL, gives REAL NOT NULL CHECK(gives > 0), note TEXT NOT NULL DEFAULT '',
     after_trade INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS made_league ON made(league, t, id);
+CREATE TABLE IF NOT EXISTS snapshots(
+    id INTEGER PRIMARY KEY, league TEXT NOT NULL, t INTEGER NOT NULL, hour INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('auto','manual')), note TEXT NOT NULL DEFAULT '', bridge REAL,
+    stash TEXT NOT NULL, positions TEXT NOT NULL, known TEXT NOT NULL DEFAULT '{}',
+    stash_value REAL, positions_value REAL, stash_unpriced INTEGER NOT NULL DEFAULT 0,
+    positions_unpriced INTEGER NOT NULL DEFAULT 0, realized REAL, loot REAL);
+CREATE INDEX IF NOT EXISTS snapshots_league ON snapshots(league, t, id);
+CREATE UNIQUE INDEX IF NOT EXISTS snapshots_auto ON snapshots(league, hour) WHERE kind = 'auto';
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
@@ -115,6 +128,8 @@ WRONG_SIDE_TOLERANCE = 0.01
 # Gold is not refunded on cancel (confirmed in game), so a re-price pays the full fee again. When that
 # fee is known, an order is re-priced only when it is this far from the plan; nearer, it is kept.
 REPRICE_WITH_GOLD = 0.08
+# The desk's own hourly snapshots are kept this long (seconds); older ones are thinned to one a day.
+SNAPSHOT_KEEP_HOURLY = 30 * 24 * 3600
 
 
 def recipe_key(kind: str, item_ids: list[str]) -> str:
@@ -704,6 +719,77 @@ class Ledger:
                 else:
                     self._db.execute("INSERT INTO stash VALUES (?, ?, ?, ?) ON CONFLICT(league, item) DO UPDATE SET "
                                      "units = excluded.units, updated = excluded.updated", (league, item, units, now))
+
+    # ------------------------------------------------------------ snapshots
+    def held_leagues(self) -> list[str]:
+        """Leagues with a stash line, a trade or an item you made: the ones a snapshot could picture."""
+        rows = self._all("SELECT league FROM stash UNION SELECT league FROM trades UNION SELECT league FROM made")
+        return sorted(r["league"] for r in rows)
+
+    def add_snapshot(self, league: str, hour: int, kind: str, *, stash: dict, positions: dict, known: dict,
+                     bridge: float | None, stash_value: float | None, positions_value: float | None,
+                     stash_unpriced: int = 0, positions_unpriced: int = 0, realized: float | None = None,
+                     loot: float | None = None, note: str = "", t: int | None = None) -> int | None:
+        """Store a snapshot valued at data hour `hour`; returns its id, or None for a second auto one that hour.
+
+        `stash` and `positions` are {item: [units, price]}, `known` is {item: price} for items held
+        earlier but not now. An auto snapshot also thins the desk's older ones (`_thin_snapshots`).
+        """
+        if kind not in ("auto", "manual"):
+            raise ValueError("A snapshot is auto or manual.")
+        clock = int(self.clock())  # read before taking the lock: a rehearsal's clock takes a lock of its own
+        now = int(t or clock)
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO snapshots(league, t, hour, kind, note, bridge, stash, positions, known, stash_value,"
+                " positions_value, stash_unpriced, positions_unpriced, realized, loot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (league, now, int(hour), kind, str(note)[:200], bridge, json.dumps(stash), json.dumps(positions),
+                 json.dumps(known), stash_value, positions_value, int(stash_unpriced), int(positions_unpriced),
+                 realized, loot))
+            if not cur.rowcount:
+                return None
+            if kind == "auto":
+                self._thin_snapshots(clock)
+            return cur.lastrowid
+
+    def _thin_snapshots(self, now: int) -> None:
+        """Keep the desk's own snapshots hourly for `SNAPSHOT_KEEP_HOURLY`, then only each day's last one.
+
+        A day is a UTC day of the data hour. The ones you took by hand are never touched. The caller
+        holds the lock.
+        """
+        self._db.execute(
+            "DELETE FROM snapshots WHERE kind = 'auto' AND hour < ? AND hour < (SELECT max(s.hour) FROM snapshots s"
+            " WHERE s.kind = 'auto' AND s.league = snapshots.league AND s.hour / 86400 = snapshots.hour / 86400)",
+            (now - SNAPSHOT_KEEP_HOURLY,))
+
+    def snapshots(self, league: str) -> list[dict]:
+        """The league's snapshots, oldest first, without the per-item lists (for a chart)."""
+        return self._all(
+            "SELECT id, league, t, hour, kind, note, bridge, stash_value, positions_value, stash_unpriced,"
+            " positions_unpriced, realized, loot FROM snapshots WHERE league = ? ORDER BY t, id", (league,))
+
+    def snapshot(self, snapshot_id: int) -> dict:
+        """One snapshot with its per-item lists read back."""
+        rows = self._all("SELECT * FROM snapshots WHERE id = ?", (int(snapshot_id),))
+        if not rows:
+            raise LookupError(f"No snapshot {snapshot_id}.")
+        row = rows[0]
+        for key in ("stash", "positions", "known"):
+            row[key] = json.loads(row[key])
+        return row
+
+    def last_snapshot(self, league: str) -> dict | None:
+        """The league's newest snapshot by when it was stored, with its lists, or None."""
+        rows = self._all("SELECT id FROM snapshots WHERE league = ? ORDER BY id DESC LIMIT 1", (league,))
+        return self.snapshot(rows[0]["id"]) if rows else None
+
+    def has_auto_snapshot(self, league: str, hour: int) -> bool:
+        return bool(self._all("SELECT 1 FROM snapshots WHERE league = ? AND hour = ? AND kind = 'auto'",
+                              (league, int(hour))))
+
+    def delete_snapshot(self, snapshot_id: int) -> None:
+        self._run("DELETE FROM snapshots WHERE id = ?", (int(snapshot_id),))
 
     # ---------------------------------------------------- your conversions
     def add_fixed(self, kind: str, inputs: list, output: str, gives: float = 1, note: str = "",

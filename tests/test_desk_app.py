@@ -263,7 +263,8 @@ def test_api_flips_filters_by_market_before_it_cuts_the_list(server):
 def test_api_gold_fields_settings_and_session_plan(flat_server):
     server = flat_server  # a flat Divine, so some flip beats holding Divines and makes the session plan
     flips = call(f"{server}/api/flips?min_margin=0.01")[1]
-    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0}
+    assert flips["settings"] == {"assumed_gold_fee": None, "minutes_per_order": 1.0, "ninja_prices": 1.0,
+                                 "auto_snapshots": 1.0}
     assert all(p["gold"] is None and p["minutes"] == 2 for p in flips["flips"]), "no fee until you give one"
     assert "session" not in flips, "no bankroll, no session plan"
 
