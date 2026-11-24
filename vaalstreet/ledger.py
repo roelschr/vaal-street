@@ -104,7 +104,9 @@ _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
             "made": {"sale": "INTEGER"},
             # An alert's kind and its rule; `state` remembers which conditions are live and when each last fired.
             "alerts": {"kind": "TEXT NOT NULL DEFAULT 'price'", "params": "TEXT NOT NULL DEFAULT '{}'",
-                       "state": "TEXT NOT NULL DEFAULT '{}'"}}
+                       "state": "TEXT NOT NULL DEFAULT '{}'"},
+            # The order this one replaced when you cancelled it and posted again at another ratio.
+            "orders": {"reposted_from": "INTEGER"}}
 ORDER_STATUSES = ("open", "part-filled", "filled", "cancelled", "closed")
 # Whole-number ratios never sit exactly on a level, so an order counts as "at the plan" within this.
 REPRICE_TOLERANCE = 0.04
@@ -410,15 +412,35 @@ class Ledger:
         """An order as posted: `item_units` items for `currency_units` Chaos or Divine, `units` items in all."""
         if side not in ("buy", "sell") or market not in ("chaos", "divine"):
             raise ValueError("An order needs side buy/sell and market chaos/divine.")
-        if int(currency_units) != float(currency_units) or int(item_units) != float(item_units):
-            raise ValueError("The exchange only takes whole-number ratios.")
-        if not int(currency_units) > 0 or not int(item_units) > 0 or not float(units) > 0:
-            raise ValueError("An order needs a positive ratio and positive units.")
+        ratio = _ratio(currency_units, item_units, units)
         now = int(t or self.clock())
         return self._run(
             "INSERT INTO orders(league, item, side, market, currency_units, item_units, units, gold, created, updated)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (league, item, side, market, int(currency_units), int(item_units), float(units), _gold(gold), now, now))
+            (league, item, side, market, *ratio, _gold(gold), now, now))
+
+    def repost_order(self, order_id: int, currency_units: int, item_units: int, units: float,
+                     gold: float | None = None, t: int | None = None) -> int:
+        """Record that you cancelled an order in game and posted it again; returns the new order's id.
+
+        The new order takes the old one's league, item, side and market, and points back at it
+        (`reposted_from`), so the desk can say how long the item has been listed and what all the
+        re-posts cost in Gold. Cancelling the old order and writing the new one happen together: if
+        the new order is refused, the old one stays exactly as it was.
+        """
+        ratio, gold = _ratio(currency_units, item_units, units), _gold(gold)
+        now = int(t or self.clock())
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM orders WHERE id = ?", (int(order_id),)).fetchone()
+            if row is None:
+                raise ValueError("No such order.")
+            if row["status"] not in ("open", "part-filled"):
+                raise ValueError(f"That order is {row['status']}: only an order still on the exchange can be re-posted.")
+            self._db.execute("UPDATE orders SET status = 'cancelled', updated = ? WHERE id = ?", (now, row["id"]))
+            return self._db.execute(
+                "INSERT INTO orders(league, item, side, market, currency_units, item_units, units, gold, created, updated,"
+                " reposted_from) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (row["league"], row["item"], row["side"], row["market"], *ratio, gold, now, now, row["id"])).lastrowid
 
     def orders(self, league: str, include_done: bool = False) -> list[dict]:
         done = "" if include_done else " AND status NOT IN ('cancelled','closed')"
@@ -1007,6 +1029,19 @@ def _gold(value) -> float | None:
     if not value >= 0:
         raise ValueError("Gold cannot be negative.")
     return value
+
+
+def _ratio(currency_units, item_units, units) -> tuple[int, int, float]:
+    """An order's ratio and size as the exchange takes them, or a ValueError that says what is wrong."""
+    try:
+        cu, iu, n = float(currency_units), float(item_units), float(units)
+    except (TypeError, ValueError):
+        raise ValueError("An order needs a ratio and a number of items.") from None
+    if not (math.isfinite(cu) and math.isfinite(iu)) or int(cu) != cu or int(iu) != iu:
+        raise ValueError("The exchange only takes whole-number ratios.")
+    if not cu > 0 or not iu > 0 or not (n > 0 and math.isfinite(n)):
+        raise ValueError("An order needs a positive ratio and positive units.")
+    return int(cu), int(iu), n
 
 
 def _next_trade_id(db: sqlite3.Connection) -> int:
