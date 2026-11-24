@@ -89,6 +89,32 @@ def test_the_chain_stops_at_a_loop_and_at_a_deleted_order(tmp_path):
     assert ledger.order_chain(999) == []
 
 
+def test_a_chain_in_a_rehearsal_is_read_from_the_practice_ledger(archive_root, tmp_path):
+    """A practice order re-posted 2 hours after it was posted, looked at 3 hours after that: 3 hours at its
+    ratio, 5 listed, one earlier ratio, 40 + 60 Gold. The real ledger holds an order with the same id and no
+    chain, and is left as it was."""
+    from vaalstreet.server import App
+
+    app = App(archive_root, sync=False)
+    app.ledger = real = Ledger(tmp_path)
+    real.add_order(NEW, ITEM, "buy", "chaos", 9, 1, 10, gold=50, t=T0)
+    app.start_rehearsal({"league": NEW, "start_day": 1})
+    try:
+        app.api_post("/api/order", {"league": NEW, "item": ITEM, "side": "buy", "market": "chaos",
+                                    "currency_units": 9, "item_units": 1, "units": 10, "gold": 40})
+        app.rehearsal.step(2)
+        app.api_post("/api/order", {"league": NEW, "currency_units": 19, "item_units": 2, "units": 10, "gold": 60,
+                                    "repost": 1})
+        app.rehearsal.step(3)
+        [row] = app.api_ledger({"league": NEW})["orders"]
+        assert row["age"] == 3 * HOUR and row["listed"] == 5 * HOUR
+        assert row["earlier"] == [{"item_units": 1, "currency_units": 9}] and row["chain_gold"] == 100
+    finally:
+        app.stop_rehearsal()
+    [still] = Ledger(tmp_path).orders(NEW, include_done=True)
+    assert still["status"] == "open" and still["gold"] == 50 and Ledger(tmp_path).order_chain(still["id"]) == []
+
+
 def test_ages_in_a_rehearsal_use_practice_time(archive_root, tmp_path):
     """Posted at the rehearsal's hour and stepped 6 hours on: 6 hours old, whatever the wall clock says."""
     from vaalstreet.server import App
