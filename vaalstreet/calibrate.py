@@ -45,7 +45,9 @@ The same count runs forward for orders still open. The desk cannot see your fill
 has likely taken the share of the flow the desk uses for its item and market, times the units that
 traded through its price since you posted it, in whole lots and never more than its size
 (`likely_filled`). The Ledger proposes that, less what you already recorded, and records nothing
-until you confirm it. It counts only hours published up to the desk's last one.
+until you confirm it. It counts only hours published up to the desk's last one. The share behind
+a proposal is measured from settled orders only (`from_ledger(settled=True)`): an open order with
+fills not yet recorded would otherwise count as one that took nothing, and shrink its own proposal.
 """
 
 from __future__ import annotations
@@ -199,10 +201,19 @@ def shares(rows: list[dict]) -> dict[str, dict[str, list]]:
     return out
 
 
-def from_ledger(ledger, league: str, panel: Panel, as_of: int, default: float = 0.1) -> list[dict]:
-    """`calibrate` on a ledger's orders and the fills their trades recorded."""
+def from_ledger(ledger, league: str, panel: Panel, as_of: int, default: float = 0.1,
+                settled: bool = False) -> list[dict]:
+    """`calibrate` on a ledger's orders and the fills their trades recorded.
+
+    `settled` keeps only orders whose record is final: filled, cancelled or collected. A proposed
+    fill uses that share. An order still open may have fills the player has not recorded yet, and
+    counting it as one that took little would lower the very guess that asks them to record it.
+    """
     fills: dict[int, list[tuple[int, float]]] = {}
     for tr in ledger.trades(league):
         if tr.get("order_id") is not None:
             fills.setdefault(tr["order_id"], []).append((int(tr["t"]), float(tr["units"])))
-    return calibrate(ledger.orders(league, include_done=True), fills, panel, as_of, default)
+    orders = ledger.orders(league, include_done=True)
+    if settled:
+        orders = [order for order in orders if order["status"] not in ("open", "part-filled")]
+    return calibrate(orders, fills, panel, as_of, default)

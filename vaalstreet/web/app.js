@@ -1313,7 +1313,7 @@ async function viewLedger(main) {
   // price since it was posted, in whole lots. Only a proposal: "Filled…" starts from it, and you confirm.
   const proposedLine = r => {
     if (!(r.proposed_fill > 0)) return '';
-    const source = r.fill_share_orders > 0 ? `a share learned from ${r.fill_share_orders === 1 ? 'one of your orders' : `${r.fill_share_orders} of your orders`} in this market` : 'a share assumed, since your orders have not measured one in this market yet';
+    const source = r.fill_share_orders > 0 ? `a share learned from ${r.fill_share_orders === 1 ? 'one order' : `${r.fill_share_orders} orders`} you have filled, cancelled or collected in this market` : 'a share assumed, since your orders have not measured one in this market yet';
     const why = `About ${itemCount(r.traded_through)} traded at or beyond your price since you posted this order. At ${plainPct(r.fill_share, 1)} of that (${source}), in whole lots of ${r.item_units}, about ${itemCount(r.likely_filled)} would have filled; you recorded ${itemCount(r.filled)}. The desk's prices are one to two hours behind the game, and it cannot see your fills: check the order in game before you record anything.`;
     return `<div class="muted small" title="${esc(why)}">about ${itemCount(r.proposed_fill)} more may have filled: check in game</div>`;
   };

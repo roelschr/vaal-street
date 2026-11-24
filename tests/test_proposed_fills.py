@@ -92,8 +92,9 @@ def test_the_proposal_does_not_look_past_the_desks_hour(con, archive_root, desk)
 
 def test_a_rehearsal_proposes_from_practice_hours_only(archive_root, tmp_path, desk):
     """A practice order posted 10 hours before the rehearsal's hour has seen 11 hours: 11,000 orbs.
-    Its own calibration (open three hours or more, nothing recorded) measures 0% from one order, so the
-    share used is (0 + 3 x 10%) / 4 = 7.5%: 825 orbs. The live desk's week of later hours is not used."""
+    It is still open, so it teaches no share (only settled orders do, or an order with fills not yet
+    recorded would shrink its own proposal): the share is the default 10%, and 1,100 orbs are proposed.
+    The live desk's week of later hours is not used."""
     from vaalstreet.server import App
 
     app = App(archive_root, sync=False)
@@ -106,18 +107,19 @@ def test_a_rehearsal_proposes_from_practice_hours_only(archive_root, tmp_path, d
     finally:
         app.stop_rehearsal()
     assert row["traded_through"] == pytest.approx(11_000)
-    assert row["fill_share"] == pytest.approx(0.075) and row["fill_share_orders"] == 1
-    assert row["likely_filled"] == 825 and row["proposed_fill"] == 825
-    later = calibrate.likely_filled(dict(row, created=hour - 10 * HOUR), desk.panel, 0.075, desk.as_of + HOUR)
-    assert later["likely"] > 825
+    assert row["fill_share"] == pytest.approx(0.1) and row["fill_share_orders"] == 0
+    assert row["likely_filled"] == 1100 and row["proposed_fill"] == 1100
+    later = calibrate.likely_filled(dict(row, created=hour - 10 * HOUR), desk.panel, 0.1, desk.as_of + HOUR)
+    assert later["likely"] > 1100
 
 
 def test_the_ledger_page_carries_the_proposal(archive_root, tmp_path, desk):
     """On the live desk: a buy at 1,000 Chaos each posted 10 hours before the end of the last hour has seen
     10,000 orbs, and 300 are recorded. A second buy, of 10, filled completely after 5 hours (5,000 orbs).
-    Both are this market's calibration: 310 filled of 15,000, 2.07% from two orders, so with the page's
-    share at 20% the share used is (2 x 2.07% + 3 x 20%) / 5 = 12.83%: 1,283 orbs, and 983 more than
-    recorded. The filled order proposes nothing."""
+    Only the settled one teaches the share: 10 filled of 5,000 is 0.2% from one order, so with the page's
+    share at 20% the share used is (1 x 0.2% + 3 x 20%) / 4 = 15.05%: 1,505 orbs, and 1,205 more than
+    recorded. The open order, with 300 recorded so far, is not counted: its record is not final. The
+    filled order proposes nothing."""
     from vaalstreet.server import App
 
     app = App(archive_root, sync=False)
@@ -130,7 +132,10 @@ def test_the_ledger_page_carries_the_proposal(archive_root, tmp_path, desk):
     rows = {o["id"]: o for o in app.api_ledger({"league": NEW, "share": "0.2"})["orders"]}
     row = rows[oid]
     assert row["traded_through"] == pytest.approx(10_000)
-    assert row["fill_share"] == pytest.approx(0.1283) and row["fill_share_orders"] == 2
-    assert row["likely_filled"] == 1283 and row["proposed_fill"] == 983
+    assert row["fill_share"] == pytest.approx(0.1505) and row["fill_share_orders"] == 1
+    assert row["likely_filled"] == 1505 and row["proposed_fill"] == 1205
+    # The Ledger's own table of measured shares still counts every order, as the flip plans do.
+    [measured] = app.api_ledger({"league": NEW, "share": "0.2"})["fill_calibration"]
+    assert measured["orders"] == 2
     assert rows[done]["proposed_fill"] is None
     assert app.ledger.order(oid)["filled"] == 300, "a proposal records nothing"

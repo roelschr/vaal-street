@@ -608,9 +608,12 @@ class App:
         except (TypeError, ValueError, LookupError) as err:
             raise ApiError(str(err)) from err
 
-    def fill_calibration(self, desk, default: float = 0.1) -> list[dict]:
-        """Share of the flow your orders caught, from orders and volume up to the desk's last hour."""
-        rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default)
+    def fill_calibration(self, desk, default: float = 0.1, settled: bool = False) -> list[dict]:
+        """Share of the flow your orders caught, from orders and volume up to the desk's last hour.
+
+        `settled` counts only orders that are filled, cancelled or collected (see `calibrate.from_ledger`).
+        """
+        rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default, settled)
         for row in rows:
             row["name"] = desk._name(row["item"])
         return rows
@@ -829,7 +832,8 @@ class App:
             sell_after.setdefault((plan["id"], buy_market), plan["sell_order"] | {"market": sell_market, "kind": plan["kind"]})
         orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
         now = self.ledger.clock()  # in a rehearsal, practice time
-        learned = calibrate.shares(self.fill_calibration(desk, share)) if orders else {}
+        # Settled orders only: an open order must not lower the share that proposes its own fills.
+        learned = calibrate.shares(self.fill_calibration(desk, share, settled=True)) if orders else {}
         for order in orders:
             order["name"] = desk._name(order["item"])
             order["then_sell"] = sell_after.get((order["item"], order["market"])) if order["side"] == "buy" else None
@@ -841,8 +845,8 @@ class App:
     def _proposed_fill(desk, order: dict, learned: dict, share: float) -> dict:
         """How much more of an open order has probably filled, for the page to propose (`calibrate.likely_filled`).
 
-        The share is the one the desk uses for the order's item and market: measured from your orders
-        where there are some (`fill_share_orders` > 0), otherwise `share`. Only hours published up to the
+        The share is measured from the orders you have settled in the order's item and market
+        (`fill_share_orders` > 0: filled, cancelled or collected ones), otherwise it is `share`. Only hours published up to the
         desk's last one count, so the estimate is one to two hours behind the game, like every price here.
         """
         if order["status"] not in ("open", "part-filled"):
