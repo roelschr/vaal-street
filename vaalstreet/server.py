@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, calibrate, check, db, export, items, ninja, search
+from vaalstreet import archive, backtest, calibrate, check, db, export, items, ninja, search, wealth
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -291,6 +291,33 @@ class App:
             self.ledger.evaluate_alerts(desk.league, rows, desk.as_of, self._alert_context(desk))
         except ApiError:
             pass
+        try:
+            self._auto_snapshots()
+        except Exception:  # a snapshot must never take the refresh down, nor mark the sync as failed
+            traceback.print_exc()
+
+    def _auto_snapshots(self) -> list[int]:
+        """One snapshot of each league you hold something in, at the hour just published; returns the new ids.
+
+        Paused for the whole of a rehearsal, in the sync thread too: practice has no wealth to chart, and
+        the pause keeps the real ledger exactly as it was. A league with an auto snapshot at its newest
+        hour already (one that ended, say) is skipped before its desk is built.
+        """
+        if self.rehearsal is not None or not self.settings().get("auto_snapshots"):
+            return []
+        ledger = self.ledger
+        last_hour = {l["league"]: l["last_hour"] for l in self.leagues()}
+        taken = []
+        for league in ledger.held_leagues():
+            if league not in last_hour or ledger.has_auto_snapshot(league, last_hour[league]):
+                continue
+            try:
+                new = wealth.take(ledger, self.desk(league), "auto")
+            except (ApiError, LookupError):
+                continue
+            if new is not None:
+                taken.append(new)
+        return taken
 
     def _warm(self) -> None:
         """Compute the slow answers now, after each rebuild in the sync thread, so a page load never waits.
@@ -845,6 +872,36 @@ class App:
                     for r in check.stash_value(desk, self.ledger.stash(desk.league))["rows"]]
         return export.filename(desk.league, what, practice=self._practice() is not None), export.text(what, rows)
 
+    def api_snapshots(self, q: dict) -> dict:
+        """Your worth over time for the Wealth panel: the stored snapshots of one picture, read as stored.
+
+        `source` is "stash" (what you entered) or "ledger" (your ledger positions). During a rehearsal
+        snapshots pause, and the answer says so instead of listing anything.
+        """
+        source = q.get("source") or "stash"
+        if source not in wealth.SOURCES:
+            raise ApiError("Bad request: source must be stash or ledger.")
+        auto = bool(self.settings().get("auto_snapshots"))
+        if self.rehearsal is not None:
+            return {"league": self.default_league(), "source": source, "auto": auto, "paused": True, "rows": []}
+        league = q.get("league") or self.default_league()
+        return {"league": league, "source": source, "auto": auto, "paused": False,
+                "rows": wealth.chart_rows(self.ledger, league, source)}
+
+    def api_snapshot_post(self, league: str, body: dict) -> dict:
+        """Take a snapshot now (`note` optional), or delete one (`delete`: its id)."""
+        if self.rehearsal is not None:
+            raise ApiError("Snapshots pause during a practice run: practice has no wealth of yours to chart. "
+                           "Stop the practice to take one.", 409)
+        if body.get("delete"):
+            self.ledger.delete_snapshot(int(body["delete"]))
+            return {}
+        new = wealth.take(self.ledger, self.desk(league), "manual", str(body.get("note") or ""))
+        if new is None:
+            raise ApiError("There is nothing to picture yet: enter what you hold in the Stash panel, "
+                           "or record a trade, then take a snapshot.")
+        return {"snapshot": new}
+
     def api_worth(self, q: dict) -> dict:
         """What one holding is worth, for the stack check: valued like a stash line, and not saved."""
         desk = self.desk(q.get("league"))
@@ -1066,6 +1123,8 @@ class App:
                     inputs = [[self._item_ref(item), units] for item, units in body["inputs"]]
                     self.ledger.add_fixed(body["kind"], inputs, self._item_ref(body["output"]), body.get("gives", 1),
                                           body.get("note", ""))
+            elif path == "/api/snapshot":
+                answer = self.api_snapshot_post(league, body)
             elif path == "/api/watch":
                 self.ledger.watch(league, body["item"], bool(body.get("on", True)))
             elif path == "/api/alert":
@@ -1207,6 +1266,7 @@ GET_ROUTES = {
     "/api/arbitrage": "api_arbitrage", "/api/ladder": "api_ladder", "/api/league": "api_league", "/api/curve": "api_curve",
     "/api/cross_league": "api_cross_league",
     "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
+    "/api/snapshots": "api_snapshots",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
     "/api/rehearsal": "api_rehearsal",
 }

@@ -1114,6 +1114,85 @@ function sellPlan(source) {
   return box;
 }
 
+// Your worth over time, from snapshots: the desk takes one each hour while it runs, and you can take one
+// at any time. Each was valued at its own hour, so an amount in Divines uses that hour's Divine price.
+const WEALTH_RANGES = [[24, '24 hours'], [168, '7 days'], [720, '30 days'], [0, 'All']];
+const atHour = (v, bridge) => v == null ? '<span class="dim">–</span>' : state.unit === 'divine' && bridge ? `${fmt(v / bridge)}${CUR.d}` : `${fmt(v)}${CUR.c}`;
+async function wealthPanel() {
+  const source = (localStorage.wealthSource || localStorage.stashSource) === 'ledger' ? 'ledger' : 'stash';
+  const range = WEALTH_RANGES.some(([h]) => h === +localStorage.wealthRange) ? +localStorage.wealthRange : 168;
+  const p = panel('Wealth over time', 'c12', `<div class="seg" id="wsrc" title="Chart what you typed in, or the positions your recorded trades add up to">${[['stash', 'What I entered'], ['ledger', 'My ledger positions']].map(([k, l]) => `<button type="button" data-s="${k}" class="${k === source ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="seg" id="wrange">${WEALTH_RANGES.map(([h, l]) => `<button type="button" data-h="${h}" class="${h === range ? 'on' : ''}">${l}</button>`).join('')}</div>`);
+  let d;
+  try { d = await api(withLeague('/api/snapshots', { source })); }
+  catch (err) { p.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); return p; }
+  const body = document.createElement('div'); body.className = 'body'; p.append(body);
+  $('#wsrc', p).onclick = e => { const s = e.target.dataset.s; if (s) { localStorage.wealthSource = s; route(); } };
+  $('#wrange', p).onclick = e => { const h = e.target.dataset.h; if (h != null) { localStorage.wealthRange = h; route(); } };
+  if (d.paused) {
+    body.innerHTML = '<p class="note" style="margin:0">Snapshots pause while you practise: practice has no wealth of yours to chart. The desk takes them again when you stop.</p>';
+    return p;
+  }
+  body.innerHTML = `<form class="bar" style="margin:0 0 10px" autocomplete="off">
+      <label class="f">Note<input type="text" name="note" maxlength="200" placeholder="optional, such as “before mapping”" style="width:240px"></label>
+      <button class="btn primary">Snapshot now</button>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:7px" title="After each new hour of prices, the desk records what you hold and what it is worth. Older than 30 days, it keeps one a day; the ones you take stay"><input type="checkbox" name="auto" ${d.auto ? 'checked' : ''}> Take one every hour</label>
+    </form><div id="wbody"></div>`;
+  const form = $('form', body), out = $('#wbody', body);
+  form.onsubmit = async e => {
+    e.preventDefault();
+    try { await api('/api/snapshot', { league: state.league, note: form.elements.note.value.trim() }); toast('Snapshot taken.'); route(); }
+    catch (err) { toast(err.message, true); }
+  };
+  form.elements.auto.onchange = e => api('/api/settings', { auto_snapshots: e.target.checked ? 1 : 0 }).then(route, err => toast(err.message, true));
+  const rows = d.rows, since = Date.now() / 1000 - range * 3600, shown = range ? rows.filter(r => r.t >= since) : rows;
+  if (!rows.length) {
+    out.innerHTML = '<p class="note" style="margin:0">No snapshot yet. The desk takes one of what you hold each hour while it runs, and “Snapshot now” takes one at once.</p>';
+    return p;
+  }
+  if (!shown.length) {
+    out.innerHTML = '<p class="note" style="margin:0">No snapshot in this range. Pick a longer one, or take one now.</p>';
+    return p;
+  }
+  const div = state.unit === 'divine', inUnit = (v, bridge) => v == null || (div && !bridge) ? null : div ? v / bridge : v;
+  // "Had I held Divines instead": the worth at the first snapshot shown, turned into Divines at its Divine price.
+  const first = shown[0], last = shown[shown.length - 1];
+  const divines = first.value != null && first.bridge ? first.value / first.bridge : null;
+  const held = r => divines == null || !r.bridge ? null : divines * r.bridge;
+  const change = last.value != null && first.value != null ? inUnit(last.value, last.bridge) - inUnit(first.value, first.bridge) : null;
+  const versus = held(last) == null || last.value == null ? null : inUnit(last.value - held(last), last.bridge);
+  const signed = v => v == null ? '<span class="dim">–</span>' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : 'muted'}">${v > 0 ? '+' : ''}${fmt(v)}${div ? CUR.d : CUR.c}</span>`;
+  out.innerHTML = `<div class="kpis" style="margin-bottom:10px">
+      <div class="kpi"><span>Worth at the last snapshot</span><b>${atHour(last.value, last.bridge)}</b></div>
+      <div class="kpi" title="From the first snapshot in this range to the last, each valued at its own hour"><span>Change</span><b>${signed(change)}</b></div>
+      <div class="kpi" title="Against turning the worth at the first snapshot in this range into Divine Orbs and holding them"><span>Against holding Divines</span><b>${signed(versus)}</b></div>
+    </div>
+    <div class="legend"><span><i style="background:var(--fair)"></i>Your worth</span><span><i style="background:var(--divine)"></i>Had you held Divines instead</span></div>
+    <div id="wchart"></div>
+    ${last.unpriced ? `<p class="note">${last.unpriced} item${last.unpriced === 1 ? ' had' : 's had'} no price at the last snapshot and ${last.unpriced === 1 ? 'is' : 'are'} not counted.</p>` : ''}`;
+  const yf = x => fmt(x) + (div ? ' d' : ' c'), one = shown.length === 1;
+  drawChart($('#wchart', out), {
+    series: [
+      { label: 'Your worth', color: css('--fair'), x: shown.map(r => r.t), y: shown.map(r => inUnit(r.value, r.bridge)), width: 2, dots: one },
+      { label: 'Had you held Divines', color: css('--divine'), x: shown.map(r => r.t), y: shown.map(r => inUnit(held(r), r.bridge)), dash: [5, 4], dots: one },
+    ], yFormat: yf, tickFormat: tick(div ? 'd' : 'c'), height: 240,
+  });
+  const list = table([
+    { h: 'When', l: 1, f: r => new Date(r.t * 1000).toLocaleString(), s: r => r.t },
+    { h: 'Taken', l: 1, f: r => r.kind === 'auto' ? '<span class="muted">by the desk</span>' : 'by you' },
+    { h: 'Note', l: 1, f: r => esc(r.note) },
+    { h: 'Worth', f: r => atHour(r.value, r.bridge), s: r => r.value, title: 'At fair value at the hour the snapshot was taken, and in Divines at that hour’s Divine price' },
+    { h: 'Realised so far', f: r => atHour(r.realized, r.bridge), s: r => r.realized, title: 'Profit from everything your ledger had recorded as sold by then' },
+    { h: '', f: r => `<button class="btn ghost" data-del="${r.id}" title="Delete this snapshot">✕</button>` },
+  ], [...shown].reverse(), { limit: 50 });
+  list.onclick = async e => {
+    const b = e.target.closest('[data-del]'); if (!b) return;
+    try { await api('/api/snapshot', { delete: +b.dataset.del }); route(); } catch (err) { toast(err.message, true); }
+  };
+  out.append(list);
+  return p;
+}
+
 // A pasted list of holdings. It is read first and shown line by line with what it would replace;
 // nothing is written until you press the second button, and a changed list has to be read again.
 function pasteStash(form, opener) {
@@ -1498,8 +1577,8 @@ async function viewLedger(main) {
     { h: 'Share used', f: r => plainPct(r.share, 1), title: 'Blended with the default while you have few orders, so one lucky fill does not decide it' },
     { h: 'What it means', l: 1, f: r => esc(r.reading) },
   ], d.fill_calibration || [], { empty: 'Record orders you post and their fills; the desk then measures how much of the flow you really get.' }));
-  const stash = await stashPanel(names);
-  $('#g', main).append(ses, ord, cal, pos, stash, tr, mk, fee, rc, al);
+  const [wealth, stash] = await Promise.all([wealthPanel(), stashPanel(names)]);
+  $('#g', main).append(ses, ord, cal, pos, wealth, stash, tr, mk, fee, rc, al);
 }
 
 // ------------------------------------------------------------------ ladder
