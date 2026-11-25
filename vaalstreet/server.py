@@ -824,10 +824,32 @@ class App:
             sides.setdefault("sell", {}).setdefault(sell_market, []).append(plan["sell_order"])
             sell_after.setdefault((plan["id"], buy_market), plan["sell_order"] | {"market": sell_market, "kind": plan["kind"]})
         orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
+        now = self.ledger.clock()  # in a rehearsal, practice time
         for order in orders:
             order["name"] = desk._name(order["item"])
             order["then_sell"] = sell_after.get((order["item"], order["market"])) if order["side"] == "buy" else None
+            order.update(self._order_history(order, now))
         return orders
+
+    def _order_history(self, order: dict, now: float) -> dict:
+        """How long an order has stood, and for a re-posted one what came before it.
+
+        `age` is seconds at the current ratio; `listed` is seconds since the first order of its chain
+        was posted (None for an order posted fresh). `earlier` is the ratios of the orders it replaced,
+        oldest first. `chain_gold` adds up the Gold paid to post every order of the chain, since Gold is
+        not refunded on cancel; `chain_gold_known` is False when some order of it has no Gold recorded,
+        so the sum is only a floor.
+        """
+        chain = self.ledger.order_chain(order["id"])
+        everything = chain + [order]
+        recorded = [o["gold"] for o in everything if o["gold"] is not None]
+        return {
+            "age": max(0, int(now - order["created"])),
+            "listed": max(0, int(now - chain[0]["created"])) if chain else None,
+            "earlier": [{"item_units": o["item_units"], "currency_units": o["currency_units"]} for o in chain],
+            "chain_gold": _num(sum(recorded)) if recorded else None,
+            "chain_gold_known": len(recorded) == len(everything),
+        }
 
     def _recipes(self, desk) -> dict:
         """The recipes and round trips the desk knows today, and your checks of them (all leagues)."""
