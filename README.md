@@ -29,6 +29,21 @@ On Windows, the desk, its hideout window and the screen check can run as one app
 
 The app is a window around the same desk. Starting it starts the desk and the screen check together (the `app` command under "Command line"), and quitting it stops both. The page inside is the one a browser shows. **Hideout** (press `H`, or Ctrl+H from the menu) opens as a window of the app that stays on top of other windows, the game included when it runs in windowed or borderless windowed mode. The screen check's keys work as they do for the companion: Ctrl+Alt+F9 reads the offer on screen, and Ctrl+Alt+F10 also records it. The stack check stays off until you tick it under **Screen check** in the menu; a second tick there also writes each copied stack to your stash list. Ticking either starts the desk again. **Desk → What the desk last said…** shows the last lines the desk and the screen check printed, which is where to look when a key seems to do nothing. A link that leaves the desk opens in your normal browser. Starting the app a second time shows the one already running, so two desks never write to one ledger.
 
+**Install.** Download `VaalStreet-Setup-<version>.exe` from the project's Releases page on GitHub and run it. It installs for your Windows user only and needs no administrator rights, no Python and no Node.js: the desk, the screen check and its text recognition are inside. The installer is not signed, so Windows SmartScreen may warn about an unknown publisher; choose "More info", then "Run anyway". If you run the game as administrator, run the app as administrator too, or Windows hides your key presses from the screen check.
+
+**Where the data lives.** The app keeps its archive and your ledger in `C:\Users\<you>\.vaalstreet`, the same place an installed package uses (`VAAL_DATA_DIR` names another). **Desk → Open the data folder** shows it. On a first start with no data, the app downloads the last two weeks, as the desk always does.
+
+**Bringing your data over from WSL.** A desk you ran in WSL keeps its data inside WSL, in `data/` in the checkout. The app does not read it there: Windows reaches WSL files slowly, and a ledger file used across that boundary can be damaged. Copy it once instead. Stop the desk in WSL, quit the app, and run in WSL, from the checkout:
+
+```sh
+mkdir -p /mnt/c/Users/<you>/.vaalstreet
+cp -a data/. /mnt/c/Users/<you>/.vaalstreet/
+```
+
+If you used the screen check from a Windows copy of the repository, also copy its `data\screen.json` into that folder, to keep the rectangle you set.
+
+This copies the archive (about 1.5 GB with the full history), your ledger `desk.sqlite`, your strategies and the item icons, and changes nothing in WSL. From then on the Windows copy is the one that counts: record trades in the app only, because the two ledgers are separate files and nothing merges them. The WSL copy stays as a backup of the day you copied.
+
 The app uses port 3917 on your own machine (the next free one up to 3926 if it is taken), not 3000, so a desk running in WSL does not get in its way. The app itself adds no network traffic: it opens only the local desk.
 
 To run the app from a checkout on Windows, you need Python 3.10 to 3.12 with the package and its screen check libraries installed (see "Screen check (optional)"), and Node.js 20 or later:
@@ -40,6 +55,8 @@ npm start
 ```
 
 `VAAL_PYTHON` names the Python to use if it is not the `python` on your PATH.
+
+The installer is built by GitHub Actions on a Windows machine (`.github/workflows/windows-app.yml`), for every version tag and on request. It freezes the Python side with PyInstaller into `vaal-desk.exe`, checks that this program starts, serves the page, starts the screen check and stops, packs it with the window into the installer, and then starts the packed app once to see that it brings the desk up and stops it when closed. `vaal-desk.exe` is the whole command line: `vaal-desk.exe sync --all`, for example, works from a console in the app's `resources\vaal-desk` folder.
 
 ## The desk
 

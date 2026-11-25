@@ -17,6 +17,7 @@ and this process stops too, so no desk is left running without a window.
 
 from __future__ import annotations
 
+import functools
 import sys
 import threading
 from pathlib import Path
@@ -67,7 +68,8 @@ def _watch(stream, done: threading.Event) -> None:
 
 
 def run(port: int = 3000, root: Path | None = None, *, sync: bool = True, screen_check: bool = True,
-        options: dict | None = None, stdin=None, say: Callable[[str], None] = print) -> None:
+        options: dict | None = None, stdin=None,
+        say: Callable[[str], None] = functools.partial(print, flush=True)) -> None:
     """Start the desk and the screen check, and stop both when standard input closes or on Ctrl+C."""
     desk = server.start(port, root, sync=sync)
     gate = screen.PressGate()
