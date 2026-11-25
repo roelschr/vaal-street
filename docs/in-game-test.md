@@ -45,6 +45,10 @@ py -3.12 -m venv .venv-screen
 pip install -e ".[screen]"
 ```
 
+With uv, skip the three lines after `git switch` and start every companion command below with
+`uv run --python 3.12 --extra screen` in place of the bare `python`. A plain `uv run python` uses
+uv's own environment, which lacks the screen libraries, and stops with "Missing rapidocr_onnxruntime".
+
 If the game runs as administrator, start PowerShell as administrator too.
 
 ## Part A: the stack check
@@ -61,7 +65,7 @@ python -m vaalstreet screen --desk http://localhost:3111 --stacks --why
 | A2 | If A1 printed `Ctrl+C heard, but ignored: the window in front is "…"`. | This means the key works but the game's window is not recognised. | The exact name in quotes. That is the one fact needed to fix it. |
 | A3 | If A1 printed `Ctrl+C heard in game, but nothing was copied`. | The game wrote the clipboard later than half a second, or not at all. | Whether the item was under the cursor, and whether pasting into Notepad right after shows the item text. |
 | A4 | In Notepad, paste what the game copied in A1. | Text that starts with `Item Class:` and has a line `Stack Size: 2,448/40`. | The pasted text, as it is. This is the layout the reader assumes. |
-| A5 | Hover an item that does not stack (a map or a unique) and press Ctrl+C. | `Read: 1 <name>`, and either a worth or "no price". | The console lines. |
+| A5 | Hover an item that does not stack (a map or a unique) and press Ctrl+C. | `Read: 1 <name>`, then either a worth or `No item called '<name>' traded in <league>` (right for anything the Currency Exchange does not trade, such as a unique). | The console lines. |
 | A6 | Hover a stack and press **Ctrl+Alt+C** (the game's copy with details). | The same reading as with Ctrl+C. | The console lines. |
 | A7 | Switch to a browser, select any text, press Ctrl+C. | `Ctrl+C heard, but ignored: the window in front is "…"`. Nothing else. | Anything else it printed. It must never show what you copied. |
 | A8 | Back in game, with nothing under the cursor, press Ctrl+C. | `Ctrl+C heard in game, but nothing was copied`. | The console lines. |
@@ -79,12 +83,16 @@ Open the Ledger page of the desk and look at the Stash panel while you do these:
 
 ## Part B: the screen check
 
-Stop the companion. Calibrate once, then start it:
+Stop the companion and start it without `--stacks`:
 
 ```
-python -m vaalstreet screen --desk http://localhost:3111 --calibrate
 python -m vaalstreet screen --desk http://localhost:3111
 ```
+
+Skip `--calibrate` for this test. Without it the companion reads your whole main screen, which
+works wherever the exchange window sits (it moves when the inventory or the stash is open). A
+saved rectangle only makes a reading faster. If you already ran `--calibrate`, run it once more
+and press Enter at the prompt: that goes back to the whole screen.
 
 Open the Currency Exchange in game. Pick an item you want and Chaos Orbs as what you have.
 
