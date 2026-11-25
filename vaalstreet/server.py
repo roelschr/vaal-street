@@ -7,6 +7,7 @@ history, the item-name export and (optionally) item icons. The server binds to
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import mimetypes
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, search, searchstring, wealth
+from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, screen, search, searchstring, wealth
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -32,6 +33,7 @@ WEB = Path(__file__).parent / "web"
 HOUR = 3600
 REALM = "poe1"
 PASTE_LIMIT = 200_000  # characters in a pasted stash list: thousands of lines, and far under the request limit
+READINGS_KEPT = 10  # the screen check's last readings, kept in memory only
 
 
 class ApiError(Exception):
@@ -64,6 +66,10 @@ class App:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._backfill = threading.Event()
+        # What the screen check read on its last presses, so a misread can be seen on the page. In memory
+        # only: recognised text is not worth keeping, and it is gone when the desk restarts.
+        self._readings: collections.deque[dict] = collections.deque(maxlen=READINGS_KEPT)
+        self._reading_id = 0
         if sync:
             threading.Thread(target=self._sync_loop, name="vaal-sync", daemon=True).start()
 
@@ -388,9 +394,76 @@ class App:
         return {"events": events, "last": events[-1]["id"] if events else since}
 
     def api_names(self, q: dict) -> dict:
-        """The league's item names, for the screen check, which matches recognised text against them."""
+        """The league's item names, for the screen check, which matches recognised text against them,
+        and your corrections (normalised text -> item name), which it uses before its similarity match."""
         desk = self.desk(q.get("league"))
-        return {"league": desk.league, "names": [str(n) for n in desk.panel.names]}
+        return {"league": desk.league, "names": [str(n) for n in desk.panel.names],
+                "corrections": {c["key"]: c["item"] for c in self.ledger.screen_corrections()}}
+
+    def api_reading(self, body: dict) -> dict:
+        """Keep what one press of the screen check (or one copied stack) read, in memory, for the page.
+
+        Everything is cut and rebuilt here rather than stored as sent: the lines are untrusted text, and
+        what was understood is rebuilt from its fields, so the page's words are the desk's own.
+        """
+        try:
+            kind = body.get("kind", "screen")
+            if kind not in ("screen", "stack"):
+                raise ValueError("kind must be screen or stack")
+            row: dict = {"kind": kind, "league": _clip(body.get("league"), 80), "error": _clip(body.get("error"), 300),
+                         "lines": [], "reading": None, "said": None, "unmatched": None}
+            if kind == "screen":
+                lines = body.get("lines") or []
+                if not isinstance(lines, list):
+                    raise ValueError("lines must be a list")
+                row["lines"] = [str(line)[:screen.MAX_CHARS] for line in lines[:screen.MAX_LINES]]
+                row["unmatched"] = _clip(body.get("unmatched"), screen.MAX_CHARS)
+                got = body.get("reading")
+                if got:
+                    stock = got.get("stock")
+                    reading = screen.Reading(
+                        str(got["item"])[:120], str(got["market"]), str(got["side"]),
+                        _positive(got["item_units"]), _positive(got["currency_units"]),
+                        _positive(stock) if stock not in (None, "") else None)
+                    if reading.market not in ("chaos", "divine") or reading.side not in ("buy", "sell"):
+                        raise ValueError("market must be chaos or divine, side buy or sell")
+                    row["reading"], row["said"] = vars(reading), reading.describe()
+            else:
+                item, units = str(body["item"])[:120], _positive(body["units"])
+                row["reading"], row["said"] = {"item": item, "units": units}, f"{units:,g} {item}"
+        except (KeyError, ValueError, TypeError, AttributeError) as err:
+            raise ApiError(f"Bad request: {err}") from err
+        with self._lock:
+            self._reading_id += 1
+            row = {"id": self._reading_id, "t": int(time.time())} | row
+            self._readings.append(row)
+        return {"ok": True, "id": row["id"]}
+
+    def api_readings(self, q: dict) -> dict:
+        """The screen check's last readings, newest first, and your corrections."""
+        with self._lock:
+            rows = [dict(r) for r in reversed(self._readings)]
+        return {"readings": rows, "last": rows[0]["id"] if rows else 0,
+                "corrections": self.ledger.screen_corrections()}
+
+    def api_screen_correction(self, body: dict) -> dict:
+        """Save "when the screen check reads this text, it means that item", or delete one by its key."""
+        if body.get("delete"):
+            self.ledger.delete_screen_correction(str(body["delete"]))
+            return self.api_readings({})
+        desk = self.desk(body.get("league"))
+        text = str(body.get("text") or "").strip()
+        key = screen.correction_key(text)
+        if len(key) < 3 or key in screen.LABELS:
+            raise ApiError("Bad request: give the text as the screen check read it, at least three letters or digits.")
+        names = {screen._key(n): str(n) for n in [screen.CHAOS, screen.DIVINE, *desk.panel.names]}
+        if key in names:
+            raise ApiError(f"Bad request: \"{text}\" already reads as {names[key]}, so there is nothing to correct.")
+        item = names.get(screen._key(str(body.get("item") or "")))
+        if item is None:
+            raise ApiError("Bad request: choose the item from the list of item names.")
+        self.ledger.set_screen_correction(key, text, item)
+        return self.api_readings({})
 
     def api_event(self, body: dict) -> dict:
         """Post an event (the screen check's verdict), so the hideout window shows it and can read it aloud."""
@@ -1364,6 +1437,17 @@ class App:
         return data
 
 
+def _clip(value, limit: int) -> str | None:
+    return str(value)[:limit] if value not in (None, "") else None
+
+
+def _positive(value) -> float:
+    number = float(value)
+    if not (math.isfinite(number) and number > 0):
+        raise ValueError("amounts must be more than zero")
+    return number
+
+
 def _status(found: dict | None) -> str:
     return found["status"] if found else "unchecked"
 
@@ -1382,7 +1466,7 @@ GET_ROUTES = {
     "/api/ledger": "api_ledger", "/api/stash": "api_stash", "/api/stash_plan": "api_stash_plan", "/api/worth": "api_worth",
     "/api/snapshots": "api_snapshots", "/api/snapshot_diff": "api_snapshot_diff",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
-    "/api/rehearsal": "api_rehearsal", "/api/ratio": "api_ratio",
+    "/api/readings": "api_readings", "/api/rehearsal": "api_rehearsal", "/api/ratio": "api_ratio",
     "/api/search_string": "api_search_string",
 }
 
@@ -1502,6 +1586,10 @@ def make_handler(app: App):
                 self._json(app.api_basket(body))
             elif url.path == "/api/event":
                 self._json(app.api_event(body))
+            elif url.path == "/api/reading":
+                self._json(app.api_reading(body))
+            elif url.path == "/api/screen_correction":
+                self._json(app.api_screen_correction(body))
             elif url.path == "/api/stash":
                 self._json(app.api_stash_post(body))
             elif url.path in ("/api/rehearsal", "/api/rehearsal/step"):

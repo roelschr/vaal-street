@@ -35,6 +35,9 @@ A snapshot is a picture of both at one hour, valued then and never again (`wealt
 The desk takes one itself after each new hour, at most one per league and hour (`snapshots_auto`),
 and thins its own to one a day after `SNAPSHOT_KEEP_HOURLY`; the ones you take are never removed.
 
+Screen-check corrections ("when the recognition reads this text, it means that item") are facts
+about your screen and the text recognition, kept once for all leagues like recipe checks.
+
 Recipe checks are game facts, not market state, so they are kept once for all leagues. So are
 the conversions you enter yourself (`fixed_conversions`): a recipe (N of A, and maybe more inputs,
 make M of B) or a vendor price (a vendor sells B for N of A). No public source we may use carries
@@ -117,6 +120,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS snapshots_auto ON snapshots(league, hour) WHER
 CREATE TABLE IF NOT EXISTS baskets(
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, items TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
     t INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS screen_corrections(
+    key TEXT PRIMARY KEY, text TEXT NOT NULL, item TEXT NOT NULL, t INTEGER NOT NULL);
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
@@ -679,6 +684,26 @@ class Ledger:
         for row in self._all("SELECT * FROM recipe_checks ORDER BY t, id"):
             out[row["key"]] = row
         return out
+
+    # ------------------------------------------------- screen-check corrections
+    def set_screen_correction(self, key: str, text: str, item: str, t: int | None = None) -> None:
+        """When the screen check's recognition reads `text` (normalised to `key`), it means `item` (a name).
+
+        The caller normalises the key, as the screen check does (`screen.correction_key`). One item per
+        key: saving a key again replaces its item. Kept for every league.
+        """
+        if not key or not item:
+            raise ValueError("A correction needs the text read and the item it means.")
+        self._run("INSERT INTO screen_corrections VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
+                  "text = excluded.text, item = excluded.item, t = excluded.t",
+                  (str(key)[:200], str(text)[:200], str(item)[:200], int(t or self.clock())))
+
+    def delete_screen_correction(self, key: str) -> None:
+        self._run("DELETE FROM screen_corrections WHERE key = ?", (str(key),))
+
+    def screen_corrections(self) -> list[dict]:
+        """Your corrections, newest first: key, the text as read, the item it means, when saved."""
+        return self._all("SELECT * FROM screen_corrections ORDER BY t DESC, key")
 
     # ---------------------------------------------------------------- stash
     def stash(self, league: str) -> dict[str, float]:

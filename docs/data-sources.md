@@ -38,6 +38,8 @@ Conditions for an implementation:
 - If public, show "This product isn't affiliated with or endorsed by Grinding Gear Games in any way." (developer docs).
 - Open risk: GGG does not mention OCR by name, and I did not find a staff forum post about it.
 
+After each press the companion sends the recognised text lines (at most 60 of 120 characters) and what it understood to the local desk, which keeps the last 10 in memory only to show them on the page; the screenshot never leaves the companion.
+
 ## 1b. Stack check (the player's own copy key → one clipboard read → what the stack is worth)
 
 Added 2026-11-23. **Verdict: allowed with conditions**, under the same overlay rules as section 1: "Apps that use information sourced from the screen, the clipboard, or the game's logs must follow our overlay rules", "You may only read this information as long as the user is aware of what you are doing with that data." and "Reading from the screen or clipboard may only be performed once per manual key press." (https://www.pathofexile.com/developer/docs, re-read 2026-11-23). The docs' changelog for 3.30.0, dated 12/11/2026, says: "Updated the Policy wording around macros and overlays to be clearer about when they apply."

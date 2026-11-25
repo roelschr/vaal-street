@@ -1762,7 +1762,7 @@ async function viewLedger(main) {
     { h: 'What it means', l: 1, f: r => esc(r.reading) },
   ], d.fill_calibration || [], { empty: 'Record orders you post and their fills; the desk then measures how much of the flow you really get.' }));
   const [wealth, stash] = await Promise.all([wealthPanel(), stashPanel(names)]);
-  $('#g', main).append(ses, ord, cal, pos, wealth, stash, tr, mk, fee, rc, al);
+  $('#g', main).append(ses, ord, cal, pos, wealth, stash, tr, mk, fee, rc, al, readingsPanel(names, 'c12'));
 }
 
 // ------------------------------------------------------------------ ladder
@@ -2243,6 +2243,70 @@ function ringControls() {
   };
   return box;
 }
+// What the screen check read on its last presses, as the companion told the desk: the recognised lines
+// and what the desk understood, or why not. The desk keeps the last 10 in memory only. Recognised text
+// is untrusted, so every line goes through esc. A misread item name can be taught here: "when it reads
+// this, it means that item", saved in your ledger and used by the companion from its next press.
+function readingsPanel(names, cls = '') {
+  const p = panel('What the screen check read', cls, '<button type="button" class="btn ghost small" data-rr title="Look for new readings">Refresh</button>');
+  const body = document.createElement('div'); body.className = 'body small readings'; p.append(body);
+  const known = [...new Set(['Chaos Orb', 'Divine Orb', ...names])];
+  let last = null, data = null;
+  const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  // The text a correction is saved for, without the label the item may share its line with.
+  const bare = line => String(line).replace(/^\W*i\W*(want|have)\W*/i, '').trim();
+  const reading = r => `<div class="rd" data-id="${r.id}">
+      <div class="rdh"><b>${clock(r.t)}</b> <span class="muted">${r.kind === 'stack' ? 'Copied stack' : 'Screen'} · ${ago(r.t)}</span></div>
+      ${r.said ? `<div>Understood: <b>${esc(r.said)}</b></div>` : ''}
+      ${r.error ? `<div class="down">${esc(r.error)}</div>` : ''}
+      ${r.lines.length ? `<pre class="ocr" title="The lines the text recognition returned, in its order. Click one to teach the desk which item it means.">${r.lines.map((l, i) => `<span data-line="${i}">${esc(l)}</span>`).join('\n')}</pre>` : ''}
+      ${r.kind === 'screen' ? `<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button>` : ''}
+    </div>`;
+  const draw = () => {
+    const d = data;
+    body.innerHTML = `${d.readings.length ? d.readings.map(reading).join('') : '<p class="muted" style="margin:0">Nothing read yet. Press the screen check’s key in game (see “Screen check” in the README), or copy a stack with --stacks on.</p>'}
+      <datalist id="rdnames">${known.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <div class="muted" style="margin-top:8px">${d.corrections.length ? 'Names you taught it:' : 'No names taught yet.'} <span class="dim">Kept in your ledger; the screen check uses them from its next press.</span></div>
+      ${d.corrections.map(c => `<div class="rdc">When it reads <code>${esc(c.text)}</code>, it means <b>${esc(c.item)}</b> <button type="button" class="btn ghost small" data-uncorrect="${esc(c.key)}" title="Delete this">✕</button></div>`).join('')}`;
+  };
+  const load = async force => {
+    if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
+    const d = await api('/api/readings');
+    if (!force && data && d.last === last) return;
+    last = d.last; data = d; draw();
+  };
+  const teach = (id, text) => {
+    body.querySelector('form.teach')?.remove();
+    const host = body.querySelector(`.rd[data-id="${id}"]`); if (!host) return;
+    const f = document.createElement('form'); f.className = 'teach bar'; f.autocomplete = 'off';
+    f.innerHTML = `<label class="f">When it reads<input type="text" name="text" value="${esc(text)}" style="width:170px"></label>
+      <label class="f">it means<input type="text" name="meant" list="rdnames" placeholder="Start typing…" style="width:190px"></label>
+      <button class="btn primary">Save</button><button type="button" class="btn ghost" data-cancel>Cancel</button>`;
+    host.append(f); f.elements.meant.focus();  // not `item`: that is the form's own item() method
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try { data = await api('/api/screen_correction', { league: state.league, text: f.elements.text.value, item: f.elements.meant.value }); }
+      catch (err) { return toast(err.message, true); }
+      toast(`Saved: when the screen check reads "${f.elements.text.value.trim()}", it means ${f.elements.meant.value.trim()}.`);
+      f.remove(); draw();
+    };
+    f.querySelector('[data-cancel]').onclick = () => f.remove();
+  };
+  p.addEventListener('click', async e => {
+    if (e.target.closest('[data-rr]')) { body.querySelector('form.teach')?.remove(); return load(true).catch(err => toast(err.message, true)); }
+    const del = e.target.closest('[data-uncorrect]');
+    if (del) { try { data = await api('/api/screen_correction', { delete: del.dataset.uncorrect }); draw(); } catch (err) { toast(err.message, true); } return; }
+    const line = e.target.closest('[data-line]'), btn = e.target.closest('[data-teach]');
+    const rd = (line || btn)?.closest('.rd'); if (!rd || e.target.closest('form')) return;
+    const r = data.readings.find(x => x.id === +rd.dataset.id); if (!r || r.kind !== 'screen') return;
+    teach(r.id, line ? bare(r.lines[+line.dataset.line]) : (r.unmatched || ''));
+  });
+  load(true).catch(err => { body.innerHTML = `<div class="down">${esc(err.message)}</div>`; });
+  // A press posts a reading at any moment, and this window redraws only on a new hour; look every few
+  // seconds while the panel is on the page. The desk answers from memory.
+  const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => {}); }, 5000);
+  return p;
+}
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
@@ -2258,7 +2322,7 @@ async function viewHideout(main) {
   wp.append(table([{ h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Price', f: r => money(r.price) }, { h: '24h', f: r => pct(r.change_24h, 0) }], watched, { empty: 'Star items in Markets.' }));
   main.append(fp, wp);
   if (d.events.length) { const ev = panel('Alerts', ''); ev.innerHTML += `<div class="body small">${d.events.slice(0, 5).map(e => `<div><b>${esc(e.title)}</b> <span class="muted">${ago(e.t)}</span></div>`).join('')}</div>`; main.append(ev); }
-  main.append(ringControls());
+  main.append(readingsPanel(d.market.map(r => r.name)), ringControls());
 }
 async function openHideout() {
   const url = '/?hideout=1';
