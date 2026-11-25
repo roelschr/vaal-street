@@ -844,8 +844,11 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
         do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False,
-        why: bool = False, record_hotkey: str | None = None) -> None:
+        why: bool = False, record_hotkey: str | None = None, gate: PressGate | None = None) -> None:
     """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
+
+    A caller that runs the companion on a thread of its own (`desktop.py`) passes its `gate` and ends
+    the companion with `gate.stop()`, since no Ctrl+C reaches that thread.
 
     With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
     With `stash`, which turns `stacks` on, each copied stack is also written to the stash list.
@@ -869,7 +872,7 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     print(f"Screen check for {league_name}, talking to the desk at {desk.base_url}.")
     print(f"Each press of {hotkey} takes one screenshot of {where}, reads its text, and checks the offer.")
     print("The screenshot stays in memory and is dropped after the check. Nothing is sent to the game.")
-    gate = PressGate()
+    gate = gate or PressGate()
 
     def work():
         print("\nReading the screen…")
