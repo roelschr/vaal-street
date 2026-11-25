@@ -1050,7 +1050,68 @@ async function stashPanel(names) {
     if (rm) set(rm.dataset.rm, 0);
     if (ed && form) { form.elements.what.value = ed.dataset.edit; form.elements.units.value = ed.dataset.units; form.elements.units.focus(); form.elements.units.select(); }
   });
+  p.append(sellPlan(source));
   return p;
+}
+
+// The sale of a whole stash: for each line, the market, the sell order to post and about how long it
+// takes, at the flip plans' own sell levels. One control picks how patient the orders are, and a
+// minimum leaves small lines out (always saying which). Both are remembered in this browser.
+const stored = (key, fallback) => { try { return localStorage[key] ?? fallback; } catch { return fallback; } };
+const store = (key, value) => { try { localStorage[key] = value; } catch { /* forgotten next visit; harmless */ } };
+function sellPlan(source) {
+  const box = document.createElement('details'); box.className = 'body sellplan';
+  box.open = stored('sellPlanOpen', '0') === '1';
+  box.innerHTML = `<summary><b>How to sell it</b> <span class="muted small">the order to post for each line, in the market that brings in more, and about how long it takes</span></summary><div data-in></div>`;
+  const inner = $('[data-in]', box);
+  const draw = async () => {
+    const reach = stored('sellReach', '0.35'), min = stored('sellMin', '0');
+    let d;
+    try { d = await api(withLeague('/api/stash_plan', { reach, min_value: min || 0, share: state.share, ...(source === 'ledger' ? { source } : {}) })); }
+    catch (err) {
+      inner.innerHTML = `<div class="empty"><span class="down">${esc(err.message)}</span> <button type="button" class="btn ghost small" data-reset>Use the defaults</button></div>`;
+      $('[data-reset]', inner).onclick = () => { store('sellReach', '0.35'); store('sellMin', '0'); draw(); };
+      return;
+    }
+    const t = d.total, sk = d.skipped;
+    // Fastest first: a higher share of the volume traded at or above the price is a lower, quicker price.
+    const steps = [...d.reaches].sort((a, b) => b - a);
+    inner.innerHTML = `<div class="bar" style="margin:8px 0">
+        <div class="f ctl">How patient<span style="display:flex;align-items:center;gap:8px"><span class="muted small">Sell faster</span><span class="seg" id="spr">${steps.map(r => `<button type="button" data-r="${r}" class="${r === d.reach ? 'on' : ''}" title="Ask a price that ${Math.round(r * 100)}% of the last two days' volume traded at or above">${Math.round(r * 100)}%</button>`).join('')}</span><span class="muted small">Hold out for more</span></span></div>
+        <label class="f" title="Lines worth less than this at fair value are left out of the plan; the plan says how many and what they are worth">Skip lines worth less than (c)<input type="number" id="spm" min="0" step="any" value="${esc(min)}" style="width:110px"></label></div>
+      <p class="note">Each order asks a price that ${Math.round(d.reach * 100)}% of the last two days' volume in that market traded at or above, the same levels the flip plans sell at, as a whole-number ratio that the units you hold can fill. The time assumes you get your share of the trade at that price (${esc(plainPct(state.share))}, or what your own orders measured). Asking less sells faster.</p>
+      <div class="kpis" style="margin-bottom:10px">
+        <div class="kpi" title="Each planned line sold whole lots at its order, in the market that brings in more"><span>The plan brings in</span><b>${money(t.plan)}</b></div>
+        <div class="kpi" title="The planned lines at fair value"><span>Those lines at fair value</span><b>${money(t.planned_worth)}</b></div>
+        <div class="kpi"><span>Whole stash at fair value</span><b>${money(t.worth)}</b></div>
+      </div>
+      ${sk.lines ? `<p class="note">${sk.lines} line${sk.lines === 1 ? '' : 's'} worth ${money(sk.value)} in all ${sk.lines === 1 ? 'is' : 'are'} under your minimum and not in the plan.</p>` : ''}`;
+    const takes = m => m.thin ? `<span class="gold" title="Your share of the trade at this price would not sell it all within the two days the price was read from">thin market · ${dur(m.hours)}</span>` : dur(m.hours);
+    const sale = m => m?.order ? order(m.order, false) : '';
+    const other = r => {
+      const m = r.other ? r[r.other] : [r.chaos, r.divine].find(x => x && x.market !== r.best);
+      if (!m) return '';
+      if (!m.order) return `${marketTag(m.market)} <span class="dim">${esc(m.why)}</span>`;
+      return `${marketTag(m.market)} ${sale(m)}: ${money(m.value)} in ${takes(m)}${m.left ? ` <span class="dim">· ${itemCount(m.left)} left over</span>` : ''}`;
+    };
+    const best = r => r.best ? r[r.best] : null;
+    inner.append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name },
+      { h: 'Units', f: r => itemCount(r.units), s: r => r.units },
+      { h: 'Sell in', l: 1, f: r => r.best ? marketTag(r.best) : `<span class="dim">${esc(r.why)}</span>`, s: r => r.best },
+      { h: 'Order', l: 1, f: r => { const m = best(r); return sale(m) + (m && m.off_level < -0.02 ? `<div class="muted small" title="With so few items, whole numbers cannot state the plan's price exactly. The order asks a little less, never more: an order above the price would not sell at the pace shown">asks ${plainPct(-m.off_level)} under the plan's price: the nearest your ${itemCount(r.units)} can state</div>` : ''); }, title: 'The sell order to post: how many items for how much' },
+      { h: 'Post', f: r => { const m = best(r); return !m ? '' : `${itemCount(m.units)}${m.left ? `<div class="muted small">${itemCount(m.left)} left over</div>` : ''}`; }, s: r => best(r)?.units, title: 'Units in whole lots of the order; what does not make a whole lot is left over' },
+      { h: 'Brings in', f: r => money(best(r)?.value), s: r => best(r)?.value },
+      { h: 'Takes about', f: r => { const m = best(r); return m ? takes(m) : ''; }, s: r => best(r)?.hours, title: 'The units posted, at your share of the volume that trades at or above this price' },
+      { h: 'Other market', l: 1, f: other, title: 'What the other market would bring in, and how long it would take' },
+      { h: '', f: r => { const m = best(r); return m ? postedLine({ id: r.id, name: r.name, sell_order: m.order, lot_units: m.units }, 'sell', d.orders) : ''; } },
+    ], d.rows, { onRow: r => openItem(r.id), empty: sk.lines ? 'Every line is under your minimum.' : 'Nothing to sell.' }));
+    $('#spr', inner).onclick = e => { const r = e.target.closest('[data-r]')?.dataset.r; if (r) { store('sellReach', r); draw(); } };
+    $('#spm', inner).onchange = e => { store('sellMin', e.target.value); draw(); };
+  };
+  box.ontoggle = () => { store('sellPlanOpen', box.open ? '1' : '0'); if (box.open && !inner.childElementCount) draw(); };
+  if (box.open) draw();
+  return box;
 }
 
 // A pasted list of holdings. It is read first and shown line by line with what it would replace;

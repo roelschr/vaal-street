@@ -141,6 +141,8 @@ label.f,div.f.ctl{display:flex;flex-direction:column;gap:3px;font-size:11px;colo
 .panel>header a{color:var(--muted);font-size:12px;text-decoration:none}
 .panel>header a:hover{color:var(--accent-hi)}
 .panel .body{padding:12px 14px}
+.sellplan{border-top:1px solid var(--line)}
+.sellplan>summary{cursor:pointer;padding:2px 0}
 .c3{grid-column:span 3}.c4{grid-column:span 4}.c5{grid-column:span 5}.c6{grid-column:span 6}.c7{grid-column:span 7}.c8{grid-column:span 8}.c12{grid-column:span 12}
 @media(max-width:1250px){.c3,.c4,.c5,.c6,.c7,.c8{grid-column:span 12}}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:16px}
