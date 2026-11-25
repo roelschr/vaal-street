@@ -47,6 +47,7 @@ import functools
 import json
 import re
 import threading
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -162,6 +163,7 @@ _DIGITS = str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "|": "1"})
 _DIGITS_RUN = r"[0-9OolI|][0-9OolI|,.]*(?![0-9OolI|,.])"
 _NUM = r"(?<![A-Za-z0-9])" + _DIGITS_RUN  # not the tail of a word
 _RATIO_ROW = re.compile(rf"({_NUM})\s*[:;]\s*({_NUM})")
+_NOT_A_NAME = ("iwant", "ihave", "marketratio", "placeorder", "availabletrades", "competingtrades")
 _STOCK = re.compile(rf"stock\s*[:;]?\s*({_DIGITS_RUN})?", re.I)  # "Stock1,280": spaces are often lost
 
 
@@ -183,19 +185,85 @@ def _label(lines: list[str], label: str) -> int | None:
     return None
 
 
-def _item_after(lines: list[str], at: int, label: str, names: list[str], what: str,
-                corrections: dict[str, str] | None = None) -> str:
-    """The item named on the label's own line, or failing that on the next line."""
-    rest = lines[at]
-    stripped = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", rest, flags=re.I)
-    for text in (stripped, lines[at + 1] if at + 1 < len(lines) else ""):
-        if _key(text):
+# How far under the labels the two names are looked for. The window's own rows end within a few
+# lines; the rest of a whole-screen capture (the desk's page can be on screen too) holds other names.
+NAME_WINDOW = 14
+NEARLY = 0.6
+_EMPTY_SIDE = ("selectcurrency", "clicktoselect")
+
+
+def _wordy(text: str) -> bool:
+    """Text that could be a name: letters, and not a number or a ratio with misread digits."""
+    return bool(_key(text)) and not re.fullmatch(rf"\W*{_DIGITS_RUN}(\s*[:;]\s*{_DIGITS_RUN})?\W*", text.strip())
+
+
+def _nearly_a_name(text: str, names: list[str]) -> bool:
+    """Close enough to some item's name to be a misread of it, as opposed to other text on screen."""
+    key = _key(text)
+    return len(key) >= 4 and any(difflib.SequenceMatcher(None, key, _key(n)).ratio() >= NEARLY for n in names)
+
+
+def _strip_label(text: str, label: str) -> str:
+    return re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", text, flags=re.I)
+
+
+def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
+                corrections: dict[str, str] | None = None) -> tuple[str, str, int | None, int | None]:
+    """(item wanted, item offered, and the line each name stands on when it has a line of its own).
+
+    The game's window, as its recognised text reads top to bottom and left to right (seen in game,
+    November 2026): "MARKET RATIO"; then "I WANT", the market's ratio, "I HAVE" on one row; then one
+    row with the wanted item's name, its amount, the ratio, the other amount, and the offered item's
+    name. So both names come after both labels, the wanted one first. A name on a label's own line,
+    or between the two labels, is read as that label's item, which is how a typed-out offer reads.
+    """
+    first, second = sorted((("iwant", want_at), ("ihave", have_at)), key=lambda x: x[1])
+    found: dict[str, tuple[str, int | None]] = {}
+    for label, at in (first, second):
+        text = _strip_label(lines[at], label)
+        if _wordy(text):
             name = match_name(text, names, corrections)
             if name:
-                return name
-            raise ScreenError(f"Couldn't tell which item \"{text.strip()}\" is (the {what} side); {TRY_AGAIN}",
-                              text=text.strip())
-    raise ScreenError(f"Couldn't read the item on the {what} side; {TRY_AGAIN}")
+                found[label] = (name, None)
+    end = min(len(lines), second[1] + 1 + NAME_WINDOW)
+    window = [k for k in range(first[1] + 1, end) if k != second[1]]
+    if any(_key(lines[k]).startswith(_EMPTY_SIDE) for k in window):
+        raise ScreenError("One side of the exchange window has no item yet. Pick both items in game, then press the key again.")
+    # Text right under a label that is words but no known name is a misread name: say which, so the
+    # player can teach it. (In the game's own layout a ratio or the other label stands there.)
+    for label, at in (first, second):
+        k = at + 1
+        if label not in found and k < len(lines) and k != second[1] and _wordy(lines[k]) \
+                and not _key(lines[k]).startswith(_NOT_A_NAME):
+            name = match_name(lines[k], names, corrections)
+            if name:
+                found[label] = (name, k)
+            elif (k < second[1] or label == second[0]) and _nearly_a_name(lines[k], names):
+                what = '"I Want"' if label == "iwant" else '"I Have"'
+                raise ScreenError(f"Couldn't tell which item \"{lines[k].strip()}\" is (the {what} side); {TRY_AGAIN}",
+                                  text=lines[k].strip())
+    taken = {k for _, k in found.values() if k is not None}
+    named = [(k, match_name(lines[k], names, corrections)) for k in window if k not in taken and _wordy(lines[k])]
+    named = [(k, n) for k, n in named if n]
+    between = [x for x in named if x[0] < second[1]]
+    after = [x for x in named if x[0] > second[1]]
+    if first[0] not in found and between:
+        found[first[0]] = (between[0][1], between[0][0])
+    # What is left comes in reading order: the wanted item stands on the left, so it comes first.
+    for label in ("iwant", "ihave"):
+        if label not in found and after:
+            k, name = after.pop(0)
+            found[label] = (name, k)
+    if "iwant" not in found or "ihave" not in found:
+        used = {k for _, k in found.values() if k is not None}
+        for k in window:  # a line that is nearly a name is the likely misread: offer it for teaching
+            if k not in used and _wordy(lines[k]) and not _key(lines[k]).startswith(_NOT_A_NAME) \
+                    and _nearly_a_name(lines[k], names):
+                raise ScreenError(f"Couldn't tell which item \"{lines[k].strip()}\" is; {TRY_AGAIN}", text=lines[k].strip())
+        side = "either side" if not found else ('the "I Want" side' if "iwant" not in found else 'the "I Have" side')
+        raise ScreenError(f"Couldn't read the item on {side}. If its name was misread, click that line under "
+                          f"\"What the screen check read\" on the desk and say which item it is; then {TRY_AGAIN}")
+    return found["iwant"][0], found["ihave"][0], found["iwant"][1], found["ihave"][1]
 
 
 def parse_screen(text: str | Iterable[str], names: Iterable[str],
@@ -206,14 +274,15 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     `match_name`). Raises ScreenError with a plain message whenever a part cannot be read with
     confidence.
     """
-    lines = [ln for ln in (text.splitlines() if isinstance(text, str) else list(text)) if ln.strip()]
+    # Recognition returns some punctuation in its full-width form ("1：2"); fold it to the plain one.
+    lines = [unicodedata.normalize("NFKC", ln) for ln in (text.splitlines() if isinstance(text, str) else list(text))
+             if ln.strip()]
     names = list(dict.fromkeys([CHAOS, DIVINE, *names]))
     want_at, have_at = _label(lines, "iwant"), _label(lines, "ihave")
     if want_at is None or have_at is None:
         raise ScreenError("Couldn't find the \"I Want\" and \"I Have\" labels. Check the captured area covers the "
                           f"exchange window (vaalstreet screen --calibrate), then {TRY_AGAIN}")
-    want = _item_after(lines, want_at, "iwant", names, "\"I Want\"", corrections)
-    have = _item_after(lines, have_at, "ihave", names, "\"I Have\"", corrections)
+    want, have, want_k, have_k = _find_items(lines, want_at, have_at, names, corrections)
     if want == have:
         raise ScreenError(f"Read {want} on both sides; {TRY_AGAIN}")
 
@@ -262,11 +331,27 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     item_side, money_side = (want_units, have_units) if side == "buy" else (have_units, want_units)
     ratio = f"{item_side:g}:{money_side:g}"
     item_units, currency_units = parse_ratio(ratio, market)  # the typed check's own ratio rules
-    want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
+    want_amount, have_amount = _row_amounts(lines, want_k, have_k)
+    if want_amount is None:
+        want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
     return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount)
 
 
-# The player's own amounts. Where the window shows them in the recognised text is untested, so this is
+def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tuple[int | None, int | None]:
+    """The two amounts on the game's own row: wanted name, amount, ratio, amount, offered name.
+
+    Only that exact shape counts: one whole number on each side of one ratio, between the two names.
+    """
+    if want_k is None or have_k is None or not 0 < have_k - want_k <= 6:
+        return None, None
+    between = [ln for ln in lines[want_k + 1:have_k] if not _wordy(ln) or _RATIO_ROW.search(ln)]
+    if len(between) != 3 or not _RATIO_ROW.fullmatch(between[1].strip()):
+        return None, None
+    a, b = _amount(between[0].strip()), _amount(between[2].strip())
+    return (a, b) if a is not None and b is not None else (None, None)
+
+
+# The player's own amounts in an offer typed out label by label. This is
 # strict: a whole number with at least one real digit, standing alone on a line or right after the
 # item's name, between the side's label and the next label. Anything less sure gives nothing.
 _CLOSERS = ("iwant", "ihave", "marketratio", "stock")
@@ -560,14 +645,32 @@ def make_capture(mss, region: dict | None):
     return capture
 
 
+def reading_order(boxes: Iterable[tuple[float, float, float, str]]) -> list[str]:
+    """Recognised texts, top to bottom by row and left to right within a row.
+
+    `boxes` are (left, top, bottom, text). Two texts are on one row when their vertical centres are
+    closer than half the taller one's height. The parser depends on this: the wanted item's name and
+    the offered item's stand on one row, a few pixels apart in height, and the left one is the wanted.
+    (Rounding each top edge to a grid, as before, put them in the wrong order about every other press.)
+    """
+    rows: list[list] = []  # [centre of the row's first text, its height, [(left, text), ...]]
+    for left, top, bottom, text in sorted(boxes, key=lambda b: (b[1] + b[2]) / 2):
+        centre, height = (top + bottom) / 2, bottom - top
+        if rows and centre - rows[-1][0] <= max(height, rows[-1][1]) / 2:
+            rows[-1][2].append((left, text))
+        else:
+            rows.append([centre, height, [(left, text)]])
+    return [text for _, _, row in rows for _, text in sorted(row, key=lambda x: x[0])]
+
+
 def make_recognise(RapidOCR):
     engine = RapidOCR()
 
     def recognise(image) -> list[str]:
         result, _ = engine(image)
-        # Top to bottom, then left to right, so labels come before what follows them.
-        boxes = sorted(result or [], key=lambda r: (round(r[0][0][1] / 12), r[0][0][0]))
-        return [r[1] for r in boxes]
+        # Each result is (four corner points, text, score); the corners start top left, clockwise.
+        return reading_order((min(p[0] for p in r[0]), min(p[1] for p in r[0]), max(p[1] for p in r[0]), r[1])
+                             for r in result or [])
 
     return recognise
 
