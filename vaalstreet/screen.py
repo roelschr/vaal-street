@@ -581,9 +581,14 @@ class PressGate:
         self._pressed.set()
 
     def serve(self, work: Callable[[], object]) -> None:
-        """Run `work` once per taken press until stopped. It waits on the press; there is no timer."""
+        """Run `work` once per taken press until stopped. Nothing runs without a press.
+
+        The wait wakes twice a second and goes back to waiting. On Windows a wait with no end never
+        hears Ctrl+C in the console, so the companion could not be stopped.
+        """
         while True:
-            self._pressed.wait()
+            while not self._pressed.wait(0.5):
+                pass
             if self.stopped.is_set():
                 return
             with self._busy:
