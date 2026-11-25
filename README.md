@@ -40,6 +40,8 @@ mkdir -p /mnt/c/Users/<you>/.vaalstreet
 cp -a data/. /mnt/c/Users/<you>/.vaalstreet/
 ```
 
+If you used the screen check from a Windows copy of the repository, also copy its `data\screen.json` into that folder, to keep the rectangle you set.
+
 This copies the archive (about 1.5 GB with the full history), your ledger `desk.sqlite`, your strategies and the item icons, and changes nothing in WSL. From then on the Windows copy is the one that counts: record trades in the app only, because the two ledgers are separate files and nothing merges them. The WSL copy stays as a backup of the day you copied.
 
 The app uses port 3917 on your own machine (the next free one up to 3926 if it is taken), not 3000, so a desk running in WSL does not get in its way. The app itself adds no network traffic: it opens only the local desk.
@@ -54,7 +56,7 @@ npm start
 
 `VAAL_PYTHON` names the Python to use if it is not the `python` on your PATH.
 
-The installer is built by GitHub Actions on a Windows machine (`.github/workflows/windows-app.yml`), for every version tag and on request. It freezes the Python side with PyInstaller into `vaal-desk.exe`, checks that this program starts, serves the page, starts the screen check and stops, and then packs it with the window into the installer. `vaal-desk.exe` is the whole command line: `vaal-desk.exe sync --all`, for example, works from a console in the app's `resources\vaal-desk` folder.
+The installer is built by GitHub Actions on a Windows machine (`.github/workflows/windows-app.yml`), for every version tag and on request. It freezes the Python side with PyInstaller into `vaal-desk.exe`, checks that this program starts, serves the page, starts the screen check and stops, packs it with the window into the installer, and then starts the packed app once to see that it brings the desk up and stops it when closed. `vaal-desk.exe` is the whole command line: `vaal-desk.exe sync --all`, for example, works from a console in the app's `resources\vaal-desk` folder.
 
 ## The desk
 

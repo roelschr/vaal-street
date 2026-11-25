@@ -60,6 +60,9 @@ jobs:
           npm ci
           npx electron-builder --win --publish never
 
+      - name: Check that the packed app brings the desk up, and stops it when closed
+        run: python desktop/smoke_app.py "desktop/dist/win-unpacked/Vaal Street.exe"
+
       - uses: actions/upload-artifact@v4
         with:
           name: VaalStreet-Windows
