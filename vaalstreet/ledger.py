@@ -39,6 +39,10 @@ Recipe checks are game facts, not market state, so they are kept once for all le
 the conversions you enter yourself (`fixed_conversions`): a recipe (N of A, and maybe more inputs,
 make M of B) or a vendor price (a vendor sells B for N of A). No public source we may use carries
 either, so the desk ships none and only knows the ones you type in.
+
+Baskets (`baskets`) are named lists of items with counts, such as what one map run uses. They are
+kept once for all leagues too: a basket is a fact about how you play, and is priced in whichever
+league you look at.
 """
 
 from __future__ import annotations
@@ -110,6 +114,9 @@ CREATE TABLE IF NOT EXISTS snapshots(
     positions_unpriced INTEGER NOT NULL DEFAULT 0, realized REAL, loot REAL);
 CREATE INDEX IF NOT EXISTS snapshots_league ON snapshots(league, t, id);
 CREATE UNIQUE INDEX IF NOT EXISTS snapshots_auto ON snapshots(league, hour) WHERE kind = 'auto';
+CREATE TABLE IF NOT EXISTS baskets(
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, items TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+    t INTEGER NOT NULL);
 """
 # Columns added to tables that existed before; `_migrate` adds any that an older file lacks.
 _COLUMNS = {"trades": {"gold": "REAL", "order_id": "INTEGER"},
@@ -825,6 +832,38 @@ class Ledger:
         for row in self._all("SELECT * FROM fixed_conversions ORDER BY id"):
             row["inputs"] = [(item, units) for item, units in json.loads(row["inputs"])]
             row["key"] = fixed_key(row["kind"], row["inputs"], row["output"], row["gives"])
+            out.append(row)
+        return out
+
+    # -------------------------------------------------------------- baskets
+    def add_basket(self, name: str, items: list, note: str = "", t: int | None = None) -> int:
+        """Store a named list of items with counts, [[item id, units], ...]. Kept for every league.
+
+        Two lines for one item are one line with their counts added, as a pasted stash adds them.
+        """
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("A basket needs a name.")
+        clean: dict[str, float] = {}
+        for item, units in items or []:
+            units = float(units)
+            if not item or not (math.isfinite(units) and units > 0):
+                raise ValueError("Every line of a basket needs an item and a positive count.")
+            clean[str(item)] = clean.get(str(item), 0.0) + units
+        if not clean:
+            raise ValueError("A basket needs at least one item.")
+        return self._run("INSERT INTO baskets(name, items, note, t) VALUES (?,?,?,?)",
+                         (name[:80], json.dumps([[k, v] for k, v in clean.items()]), str(note)[:200],
+                          int(t or self.clock())))
+
+    def delete_basket(self, basket_id: int) -> None:
+        self._run("DELETE FROM baskets WHERE id = ?", (int(basket_id),))
+
+    def baskets(self) -> list[dict]:
+        """Your baskets, oldest first, with items as [(item id, units), ...]."""
+        out = []
+        for row in self._all("SELECT * FROM baskets ORDER BY id"):
+            row["items"] = [(item, units) for item, units in json.loads(row["items"])]
             out.append(row)
         return out
 

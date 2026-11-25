@@ -550,11 +550,91 @@ async function viewArbitrage(main) {
   });
   onCheck(ft);
   mine.append(form, ft);
-  $('#g', main).append(sets, nj, loops, mine);
+  $('#g', main).append(sets, nj, loops, mine, await basketsPanel());
   $('#cap', main).onchange = e => { f.capital = localStorage.bankroll = e.target.value; route(); };
   $('#fit', main).onchange = e => { f.fit = e.target.checked; route(); };
   $('#liq', main).onchange = e => { f.arbLiquidity = +e.target.value || 0; route(); };
   $('#swaps', main).onclick = e => { const n = +e.target.dataset.n; if (n) { f.swaps = n; localStorage.swaps = n; route(); } };
+}
+
+// Baskets: named lists of items, what each costs now and how that cost has moved. Kept for every league and
+// priced in the one being viewed. A pasted list is read first and shown; nothing is saved until Save is pressed.
+const shortTime = t => new Date(t * 1000).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+async function basketsPanel() {
+  const p = panel('Baskets', 'c12', '<span class="muted small">Kept for every league, priced in the league you are viewing.</span>');
+  let d;
+  try { d = await api(withLeague('/api/baskets')); }
+  catch (err) { p.insertAdjacentHTML('beforeend', `<div class="empty">${esc(err.message)}</div>`); return p; }
+  const intro = document.createElement('div'); intro.className = 'body'; intro.style.paddingBottom = '0';
+  intro.innerHTML = `<p class="note">A basket is a list of items with counts: what one map run uses, a crafting kit, what a character needs each day. “Cost now” prices every item at fair value. “In the cheaper market” buys each item in whichever of its Chaos and Divine markets sells it for less, counting only a market that trades steadily. An item with no price in this league is named and left out of both. Click a basket to see how its cost has moved.</p>`;
+  const noPrice = b => b.unpriced.length ? `<span class="gold" title="Left out of the cost: ${esc(b.unpriced.join(', '))}">${b.unpriced.length} item${b.unpriced.length === 1 ? ' has' : 's have'} no price in this league</span>` : '';
+  const detail = document.createElement('div'); detail.className = 'body';
+  const show = b => {
+    const div = state.unit === 'divine', s = b.series;
+    const y = s.cost.map((v, i) => v == null ? null : div ? (s.bridge[i] ? v / s.bridge[i] : null) : v);
+    const each = r => r.value == null ? '<span class="gold">no price in this league</span>'
+      : r.market ? `${marketTag(r.market)} ${money(r.market_price)} each` : r.currency ? '<span class="dim">it is the currency</span>' : '<span class="dim">neither market trades steadily: counted at fair value</span>';
+    detail.innerHTML = `<h2 style="margin:4px 0 6px">${esc(b.name)}</h2>
+      <p class="muted small" style="margin:0 0 8px">${b.since ? `Cost at fair value each hour. Every priced item has a price from ${esc(shortTime(b.since))}, so the line starts there.` : 'No item of this basket has a price in this league, so there is nothing to chart.'}
+      ${b.unpriced.length ? ` ${noPrice(b)} and ${b.unpriced.length === 1 ? 'is' : 'are'} left out.` : ''}${b.no_market ? ` ${b.no_market} item${b.no_market === 1 ? ' trades' : 's trade'} steadily in neither market, so the cheaper-market cost counts ${b.no_market === 1 ? 'it' : 'them'} at fair value.` : ''}</p>
+      <div id="bkc"></div><div id="bki" style="margin-top:10px"></div>`;
+    if (s.t.length) drawChart($('#bkc', detail), { series: [{ label: 'Cost at fair value', color: css('--fair'), x: s.t, y, width: 2 }], yFormat: x => fmt(x) + (div ? ' d' : ' c'), tickFormat: tick(div ? 'd' : 'c'), height: 240 });
+    $('#bki', detail).append(table([
+      { h: 'Item', l: 1, f: r => itemCell(r), s: r => r.name },
+      { h: 'Units', f: r => itemCount(r.units), s: r => r.units },
+      { h: 'Each', f: r => money(r.fair), s: r => r.fair, title: 'Fair value of one' },
+      { h: 'Worth', f: r => money(r.value), s: r => r.value, title: 'Units at fair value' },
+      { h: 'Cheaper market', l: 1, f: each, s: r => r.market_price },
+      { h: 'Bought there', f: r => money(r.market_value), s: r => r.market_value },
+    ], b.items, { sort: 3, onRow: r => r.value != null && !r.currency && openItem(r.id) }));
+  };
+  const tbl = table([
+    { h: 'Basket', l: 1, f: b => `<b>${esc(b.name)}</b>${b.note ? ` <span class="muted small">${esc(b.note)}</span>` : ''}${b.unpriced.length ? `<br><span class="small">${noPrice(b)}</span>` : ''}`, s: b => b.name },
+    { h: 'Items', f: b => b.items.length, s: b => b.items.length, title: 'How many different items the basket lists' },
+    { h: 'Cost now', f: b => money(b.cost), s: b => b.cost, title: 'Every priced item at fair value' },
+    { h: 'In the cheaper market', f: b => money(b.cheaper), s: b => b.cheaper, title: 'Each item bought in whichever of its markets sells it for less now, among those trading steadily. A Divine-market price is converted at the current Divine price' },
+    { h: '24h', f: b => pct(b.change_24h), s: b => b.change_24h, title: 'How the cost at fair value moved over the last 24 hours' },
+    { h: '7d', f: b => pct(b.change_7d), s: b => b.change_7d, title: 'How the cost at fair value moved over the last 7 days' },
+    { h: '', f: b => `<button class="btn ghost" data-delbk="${b.id}" title="Delete this basket">✕</button>` },
+  ], d.baskets, { onRow: b => { state.basket = b.id; show(b); }, empty: 'No basket yet. Paste a list below to price one.' });
+  tbl.addEventListener('click', async e => {
+    const btn = e.target.closest('[data-delbk]'); if (!btn) return;
+    const b = d.baskets.find(x => x.id === +btn.dataset.delbk);
+    if (!confirm(`Delete the basket “${b ? b.name : ''}”?`)) return;
+    try { await api('/api/basket', { delete: +btn.dataset.delbk }); route(); } catch (err) { toast(err.message, true); }
+  });
+  const shown = d.baskets.find(b => b.id === state.basket);
+  if (shown) show(shown);
+
+  const form = document.createElement('form'); form.className = 'body'; form.autocomplete = 'off';
+  form.innerHTML = `<h2 style="margin:0 0 8px">Add a basket</h2>
+    <div class="bar" style="margin:0 0 6px"><label class="f">Name<input type="text" name="name" maxlength="80" placeholder="e.g. One map run" style="width:200px"></label>
+      <label class="f">Note<input type="text" name="note" maxlength="200" placeholder="optional" style="width:240px"></label></div>
+    <textarea name="list" rows="6" spellcheck="false" placeholder="One item per line, the count and the name in either order:&#10;4 Orb of Alchemy&#10;Chaos Orb 6&#10;Rows copied from a spreadsheet or a CSV file work too."></textarea>
+    <div class="bar" style="margin:6px 0 0"><button class="btn primary">Read the list</button><span class="muted small" style="padding-bottom:7px">Nothing is saved until you have seen what was read.</span></div>
+    <div id="bkread"></div>`;
+  const out = $('#bkread', form), stale = () => out.replaceChildren();
+  form.elements.list.oninput = stale;
+  const send = preview => api('/api/basket', { league: state.league, name: form.elements.name.value.trim(), note: form.elements.note.value.trim(), text: form.elements.list.value, preview });
+  form.onsubmit = async e => {
+    e.preventDefault();
+    let r;
+    try { r = await send(true); } catch (err) { return toast(err.message, true); }
+    const rows = r.lines.map(x => `<tr><td class="l">${esc(x.name)}${x.lines.length > 1 ? ` <span class="dim small" title="Lines ${x.lines.join(', ')} of the list name this item. Their counts are added.">${x.lines.length} lines added</span>` : ''}</td><td class="num">${itemCount(x.units)}</td><td class="num">${x.value == null ? '<span class="gold">no price in this league</span>' : money(x.value)}</td></tr>`).join('');
+    const nothing = !r.lines.length;
+    out.innerHTML = `${rows ? `<div class="tw" style="margin-top:8px"><table><thead><tr><th class="l">Item</th><th>Units</th><th>Worth now</th></tr></thead><tbody>${rows}</tbody></table></div>
+        <p class="muted small" style="margin:6px 0 0">Costs ${money(r.cost)} at fair value, ${money(r.cheaper)} in the cheaper market${r.unpriced.length ? `, without the ${r.unpriced.length} item${r.unpriced.length === 1 ? '' : 's'} with no price in this league, which ${r.unpriced.length === 1 ? 'is' : 'are'} kept in the basket for other leagues` : ''}.</p>` : ''}
+      ${r.unread.length ? `<p class="note" style="margin:8px 0 0"><b>${r.unread.length} line${r.unread.length === 1 ? ' was' : 's were'} not read</b> and will be skipped:${r.unread.map(u => `<br>Line ${u.line}, “${esc(u.text)}”: ${esc(u.why)}`).join('')}</p>` : ''}
+      <div class="bar" style="margin:8px 0 0"><button type="button" class="btn primary" data-save ${nothing ? 'disabled' : ''}>Save the basket with ${r.lines.length} item${r.lines.length === 1 ? '' : 's'}</button>
+        <span class="muted small" style="padding-bottom:7px">${nothing ? 'No line could be read.' : 'Nothing is saved until you press this.'}</span></div>`;
+    $('[data-save]', out).onclick = async e2 => {
+      e2.target.disabled = true;  // one save per list read
+      try { const done = await send(false); state.basket = done.saved; toast(`Basket “${done.name}” saved.`); route(); }
+      catch (err) { e2.target.disabled = false; toast(err.message, true); }
+    };
+  };
+  p.append(intro, tbl, detail, form);
+  return p;
 }
 
 const unitOf = f => f(1).trim().slice(-1);
