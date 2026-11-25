@@ -1,7 +1,7 @@
 """`--why`: a Ctrl+C that is ignored because another window is in front can say so.
 
-Without it, "nothing happens" in a first test against the game cannot be told apart from "the key
-was never heard". The clipboard is not read either way.
+Without it, a press that does nothing has two causes that look the same: the key was never heard,
+or it was heard while another window was in front. The clipboard is not read either way.
 """
 
 from __future__ import annotations

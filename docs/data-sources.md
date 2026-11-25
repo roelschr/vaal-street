@@ -31,7 +31,7 @@ Comparable tools:
 - Awakened PoE Trade (https://github.com/SnosMe/awakened-poe-trade) and its PoE 2 fork Exiled Exchange 2 (https://github.com/Kvan7/Exiled-Exchange-2) are hotkey price-check overlays. Their README and DEVELOPING.md files do not say how they read items (clipboard or screen), and make no statement about GGG approval or the Terms. Answering that needs their source code, or the Exiled Exchange 2 FAQ (https://kvan7.github.io/Exiled-Exchange-2/faq), which I did not read. I found no primary source that names a tool doing OCR of the Currency Exchange window.
 
 Conditions for an implementation:
-- One screenshot and one recognition pass per manual key press. No timer, no polling, no auto-trigger on window changes or log-file changes.
+- One screenshot per manual key press. (The companion recognises that one picture's text, then looks again at the part of the same picture that holds the offer; it never captures twice.) No timer, no polling, no auto-trigger on window changes or log-file changes.
 - The overlay only displays. It sends no keys, clicks or chat to the game, and does not move the mouse.
 - Capture with ordinary operating-system screen capture. Do not read game memory, inject into the client, hook its rendering, or modify or read packed game files.
 - Tell the user plainly what is captured and what it is used for. Keep screenshots local and don't keep them by default.

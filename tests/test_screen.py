@@ -1,9 +1,8 @@
 """The screen check companion, without its optional libraries, a screen or a game.
 
-The parser cases are recognised text as the companion would get it. The first three are what
-rapidocr-onnxruntime actually returned for a mock exchange panel (spaces between words dropped,
-the stock split off the ratio row); the rest add the usual misreads by hand: O for 0, l or I for 1,
-stray spaces, a label and its item on one line, thousands commas. Each states its answer.
+The parser cases are recognised text in the game's own layout (`conftest.exchange`; the lines the
+companion really got in game are in tests/test_screen_real_layout.py), with the usual misreads added
+by hand: spaces dropped between words, O for 0, l or I for 1, stray spaces. Each states its answer.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ import threading
 
 import pytest
 
-from conftest import call
+from conftest import call, exchange
 from vaalstreet import screen
 from vaalstreet.screen import PressGate, Reading, ScreenError, parse_screen
 
@@ -21,57 +20,46 @@ NAMES = ["Orb of Alteration", "Orb of Augmentation", "Orb of Alchemy", "Orb of F
          "Divine Orb", "Chromatic Orb", "Test Orb", "Mirror Shard"]
 
 GOOD = [
-    # (recognised lines, expected (item, market, side, item_units, currency_units, stock))
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "64:1", "Stock1,280"],
-     ("Orb of Alteration", "divine", "buy", 64, 1, 1280)),
-    (["IWant", "ChaosOrb", "IHave", "ExaltedOrb", "MarketRatio", "1:140", "Stock37"],
-     ("Exalted Orb", "chaos", "sell", 140, 1, 37)),  # you give Exalted for Chaos: 140 Exalted for 1 Chaos
-    (["IWant", "ChaosOrb", "IHave", "OrbofFusing", "MarketRatio", "10:13", "Stock4,210"],
-     ("Orb of Fusing", "chaos", "sell", 13, 10, 4210)),
+    # (recognised lines, expected (item, market, side, item_units, currency_units))
+    (exchange("OrbofAlteration", "DivineOrb", "64:1"), ("Orb of Alteration", "divine", "buy", 64, 1)),
+    # You give Exalted for Chaos: 140 Exalted for 1 Chaos.
+    (exchange("ChaosOrb", "ExaltedOrb", "1:140"), ("Exalted Orb", "chaos", "sell", 140, 1)),
+    (exchange("ChaosOrb", "OrbofFusing", "10:13"), ("Orb of Fusing", "chaos", "sell", 13, 10)),
     # O read for 0 and l for 1 in the numbers, but the names keep their letters.
-    (["I Want", "Orb of Alteration", "I Have", "Divine Orb", "Market Ratio", "6O : l", "Stock 2,O00"],
-     ("Orb of Alteration", "divine", "buy", 60, 1, 2000)),
-    # Label and item on one line, the stock on the ratio row, a misread letter in the name.
-    (["I Want: Exalted Orb", "I Have: Chaos Orb", "Market Ratio", "1 : 14O   Stock 12"],
-     ("Exalted Orb", "chaos", "buy", 1, 140, 12)),
+    (exchange("Orb of Alteration", "Divine Orb", "6O : l"), ("Orb of Alteration", "divine", "buy", 60, 1)),
     # Divine against Chaos is the Divine Orb's own Chaos market.
-    (["I Want", "Divine Orb", "I Have", "Chaos Orb", "Market Ratio", "l : 148"],
-     ("Divine Orb", "chaos", "buy", 1, 148, None)),
-    # "Stock" alone, its number on the next line; a stray space inside a name.
-    (["IWant", "Chromatic 0rb", "IHave", "Chaos Orb", "MarketRatio", "I0 : 1", "Stock", "350"],
-     ("Chromatic Orb", "chaos", "buy", 10, 1, 350)),
+    (exchange("Divine Orb", "Chaos Orb", "l : 148"), ("Divine Orb", "chaos", "buy", 1, 148)),
+    # A zero read in a name, an I read for 1 in the ratio.
+    (exchange("Chromatic 0rb", "Chaos Orb", "I0 : 1"), ("Chromatic Orb", "chaos", "buy", 10, 1)),
     # Two letters lost, but still far closer to Augmentation (0.94) than to Alteration (0.80).
-    (["IWant", "Orb ofAu.entation", "IHave", "DivineOrb", "MarketRatio", "50:1"],
-     ("Orb of Augmentation", "divine", "buy", 50, 1, None)),
-    # Lines out of order and a title line above; no stock shown.
-    (["Currency Exchange", "IHave", "DivineOrb", "IWant", "MirrorShard", "Market Ratio", "1:3"],
-     ("Mirror Shard", "divine", "buy", 1, 3, None)),
+    (exchange("Orb ofAu.entation", "DivineOrb", "50:1"), ("Orb of Augmentation", "divine", "buy", 50, 1)),
+    # The two labels out of order: the wanted item is still the first name under them.
+    (["Market Ratio", "IHave", "1:3", "IWant", "MirrorShard", "1:3", "DivineOrb", "PLACE ORDER"],
+     ("Mirror Shard", "divine", "buy", 1, 3)),
 ]
 
 
 @pytest.mark.parametrize("lines, expected", GOOD)
 def test_parser_reads_realistic_recognition(lines, expected):
     r = parse_screen(lines, NAMES)
-    assert (r.item, r.market, r.side, r.item_units, r.currency_units, r.stock) == expected
+    assert (r.item, r.market, r.side, r.item_units, r.currency_units) == expected
 
 
 def test_parser_takes_one_string_too():
-    r = parse_screen("I Want\nOrb of Alteration\nI Have\nDivine Orb\nMarket Ratio\n64:1\n", NAMES)
+    r = parse_screen("Market Ratio\nI Want\n64:1\nI Have\nOrb of Alteration\n64:1\nDivine Orb\n", NAMES)
     assert r.describe() == "buy 64 Orb of Alteration for 1 Divine"
 
 
 BAD = [
     # (recognised lines, words the message must contain)
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "64 1"], "couldn't read the ratio"),
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "6#:1"], "couldn't read the ratio"),
-    (["OrbofAlteration", "DivineOrb", "64:1"], "i want"),
+    (exchange("OrbofAlteration", "DivineOrb", "64 1"), "couldn't read the ratio"),
+    (exchange("OrbofAlteration", "DivineOrb", "6#:1"), "couldn't read the ratio"),
+    (["OrbofAlteration", "64:1", "DivineOrb"], "i want"),
     # Too damaged to tell Alteration from Augmentation: refuse, don't guess.
-    (["IWant", "Orb of A", "IHave", "DivineOrb", "MarketRatio", "64:1"], "couldn't tell which item"),
-    (["IWant", "Orb of Fusing", "IHave", "Exalted Orb", "MarketRatio", "1:2"], "neither side is chaos or divine"),
-    (["IWant", "DivineOrb", "IHave", "DivineOrb", "MarketRatio", "1:1"], "both sides"),
-    # Two ratios and no label to pick one.
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "64:1", "70:1"], "more than one ratio"),
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "0:1"], "more than zero"),
+    (exchange("Orb of A", "DivineOrb", "64:1"), "couldn't read one of the two items"),
+    (exchange("Orb of Fusing", "Exalted Orb", "1:2"), "neither side is chaos or divine"),
+    (exchange("DivineOrb", "DivineOrb", "1:1"), "both sides"),
+    (exchange("OrbofAlteration", "DivineOrb", "0:1"), "more than zero"),
 ]
 
 
@@ -114,7 +102,7 @@ class FakeDesk:
         self.events.append((title, body, league))
 
 
-LINES = ["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "64:1"]
+LINES = exchange("OrbofAlteration", "DivineOrb", "64:1")
 
 
 def test_one_press_is_one_capture_one_check_one_event():
@@ -182,7 +170,7 @@ def test_event_endpoint_reaches_the_hideout_poll(server):
 def test_desk_client_checks_through_the_real_api(server):
     client = screen.DeskClient(server)
     league, names = client.names()
-    reading = parse_screen(["IWant", "TestOrb", "IHave", "ChaosOrb", "MarketRatio", "1:9"], names)
+    reading = parse_screen(exchange("TestOrb", "ChaosOrb", "1:9"), names)
     result = client.check(reading, league)
     assert result["verdict"] == "go" and result["name"] == "Test Orb"
 

@@ -1,9 +1,8 @@
 """Recording the order you are placing from a screen reading.
 
-Two parts. `player_amounts` reads the amounts the player typed under "I Want" and "I Have", but only
-when that is safe: the in-game layout of those amounts is untested, so any doubt gives nothing for
-both. `posted_prefill` (each row of /api/readings carries it) chooses what the "Posted this order…"
-form opens with: the player's own amounts, else the flip plan's order, else the market ratio read.
+`posted_prefill` (each row of /api/readings carries it) chooses what the "Posted this order…" form
+opens with: the player's own amounts, else the flip plan's order, else the market ratio read. How the
+amounts are read off the window is tested in tests/test_screen_real_layout.py.
 
 Known answers from the shared synthetic archive (tests/conftest.py, league New): the best Test Orb
 plan buys in the Chaos market at 19 Chaos for 2 and sells in the Chaos market at 10 Chaos for 1. No
@@ -14,65 +13,16 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import ITEM, call
+from conftest import ITEM, call, exchange
 from vaalstreet import screen
-from vaalstreet.screen import parse_screen, player_amounts
+from vaalstreet.screen import parse_screen
 from vaalstreet.server import plan_orders, posted_prefill
 
 NAMES = ["Orb of Alteration", "Orb of Augmentation", "Exalted Orb", "Divine Orb", "Test Orb", "Tier 2 Thing"]
 
-AMOUNTS = [
-    # (recognised lines, expected (want, have))
-    # Each amount on its own line under its item.
-    (["IWant", "OrbofAlteration", "640", "IHave", "DivineOrb", "10", "MarketRatio", "64:1"], (640, 10)),
-    # Right after the item's name, with a thousands comma and an O read for 0.
-    (["I Want", "Orb of Alteration 1,28O", "I Have", "Divine Orb 20", "Market Ratio", "64 : 1"], (1280, 20)),
-    # Label, item and amount on one line; the stock ends the "I Have" region. (A short name with its
-    # amount on one line, "I Have: Chaos Orb 420", is not read as an item at all, as before this change.)
-    (["I Want: Exalted Orb 3", "I Have: Chaos Orb", "420", "Stock 12", "Market Ratio", "1:140"], (3, 420)),
-    # Lines out of order: "I Have" first.
-    (["IHave", "DivineOrb", "2", "IWant", "OrbofAlteration", "128", "MarketRatio", "64:1"], (128, 2)),
-    # Missing on one side: nothing for both.
-    (["IWant", "OrbofAlteration", "640", "IHave", "DivineOrb", "MarketRatio", "64:1"], (None, None)),
-    # Missing on both sides: the windows the existing tests read.
-    (["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "64:1"], (None, None)),
-    # Two numbers under one label: which one is the amount? Nothing.
-    (["IWant", "OrbofAlteration", "640", "12", "IHave", "DivineOrb", "10", "MarketRatio", "64:1"], (None, None)),
-    # A lone letter that could be a misread 1 is not an amount.
-    (["IWant", "OrbofAlteration", "l", "IHave", "DivineOrb", "10", "MarketRatio", "64:1"], (None, None)),
-    # The last region has no label after it, so where it ends is unknown: nothing.
-    (["MarketRatio", "64:1", "IWant", "OrbofAlteration", "640", "IHave", "DivineOrb", "10"], (None, None)),
-    # A part of a unit, or zero, is not an amount you can type.
-    (["IWant", "OrbofAlteration", "64.5", "IHave", "DivineOrb", "1", "MarketRatio", "64:1"], (None, None)),
-    (["IWant", "OrbofAlteration", "0", "IHave", "DivineOrb", "1", "MarketRatio", "64:1"], (None, None)),
-    # A number after text that is not the item's name.
-    (["IWant", "OrbofAlteration", "Quantity 640", "IHave", "DivineOrb", "10", "MarketRatio", "64:1"], (None, None)),
-]
-
-
-@pytest.mark.parametrize("lines, expected", AMOUNTS)
-def test_the_players_amounts_are_read_only_when_sure(lines, expected):
-    r = parse_screen(lines, NAMES)
-    assert (r.want_amount, r.have_amount) == expected
-    # The reading itself does not change because of the amounts.
-    assert r.describe().startswith(("buy", "sell")) and "640" not in r.describe()
-
-
 def test_a_number_in_the_items_own_name_is_never_an_amount():
-    lines = ["IWant", "Tier 2 Thing", "IHave", "Chaos Orb", "5", "MarketRatio", "1:5"]
-    assert player_amounts(lines, NAMES, "Tier 2 Thing", "Chaos Orb") == (None, None)
-    lines = ["IWant", "Tier 2 Thing 4", "IHave", "Chaos Orb 20", "MarketRatio", "1:5"]
-    assert player_amounts(lines, NAMES, "Tier 2 Thing", "Chaos Orb") == (None, None)
-
-
-def test_the_amounts_never_cost_the_reading(monkeypatch):
-    def broken(*args, **kwargs):
-        raise RuntimeError("bug")
-
-    monkeypatch.setattr(screen, "_side_amount", broken)
-    r = parse_screen(["IWant", "OrbofAlteration", "640", "IHave", "DivineOrb", "10", "MarketRatio", "64:1"], NAMES)
-    assert (r.item, r.item_units, r.currency_units, r.want_amount, r.have_amount) == (
-        "Orb of Alteration", 64, 1, None, None)
+    r = parse_screen(exchange("Tier 2 Thing", "Chaos Orb", "1:5"), NAMES)
+    assert (r.item, r.want_amount, r.have_amount) == ("Tier 2 Thing", None, None)
 
 
 READING = {"item": "Test Orb", "market": "chaos", "side": "buy", "item_units": 1.0, "currency_units": 9.0,
@@ -165,7 +115,7 @@ def test_a_ratio_the_ratio_rules_refuse_still_reaches_the_page():
     from test_screen_readings import TellingDesk
 
     desk = TellingDesk()
-    lines = ["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "0:1"]
+    lines = exchange("OrbofAlteration", "DivineOrb", "0:1")
     with pytest.raises(ValueError, match="more than zero"):
         screen.handle_press(lambda: "image", lambda image: lines, desk, lambda s: None)
     (report,) = desk.readings

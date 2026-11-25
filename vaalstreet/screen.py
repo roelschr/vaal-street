@@ -6,7 +6,8 @@ see the Windows screen nor hear Windows hotkeys. It talks to the desk over `http
 (WSL2 forwards localhost) and never opens the desk's archive or ledger itself.
 
 GGG's rules for tools that read the screen shape the whole design (see docs/data-sources.md):
-- One capture and one text-recognition pass per manual key press. There is no timer, no polling
+- One capture per manual key press; its text is recognised, and the offer's own row a second time,
+  enlarged, from the same picture (`make_recognise`). There is no timer, no polling
   and no trigger on window or log changes. Presses that arrive while a check is still running are
   dropped, not queued, so a held key cannot turn into a stream of captures.
 - The player knows what is read: the console says which rectangle is captured, and every verdict
@@ -18,18 +19,18 @@ GGG's rules for tools that read the screen shape the whole design (see docs/data
   lines (at most `MAX_LINES` of `MAX_CHARS`), what it understood or why not. The page shows the last
   few, so a misread can be seen and taught (a correction: "when it reads this, it means that item").
   The desk keeps them in memory only. The screenshot itself is never sent, stored or shown.
-- An understood reading can be recorded as an order you posted, from the desk's page, by a click
-  there. The companion records nothing itself. When the amounts you typed under "I Want" and "I Have"
-  can be read without doubt (`player_amounts`), the form starts from them; where they appear in the
-  recognised text has not been seen in game, so that reading is strict and gives nothing when unsure.
+- An understood reading can be recorded as an order you posted: by a click on the desk's page, or
+  by the record key, which writes the order with the amounts typed and its Gold through the desk's
+  API (`record_order`). Either way the player posts the order in game; nothing is sent to it.
 
 The parser is the testable core. It is a pure function from recognised text lines to one offer,
-matched against the desk's item names. The layout it assumes is the exchange window's labels:
-"I Want" followed by an item, "I Have" followed by an item, and a "Market Ratio" row reading
-"<want units> : <have units>", with an optional "Stock" number. It keys on those labels, not on
-positions, because text recognition returns lines in a loose order and often drops spaces
-("OrbofAlteration") or splits a row in two. When it is not sure, it fails with a message that tells
-the player to press again or type the offer, rather than guessing a verdict.
+matched against the desk's item names. The layout is the game's own, read from the live window in
+November 2026 (`_find_items` describes it): the "Market Ratio", "I Want" and "I Have" labels, then
+one row with the wanted item's name, its amount, the ratio, the other amount and the offered item's
+name, then the Gold above "Place Order". Text recognition often drops spaces ("OrbofAlteration"),
+and a whole-screen capture holds other text too (minimap names, the desk's own page). When the
+parser is not sure, it fails with a message that tells the player to press again or type the offer,
+rather than guessing a verdict.
 
 The companion can also value a stack you copy in game with the game's own copy key
 (`--stacks`, off unless you ask for it). That reads the clipboard, not the screen, once per press,
@@ -105,8 +106,8 @@ class Reading:
     item_units: float
     currency_units: float
     stock: float | None = None
-    # The amounts the player typed into the window, under "I Want" and "I Have", when both were read
-    # without doubt (`player_amounts`); otherwise both None. Not used by the check: the ratio above is.
+    # The amounts the player typed into the window either side of the ratio, when both were read
+    # without doubt (`_row_amounts`); otherwise both None.
     want_amount: int | None = None
     have_amount: int | None = None
     # The Gold the window says the order costs, when a number stands alone above "Place Order".
@@ -126,15 +127,8 @@ def _key(text: str) -> str:
 
 
 def correction_key(text: str) -> str:
-    """The key a correction is saved under: the text as `match_name` sees it, without a leading label.
-
-    "I Want: Exaltd Orb" on one line reaches `match_name` as "Exaltd Orb", so both are keyed "exaltdorb".
-    """
-    key = _key(text)
-    for label in LABELS:
-        if key.startswith(label) and len(key) > len(label):
-            return key[len(label):]
-    return key
+    """The key a correction is saved under: the text as `match_name` sees it."""
+    return _key(text)
 
 
 def match_name(text: str, names: Iterable[str], corrections: dict[str, str] | None = None) -> str | None:
@@ -170,7 +164,6 @@ _DIGITS_RUN = r"[0-9OolI|][0-9OolI|,.]*(?![0-9OolI|,.])"
 _NUM = r"(?<![A-Za-z0-9])" + _DIGITS_RUN  # not the tail of a word
 _RATIO_ROW = re.compile(rf"({_NUM})\s*[:;]\s*({_NUM})")
 _NOT_A_NAME = ("iwant", "ihave", "marketratio", "placeorder", "availabletrades", "competingtrades", "nostock")
-_STOCK = re.compile(rf"stock\s*[:;]?\s*({_DIGITS_RUN})?", re.I)  # "Stock1,280": spaces are often lost
 
 
 def _number(token: str) -> float:
@@ -217,74 +210,36 @@ def _nearness(text: str, names: list[str]) -> float:
     return best if best >= NEARLY else 0.0
 
 
-def _strip_label(text: str, label: str) -> str:
-    return re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", text, flags=re.I)
-
-
 def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
-                corrections: dict[str, str] | None = None) -> tuple[str, str, int | None, int | None]:
-    """(item wanted, item offered, and the line each name stands on when it has a line of its own).
+                corrections: dict[str, str] | None = None) -> tuple[str, str, int, int]:
+    """(item wanted, item offered, and the line each name stands on).
 
     The game's window, as its recognised text reads top to bottom and left to right (seen in game,
     November 2026): "MARKET RATIO"; then "I WANT", the market's ratio, "I HAVE" on one row; then one
     row with the wanted item's name, its amount, the ratio, the other amount, and the offered item's
-    name. So both names come after both labels, the wanted one first. A name on a label's own line,
-    or between the two labels, is read as that label's item, which is how a typed-out offer reads.
+    name; then the Gold and "PLACE ORDER". So both names come after both labels and above the
+    button, the wanted one first.
     """
-    first, second = sorted((("iwant", want_at), ("ihave", have_at)), key=lambda x: x[1])
-    found: dict[str, tuple[str, int | None]] = {}
-    for label, at in (first, second):
-        text = _strip_label(lines[at], label)
-        if _wordy(text):
-            name = match_name(text, names, corrections)
-            if name:
-                found[label] = (name, None)
-    end = min(len(lines), second[1] + 1 + NAME_WINDOW)
+    start = max(want_at, have_at) + 1
+    end = min(len(lines), start + NAME_WINDOW)
     # The window's own names stand above its "Place Order" button; the desk's page, if it is on
     # screen, has item names of its own further down.
-    end = next((k for k in range(second[1] + 1, end) if _key(lines[k]).startswith("placeorder")), end)
-    window = [k for k in range(first[1] + 1, end) if k != second[1]]
+    end = next((k for k in range(start, end) if _key(lines[k]).startswith("placeorder")), end)
+    window = [k for k in range(start, end) if _wordy(lines[k]) and not _key(lines[k]).startswith(_NOT_A_NAME)]
     if any(_key(lines[k]).startswith(_EMPTY_SIDE) for k in window):
         raise ScreenError("One side of the exchange window has no item yet. Pick both items in game, then press the key again.")
-    # Text right under a label that is words but no known name is a misread name: say which, so the
-    # player can teach it. (In the game's own layout a ratio or the other label stands there.)
-    for label, at in (first, second):
-        k = at + 1
-        if label == second[0] and first[0] not in found:
-            continue  # the game's layout: both names follow both labels, so the first one is the wanted
-        if label not in found and k < len(lines) and k != second[1] and _wordy(lines[k]) \
-                and not _key(lines[k]).startswith(_NOT_A_NAME):
-            name = match_name(lines[k], names, corrections)
-            if name:
-                found[label] = (name, k)
-            elif label == second[0] or k < second[1]:  # an offer typed out label by label
-                what = '"I Want"' if label == "iwant" else '"I Have"'
-                raise ScreenError(f"Couldn't tell which item \"{lines[k].strip()}\" is (the {what} side); {TRY_AGAIN}",
-                                  text=lines[k].strip())
-    taken = {k for _, k in found.values() if k is not None}
-    named = [(k, match_name(lines[k], names, corrections)) for k in window if k not in taken and _wordy(lines[k])]
-    named = [(k, n) for k, n in named if n]
-    between = [x for x in named if x[0] < second[1]]
-    after = [x for x in named if x[0] > second[1]]
-    if first[0] not in found and between:
-        found[first[0]] = (between[0][1], between[0][0])
-    # What is left comes in reading order: the wanted item stands on the left, so it comes first.
-    for label in ("iwant", "ihave"):
-        if label not in found and after:
-            k, name = after.pop(0)
-            found[label] = (name, k)
-    if "iwant" not in found or "ihave" not in found:
-        used = {k for _, k in found.values() if k is not None}
-        # The line nearest to some item's name is the likely misread: offer it for teaching.
-        near = max(((_nearness(lines[k], names), -k) for k in window if k not in used and _wordy(lines[k])
-                    and not _key(lines[k]).startswith(_NOT_A_NAME)), default=(0.0, 0))
-        if near[0]:
-            text = lines[-near[1]].strip()
-            raise ScreenError(f"Couldn't tell which item \"{text}\" is; {TRY_AGAIN}", text=text)
-        side = "either side" if not found else ('the "I Want" side' if "iwant" not in found else 'the "I Have" side')
-        raise ScreenError(f"Couldn't read the item on {side}. If its name was misread, click that line under "
-                          f"\"What the screen check read\" on the desk and say which item it is; then {TRY_AGAIN}")
-    return found["iwant"][0], found["ihave"][0], found["iwant"][1], found["ihave"][1]
+    named = [(k, name) for k in window if (name := match_name(lines[k], names, corrections))]
+    if len(named) >= 2:
+        return named[0][1], named[1][1], named[0][0], named[1][0]
+    # The line nearest to some item's name is the likely misread: offer it for teaching.
+    used = {k for k, _ in named}
+    near = max(((_nearness(lines[k], names), -k) for k in window if k not in used), default=(0.0, 0))
+    if near[0]:
+        text = lines[-near[1]].strip()
+        raise ScreenError(f"Couldn't tell which item \"{text}\" is; {TRY_AGAIN}", text=text)
+    raise ScreenError(f"Couldn't read {'one of the two items' if named else 'the two items'} under the labels. If a "
+                      "name was misread, click that line under \"What the screen check read\" on the desk and say "
+                      f"which item it is; then {TRY_AGAIN}")
 
 
 def parse_screen(text: str | Iterable[str], names: Iterable[str],
@@ -314,7 +269,7 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     # is read does the market's ratio at the top of the window count.
     want_amount, have_amount = _row_amounts(lines, want_k, have_k)
     own = None
-    if want_k is not None and have_k is not None and 0 < have_k - want_k <= 6:
+    if 0 < have_k - want_k <= 6:
         for line in lines[want_k + 1:have_k]:
             m = _RATIO_ROW.search(line)
             if m:
@@ -330,7 +285,6 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
                 rows.append((k, _number(m.group(1)), _number(m.group(2))))
             except ValueError:
                 continue
-    row_k = rows[0][0] if rows else 0
     if want_amount is not None:
         want_units, have_units = float(want_amount), float(have_amount)
     elif own:
@@ -344,21 +298,6 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
         if ratio_at is None and len({r[1:] for r in rows}) > 1:
             raise ScreenError(f"Read more than one ratio and no \"Market Ratio\" label to pick one; {TRY_AGAIN}")
         _, want_units, have_units = rows[0]
-
-    stock = None
-    for line in search[row_k:row_k + 3]:
-        m = _STOCK.search(line)
-        if not m:
-            continue
-        token = m.group(1)
-        if token is None:  # "Stock" on its own line, the number split onto the next one
-            k = search.index(line)
-            token = search[k + 1] if k + 1 < len(search) else ""
-        try:
-            stock = _number(token)
-        except ValueError:
-            stock = None  # stock is optional: a check without it is still a check
-        break
 
     # The window reads want : have. Whichever side is Chaos or Divine is the market's currency;
     # Divine against Chaos is the Divine Orb's own Chaos market.
@@ -375,19 +314,17 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     item_side, money_side = (want_units, have_units) if side == "buy" else (have_units, want_units)
     ratio = f"{item_side:g}:{money_side:g}"
     item_units, currency_units = parse_ratio(ratio, market)  # the typed check's own ratio rules
-    if want_amount is None:
-        want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
-    return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount,
+    return Reading(item, market, side, item_units, currency_units, None, want_amount, have_amount,
                    _gold_fee(lines, have_k))
 
 
-def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tuple[int | None, int | None]:
+def _row_amounts(lines: list[str], want_k: int, have_k: int) -> tuple[int | None, int | None]:
     """The two amounts on the game's own row: wanted name, amount, ratio, amount, offered name.
 
     Only that exact shape counts: one whole number on each side of one ratio, between the two names,
     and the two numbers must give the ratio shown between them.
     """
-    if want_k is None or have_k is None or not 0 < have_k - want_k <= 6:
+    if not 0 < have_k - want_k <= 6:
         return None, None
     between = [ln for ln in lines[want_k + 1:have_k] if not _wordy(ln) or _RATIO_ROW.search(ln)]
     if len(between) != 3 or not _RATIO_ROW.fullmatch(between[1].strip()):
@@ -410,14 +347,12 @@ def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tu
 _GOLD = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d+")
 
 
-def _gold_fee(lines: list[str], have_k: int | None) -> int | None:
+def _gold_fee(lines: list[str], have_k: int) -> int | None:
     """The Gold the order costs: the last number standing alone between the names' row and "Place Order".
 
     Seen in game: "455" and "2.100" (the recognition returns the thousands comma as a full stop),
     with minimap text sometimes between. No "Place Order" within a few lines, no Gold.
     """
-    if have_k is None:
-        return None
     found = None
     for line in lines[have_k + 1:have_k + 9]:
         if _key(line).startswith("placeorder"):
@@ -428,13 +363,6 @@ def _gold_fee(lines: list[str], have_k: int | None) -> int | None:
     return None
 
 
-# The player's own amounts in an offer typed out label by label. This is
-# strict: a whole number with at least one real digit, standing alone on a line or right after the
-# item's name, between the side's label and the next label. Anything less sure gives nothing.
-_CLOSERS = ("iwant", "ihave", "marketratio", "stock")
-_AMOUNT = re.compile(r"(?<![A-Za-z0-9])([0-9OolI|]{1,3}(?:,[0-9OolI|]{3})+|[0-9OolI|]+)\s*$")
-
-
 def _amount(token: str) -> int | None:
     if not re.search(r"\d", token):
         return None  # a lone "O", "l" or "I" is a letter, not a number
@@ -443,47 +371,6 @@ def _amount(token: str) -> int | None:
     except ValueError:
         return None
     return int(value) if value == int(value) and value > 0 else None
-
-
-def _side_amount(lines: list[str], at: int, label: str, item: str, names: list[str],
-                 corrections: dict[str, str] | None) -> int | None:
-    """The one amount under a label, or None when there is none, more than one, or the region has no end."""
-    end = next((k for k in range(at + 1, len(lines)) if _key(lines[k]).startswith(_CLOSERS)), None)
-    if end is None:
-        return None
-    item_ends_in_digit = _key(item)[-1:].isdigit()
-    found = []
-    for k in range(at, end):
-        text = lines[k]
-        if k == at:
-            text = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", text, flags=re.I)
-        m = _AMOUNT.search(text)
-        if not m:
-            continue
-        before = text[:m.start()].strip()
-        if before:
-            # "Exalted Orb 5": the number must follow the item's own name, and must not be part of it.
-            if item_ends_in_digit or match_name(before, names, corrections) != item:
-                return None
-        value = _amount(m.group(1))
-        if value is None:
-            return None
-        found.append(value)
-    return found[0] if len(found) == 1 else None
-
-
-def player_amounts(lines: list[str], names: list[str], want: str, have: str,
-                   corrections: dict[str, str] | None = None) -> tuple[int | None, int | None]:
-    """(amount under "I Want", amount under "I Have"): both read without doubt, or (None, None)."""
-    try:
-        want_at, have_at = _label(lines, "iwant"), _label(lines, "ihave")
-        if want_at is None or have_at is None:
-            return None, None
-        a = _side_amount(lines, want_at, "iwant", want, names, corrections)
-        b = _side_amount(lines, have_at, "ihave", have, names, corrections)
-    except Exception:  # the amounts are extra: they must never cost the player the reading itself
-        return None, None
-    return (a, b) if a is not None and b is not None else (None, None)
 
 
 # ------------------------------------------------------------------ verdict

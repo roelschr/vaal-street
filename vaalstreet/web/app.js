@@ -2256,7 +2256,7 @@ function readingsPanel(names, cls = '') {
   let last = null, data = null;
   const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   // The text a correction is saved for, without the label the item may share its line with.
-  const bare = line => String(line).replace(/^\W*i\W*(want|have)\W*/i, '').trim();
+  const bare = line => String(line).trim();
   const reading = r => `<div class="rd" data-id="${r.id}">
       <div class="rdh"><b>${clock(r.t)}</b> <span class="muted">${r.kind === 'stack' ? 'Copied stack' : 'Screen'} · ${ago(r.t)}</span></div>
       ${r.said ? `<div>Understood: <b>${esc(r.said)}</b></div>` : ''}

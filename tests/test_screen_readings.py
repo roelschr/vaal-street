@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from conftest import call
+from conftest import call, exchange
 from vaalstreet import clipboard, screen
 from vaalstreet.ledger import Ledger
 from vaalstreet.paths import ledger_file
@@ -21,9 +21,9 @@ from vaalstreet.screen import ScreenError, parse_screen
 from vaalstreet.server import App
 
 NAMES = ["Orb of Alteration", "Orb of Augmentation", "Orb of Alchemy", "Exalted Orb", "Divine Orb", "Test Orb"]
-GOOD = ["IWant", "OrbofAlteration", "IHave", "DivineOrb", "MarketRatio", "64:1"]
-# "Orb of A" is as close to Alteration as to Augmentation, so without a correction it is refused.
-DAMAGED = ["IWant", "Orb of A", "IHave", "DivineOrb", "MarketRatio", "64:1"]
+GOOD = exchange("OrbofAlteration", "DivineOrb", "64:1")
+# "Orb of Altrtn" is near Alteration but not near enough to be taken for it without a correction.
+DAMAGED = exchange("Orb of Altrtn", "DivineOrb", "64:1")
 
 
 class TellingDesk:
@@ -62,7 +62,7 @@ def test_a_press_tells_the_desk_what_it_read_on_failure():
     assert screen.handle_press(lambda: "image", lambda image: DAMAGED, desk, said.append) is None
     (report,) = desk.readings
     assert report["reading"] is None and "couldn't tell which item" in report["error"].casefold()
-    assert report["lines"] == DAMAGED and report["unmatched"] == "Orb of A"
+    assert report["lines"] == DAMAGED and report["unmatched"] == "Orb of Altrtn"
     assert desk.checks == [] and desk.events == []
 
 
@@ -86,22 +86,19 @@ def test_a_desk_that_cannot_take_readings_does_not_stop_the_check():
 def test_a_correction_changes_what_is_understood_and_nothing_else():
     with pytest.raises(ScreenError):
         parse_screen(DAMAGED, NAMES)
-    corrections = {screen.correction_key("Orb of A"): "Orb of Alteration"}
+    corrections = {screen.correction_key("Orb of Altrtn"): "Orb of Alteration"}
     assert parse_screen(DAMAGED, NAMES, corrections).item == "Orb of Alteration"
     # A similar but different text is not the corrected one: still refused.
-    similar = ["IWant", "Orb of Au", "IHave", "DivineOrb", "MarketRatio", "64:1"]
+    similar = exchange("Orb of Altrtm", "DivineOrb", "64:1")
     with pytest.raises(ScreenError):
         parse_screen(similar, NAMES, corrections)
-    # The label on the item's own line does not change the key.
-    assert screen.correction_key("I Want: Orb of A") == screen.correction_key("orb of a") == "orbofa"
-    one_line = ["I Want: Orb of A", "I Have: Divine Orb", "Market Ratio", "64:1"]
-    assert parse_screen(one_line, NAMES, corrections).item == "Orb of Alteration"
+    assert screen.correction_key("Orb of Altrtn") == screen.correction_key("orb of altrtn") == "orbofaltrtn"
     # A correction to an item the league does not know is ignored.
-    assert screen.match_name("Orb of A", NAMES, {"orbofa": "Mirror of Kalandra"}) is None
+    assert screen.match_name("Orb of Altrtn", NAMES, {"orbofaltrtn": "Mirror of Kalandra"}) is None
 
 
 def test_the_companion_uses_the_corrections_it_was_given():
-    desk = TellingDesk({"orbofa": "Orb of Alteration"})
+    desk = TellingDesk({"orbofaltrtn": "Orb of Alteration"})
     screen.handle_press(lambda: "image", lambda image: DAMAGED, desk, lambda s: None)
     assert desk.checks[0].item == "Orb of Alteration"
 
@@ -169,7 +166,7 @@ def test_the_desk_cuts_and_rebuilds_what_it_is_sent(tmp_path):
 
 def test_readings_and_corrections_through_the_api(server):
     league = call(f"{server}/api/names")[1]["league"]
-    report = screen.reading_report(["IWant", "Tst0rb", "IHave", "ChaosOrb", "1:9"], None,
+    report = screen.reading_report(exchange("Tst0rb", "ChaosOrb", "1:9"), None,
                                    "Couldn't tell which item \"Tst0rb\" is", league, "Tst0rb")
     assert call(f"{server}/api/reading", report)[0] == 200
     status, out = call(f"{server}/api/readings")
@@ -184,7 +181,7 @@ def test_readings_and_corrections_through_the_api(server):
     # The companion, given the correction with the names, now understands the line.
     client = screen.DeskClient(server)
     _, names = client.names()
-    assert parse_screen(["IWant", "Tst0rb", "IHave", "ChaosOrb", "MarketRatio", "1:9"], names,
+    assert parse_screen(exchange("Tst0rb", "ChaosOrb", "1:9"), names,
                         client.corrections).item == "Test Orb"
 
     refused = [({"text": "Te", "item": "Test Orb"}, "three letters"),
