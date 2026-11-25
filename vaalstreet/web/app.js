@@ -68,10 +68,9 @@ const dur = h => h == null ? '–' : h < 1 ? Math.max(1, Math.round(h * 60)) + '
 // Minutes as people say them: "2 min", "1.5 min", never "2.000".
 const mins = v => v == null || !isFinite(v) ? '–' : `${+(+v).toFixed(v >= 10 ? 0 : 1)} min`;
 const plainPct = (v, digits = 0) => v == null ? '–' : (v * 100).toFixed(digits) + '%';
-function ago(t) {
-  const s = Date.now() / 1000 - t;
-  return s < 5400 ? Math.max(1, Math.round(s / 60)) + ' min ago' : s < 172800 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
-}
+// "12 min ago" for a number of seconds, and for a time.
+const agoSeconds = s => s < 5400 ? Math.max(1, Math.round(s / 60)) + ' min ago' : s < 172800 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
+const ago = t => agoSeconds(Date.now() / 1000 - t);
 const icon = id => `<img loading="lazy" alt="" src="/icon?id=${encodeURIComponent(id)}" onerror="this.outerHTML='<span class=ph></span>'">`;
 const itemCell = (r, sub) => `<div class="item">${icon(r.id)}<div style="min-width:0"><b>${esc(r.name)}</b>${sub ? `<span class="sub">${sub}</span>` : ''}</div></div>`;
 // "29 Chaos for 9" (what you pay for how many) / "64 for 1 Divine" (how many you give for what).
@@ -1004,6 +1003,7 @@ async function stashPanel(names) {
   const tbl = table([
     { h: 'Item', l: 1, f: r => itemCell(r, r.note ? esc(r.note) : ''), s: r => r.name },
     { h: 'Units', f: r => fmt(r.units), s: r => r.units },
+    ...(source === 'stash' ? [{ h: 'Counted', f: r => r.counted_ago == null ? '–' : `<span class="muted">${agoSeconds(r.counted_ago)}</span>`, s: r => r.counted_ago, title: 'When you last set this line: typed, pasted, or copied in game with the stack check. What you looted or sold since then is not in it. Click to sort and see the oldest lines' }] : []),
     { h: 'Worth', f: r => money(r.value), s: r => r.value, title: 'Units at fair value' },
     { h: 'Low – high', f: r => r.value == null ? '–' : `${money(r.low)} <span class="dim">–</span> ${money(r.high)}`, s: r => r.high, title: 'Units at the low and high end of how sure the model is of the value now. Not what a sale will fetch' },
     { h: 'Chaos market', f: r => money(r.chaos?.value), s: r => r.chaos?.value, title: 'Units at the Chaos market’s own price' },
@@ -1011,7 +1011,7 @@ async function stashPanel(names) {
     { h: 'Better market', l: 1, f: r => r.value == null ? '' : better(r), s: r => r.best_by },
     { h: 'Selling it all', l: 1, f: r => r.value == null || !r.best ? '' : r.thin ? `<span class="gold" title="More than three hours of that market's volume: selling it all will push the price">thin market${r.hours != null ? ` · ${dur(r.hours)} of volume` : ''}</span>` : `<span class="muted">${dur(r.hours)} of volume</span>`, s: r => r.hours, title: 'How many hours of the better market’s volume this holding is' },
     ...(source === 'stash' ? [{ h: '', f: r => `<button class="btn ghost" data-edit="${esc(r.name)}" data-units="${r.units}" title="Change the units">Edit</button><button class="btn ghost" data-rm="${esc(r.name)}" title="Remove this line">✕</button>` }] : []),
-  ], d.rows, { sort: 2, onRow: r => openItem(r.id), empty: source === 'stash' ? 'Enter what you hold to see what it is worth and where to sell it.' : 'Your recorded trades leave you holding nothing in this league.' });
+  ], d.rows, { sort: source === 'stash' ? 3 : 2, onRow: r => openItem(r.id), empty: source === 'stash' ? 'Enter what you hold to see what it is worth and where to sell it.' : 'Your recorded trades leave you holding nothing in this league.' });
   p.append(body, tbl);
   const set = async (item, units) => { try { await api('/api/stash', { league: state.league, item, units }); route(); } catch (err) { toast(err.message, true); } };
   $('#stsrc', p).onclick = e => { const s = e.target.dataset.s; if (s) { localStorage.stashSource = s; route(); } };

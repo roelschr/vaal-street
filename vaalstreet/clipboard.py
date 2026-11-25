@@ -210,6 +210,11 @@ def keep(stack: Stack, league: str, desk, tally: Tally, say: Callable[[str], Non
         tally.done(stack, before)
         words = (f"Stash unchanged: the same count as the copy before, so the same stack. "
                  f"{stack.item} stays at {before:,}.")
+        try:
+            # The same units written again: nothing changes but the time the line was last counted.
+            desk.set_stash(stack.item, before, league)
+        except RuntimeError:
+            pass  # the line is right as it stands; only its "last counted" time is a little old
         say(f"    {words}")
         return words
     try:

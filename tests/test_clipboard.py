@@ -279,7 +279,9 @@ def test_stash_switch_writes_the_copied_stack_and_prints_the_sum():
 
     said.clear()
     handle_copy(FakeClip(text=orbs(12)), 7, desk, said.append, tally)  # the same stack pressed twice
-    assert len(desk.kept) == 2 and any("Stash unchanged" in line and "stays at 112" in line for line in said)
+    assert any("Stash unchanged" in line and "stays at 112" in line for line in said)
+    # The same 112 is written again, which changes nothing but the time the line was last counted.
+    assert desk.kept == [("Test Orb", 100, "New"), ("Test Orb", 112, "New"), ("Test Orb", 112, "New")]
 
     desk._stash = {"was": 112.0}
     handle_copy(FakeClip(text=orbs(1500)), 7, desk, said.append, tally)  # the pile again, loot dropped in
