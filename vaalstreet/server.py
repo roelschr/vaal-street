@@ -618,18 +618,20 @@ class App:
     def api_ledger(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
         positions = []
-        total_value = total_cost = total_realized = 0.0
+        total_value = total_cost = total_realized = total_loot = 0.0
         for item_id, p in self.ledger.positions(desk.league).items():
             mark = desk.fair(item_id)
             value = p["units"] * mark if mark is not None else None
             total_cost += p["cost"]
             total_realized += p["realized"]
+            total_loot += p["loot"]
             total_value += value or 0.0
             positions.append({
                 "id": item_id, "name": desk._name(item_id), "units": _num(p["units"]),
                 "average": _num(p["cost"] / p["units"]) if p["units"] else None, "mark": _num(mark),
                 "value": _num(value), "unrealized": _num(value - p["cost"]) if value is not None else None,
-                "realized": _num(p["realized"]), "last": p["last"],
+                # `loot`: the part of the realised profit that came from units sold with no recorded cost.
+                "realized": _num(p["realized"]), "loot": _num(p["loot"]), "last": p["last"],
             })
         positions.sort(key=lambda r: -(r["value"] or 0))
         trades = self.ledger.trades(desk.league)
@@ -649,7 +651,8 @@ class App:
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
             "made": made[::-1][:200],
             "totals": {"value": _num(total_value), "cost": _num(total_cost),
-                       "unrealized": _num(total_value - total_cost), "realized": _num(total_realized)},
+                       "unrealized": _num(total_value - total_cost), "realized": _num(total_realized),
+                       "loot": _num(total_loot)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
             "fill_calibration": self.fill_calibration(desk),
             "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,

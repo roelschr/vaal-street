@@ -745,3 +745,37 @@ def test_an_order_is_judged_against_the_plan_it_was_posted_from(tmp_path):
     # The best plan alone, as before this rule: the second plan's own order is told to cancel.
     alone = {o["id"]: o for o in ledger.advise_orders("L", prices, {"orb": {"sell": {"divine": first}}}, bridge)}
     assert alone[at_second]["advice"] == "cancel"
+def test_loot_sold_is_profit_kept_apart_from_trading(tmp_path):
+    """Known answers. 10 orbs bought at 2 cost 20. In a session of 2 hours, 14 are sold at 5: the 10 the
+    ledger holds realise 10 × 5 − 20 = 30, which is trading, and the 4 it never saw cost nothing and realise
+    4 × 5 = 20, which is loot. So: realised 50, of which loot 20; 25 an hour in all, 15 an hour from trading.
+    A later sale the holdings cover adds no loot, and a sale made of nothing but loot is all loot."""
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "orb", "buy", 10, 2, t=100)
+    session = ledger.start_session("L", expected_per_hour=12, t=1000)
+    ledger.add_trade("L", "orb", "sell", 14, 5, t=2000)
+    ledger.stop_session(session, t=1000 + 7200)
+    orb = ledger.positions("L")["orb"]
+    assert orb["realized"] == pytest.approx(50) and orb["loot"] == pytest.approx(20)
+    done = ledger.sessions("L", now=99999)[0]
+    assert done["profit"] == pytest.approx(50) and done["loot"] == pytest.approx(20)
+    assert done["trading"] == pytest.approx(30)
+    assert done["per_hour"] == pytest.approx(25) and done["trading_per_hour"] == pytest.approx(15)
+
+    ledger.add_trade("L", "orb", "buy", 3, 2, t=20000)
+    ledger.add_trade("L", "orb", "sell", 3, 4, t=20001)   # covered: 3 × (4 − 2) = 6 of trading, no loot
+    ledger.add_trade("L", "gem", "sell", 2, 7, t=20002)   # never bought: 14, all loot
+    positions = ledger.positions("L")
+    assert positions["orb"]["realized"] == pytest.approx(56) and positions["orb"]["loot"] == pytest.approx(20)
+    assert positions["gem"]["realized"] == pytest.approx(14) and positions["gem"]["loot"] == pytest.approx(14)
+    assert ledger.sessions("L", now=99999)[0]["loot"] == pytest.approx(20), "sales after the session are not in it"
+
+
+def test_a_session_without_loot_reads_as_before(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.add_trade("L", "orb", "buy", 10, 2, t=100)
+    ledger.start_session("L", t=1000)
+    ledger.add_trade("L", "orb", "sell", 10, 3, t=2000)
+    live = ledger.sessions("L", now=1000 + 3600)[0]
+    assert live["loot"] == 0 and live["trading"] == live["profit"] == pytest.approx(10)
+    assert live["trading_per_hour"] == live["per_hour"] == pytest.approx(10)
