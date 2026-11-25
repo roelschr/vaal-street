@@ -167,3 +167,29 @@ def test_no_stock_says_so_and_amounts_still_read():
         screen.parse_screen(head + ["EldritchExaltedOrb", "Divine Orb", "Tujen", "250", "PLACE ORDER"], NAMES)
     r = screen.parse_screen(head + ["EldritchExaltedOrb", "90", "90:1", "1", "Divine Orb", "250", "PLACE ORDER"], NAMES)
     assert (r.item, r.market, r.side, r.item_units, r.currency_units, r.gold) == ("Eldritch Exalted Orb", "divine", "buy", 90, 1, 250)
+
+
+def test_amounts_that_do_not_give_the_shown_ratio_are_not_amounts():
+    # "11" read for "1": 11 for 43 is not 1 : 3.31, so no amounts, and the row's own ratio is judged.
+    lines = [("11" if ln == "13" else ln) for ln in TYPED]
+    r = screen.parse_screen(lines, DECK)
+    assert (r.want_amount, r.have_amount) == (None, None) and (r.item_units, r.currency_units) == (1, 3.31)
+
+
+def test_where_the_offer_row_and_its_amount_fields_are():
+    # Measured on the game's window at 2560 x 1440: labels at x 462 and 1133, the amount fields from
+    # 72 to 170 pixels either side of the middle (836), on the row at y 320.
+    boxes = [(462, 252, 545, 276, "I WANT"), (1133, 253, 1205, 277, "I HAVE"), (2150, 1100, 2200, 1115, "I WANT"),
+             (2150, 1120, 2200, 1135, "I HAVE")]  # the desk's page repeats the words lower down
+    place = screen.offer_place(boxes, 2560, 1440)
+    left, top, right, bottom = place.strip
+    assert left < 415 and right > 1191 and top <= 300 and bottom >= 345 and abs(place.middle - 836) < 3
+    want, have = place.fields(320, 22)
+    assert want[0] < 668 and 760 < want[2] < 814 and 858 < have[0] < 912 and have[2] > 1000
+    assert screen.offer_place(boxes[2:], 2560, 1440) is None  # one under the other is not the window
+
+
+def test_the_pair_of_field_readings_that_gives_the_ratio_wins():
+    assert screen._agreeing(["11", "1"], ["2"], "1 : 2") == ("1", "2")
+    assert screen._agreeing(["13"], ["43"], "1:3.31") == ("13", "43")
+    assert screen._agreeing(["11"], ["43"], "1:3.31") is None and screen._agreeing(["1"], ["2"], None) is None

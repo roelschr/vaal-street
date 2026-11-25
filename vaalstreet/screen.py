@@ -195,6 +195,7 @@ def _label(lines: list[str], label: str) -> int | None:
 # lines; the rest of a whole-screen capture (the desk's page can be on screen too) holds other names.
 NAME_WINDOW = 14
 NEARLY = 0.7
+AMOUNTS_AGREE = 0.02  # the shown ratio is rounded to two or three digits
 _EMPTY_SIDE = ("selectcurrency", "clicktoselect")
 
 
@@ -383,7 +384,8 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
 def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tuple[int | None, int | None]:
     """The two amounts on the game's own row: wanted name, amount, ratio, amount, offered name.
 
-    Only that exact shape counts: one whole number on each side of one ratio, between the two names.
+    Only that exact shape counts: one whole number on each side of one ratio, between the two names,
+    and the two numbers must give the ratio shown between them.
     """
     if want_k is None or have_k is None or not 0 < have_k - want_k <= 6:
         return None, None
@@ -391,7 +393,18 @@ def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tu
     if len(between) != 3 or not _RATIO_ROW.fullmatch(between[1].strip()):
         return None, None
     a, b = _amount(between[0].strip()), _amount(between[2].strip())
-    return (a, b) if a is not None and b is not None else (None, None)
+    if a is None or b is None:
+        return None, None
+    # The window shows the ratio of the two amounts between them. Amounts that do not give that ratio
+    # hold a misread digit ("11" for "1"), and a wrong amount must never reach the Ledger.
+    m = _RATIO_ROW.fullmatch(between[1].strip())
+    try:
+        left, right = _number(m.group(1)), _number(m.group(2))
+    except ValueError:
+        return None, None
+    if left <= 0 or right <= 0 or abs((a / b) / (left / right) - 1) > AMOUNTS_AGREE:
+        return None, None
+    return a, b
 
 
 _GOLD = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d+")
@@ -612,7 +625,7 @@ def record_order(reading: Reading, desk, league: str, say: Callable[[str], None]
 def handle_press(capture: Callable[[], object], recognise: Callable[[object], list[str]],
                  desk: DeskClient, say: Callable[[str], None] = print, record: bool = False,
                  recent: dict | None = None) -> dict | None:
-    """Everything one key press does: one capture, one recognition pass, one check, one event.
+    """Everything one key press does: one capture, one recognition of it, one check, one event.
 
     The screenshot is a local variable and is dropped when this returns; nothing is written to disk.
     The desk is told the recognised lines and what they were understood as, success or not, so the
@@ -777,14 +790,150 @@ def reading_order(boxes: Iterable[tuple[float, float, float, str]]) -> list[str]
     return [text for _, _, row in rows for _, text in sorted(row, key=lambda x: x[0])]
 
 
+ZOOM = 3
+TYPED_BRIGHT = 170  # typed amounts are near white (226 of 255 in game); the grey suggestions reach about 117
+FIELD_SCORE = 0.5  # how sure the recognition must be of a number read from an amount field alone
+
+
+@dataclasses.dataclass
+class OfferPlace:
+    """Where the offer's own row is in the picture, worked out from the two labels."""
+    strip: tuple[int, int, int, int]  # left, top, right, bottom of the row with names, amounts and ratio
+    middle: float  # the x half way between the labels, where the ratio stands
+    apart: float  # the distance between the labels' left edges: the window's scale
+    row: float  # the y where the row's text is expected, until the ratio is found
+    tall: float  # the height of a label's text
+
+    def fields(self, row: float, tall: float) -> list[tuple[int, int, int, int]]:
+        """The wanted amount's field and the offered amount's, either side of the ratio.
+
+        Measured in game on a 2560 x 1440 screen: the labels 671 pixels apart, the fields from 72 to
+        170 pixels either side of the middle. The numbers here are those, as shares of the distance.
+        """
+        near, far = 0.10 * self.apart, 0.26 * self.apart
+        top, bottom = max(0, int(row - 0.6 * tall)), int(row + 0.6 * tall)  # inside the field's frame
+        return [(max(0, int(self.middle - far)), top, int(self.middle - near), bottom),
+                (int(self.middle + near), top, int(self.middle + far), bottom)]
+
+
+def offer_place(boxes: Iterable[tuple[float, float, float, float, str]], width: int, height: int) -> OfferPlace | None:
+    """Where the offer's row is, from (left, top, right, bottom, text) boxes, or None without both labels.
+
+    The row with the two names, the two amounts and the ratio stands right under the "I Want" and
+    "I Have" labels and reaches a little past them on both sides. The amount fields are small, and a
+    pass over a whole screen often misses what is typed in them, so the strip is recognised a second
+    time, enlarged, and a field still without a number a third time by itself (`make_recognise`).
+    """
+    boxes = list(boxes)
+    wants = sorted((b for b in boxes if _key(b[4]) == "iwant"), key=lambda b: b[1])
+    for want in wants:  # the topmost pair on one row: the desk's page may show the same words lower down
+        tall = want[3] - want[1]
+        for have in boxes:
+            if _key(have[4]) == "ihave" and have[0] > want[2] and abs(have[1] - want[1]) < tall:
+                apart = have[0] - want[0]
+                strip = (max(0, int(want[0] - 0.3 * apart)), max(0, int(want[3])),
+                         min(width, int(have[2] + 0.3 * apart)), min(height, int(want[3] + 4 * tall)))
+                return OfferPlace(strip, ((want[0] + want[2]) / 2 + (have[0] + have[2]) / 2) / 2, apart,
+                                  (want[1] + want[3]) / 2 + 2.4 * tall, tall)
+    return None
+
+
+def _agreeing(wants: list[str], haves: list[str], ratio: str | None) -> tuple[str, str] | None:
+    """The first pair of readings, one per field, whose amounts give the ratio shown; None if none does."""
+    m = _RATIO_ROW.fullmatch(ratio.strip()) if ratio else None
+    if not m:
+        return None
+    try:
+        shown = _number(m.group(1)) / _number(m.group(2))
+    except (ValueError, ZeroDivisionError):
+        return None
+    for a in wants:
+        for b in haves:
+            x, y = _amount(a), _amount(b)
+            if x and y and shown > 0 and abs((x / y) / shown - 1) <= AMOUNTS_AGREE:
+                return a, b
+    return None
+
+
 def make_recognise(RapidOCR):
     engine = RapidOCR()
 
-    def recognise(image) -> list[str]:
+    def read(image) -> list[tuple[float, float, float, float, str]]:
         result, _ = engine(image)
         # Each result is (four corner points, text, score); the corners start top left, clockwise.
-        return reading_order((min(p[0] for p in r[0]), min(p[1] for p in r[0]), max(p[1] for p in r[0]), r[1])
-                             for r in result or [])
+        return [(min(p[0] for p in r[0]), min(p[1] for p in r[0]), max(p[0] for p in r[0]), max(p[1] for p in r[0]), r[1])
+                for r in result or []]
+
+    def enlarge(image):
+        try:
+            import cv2  # the recognition library's own dependency
+            return cv2.resize(image, None, fx=ZOOM, fy=ZOOM, interpolation=cv2.INTER_CUBIC)
+        except Exception:
+            return image.repeat(ZOOM, axis=0).repeat(ZOOM, axis=1)
+
+    def text_alone(image, shape: str) -> str | None:
+        """The text a small picture holds, when it has the given shape and the recognition is sure."""
+        try:
+            result, _ = engine(enlarge(image), use_det=False, use_cls=False)
+        except Exception:
+            return None
+        if not result:
+            return None
+        text, score = unicodedata.normalize("NFKC", str(result[0][0])).strip(), float(result[0][1])
+        return text if score >= FIELD_SCORE and re.fullmatch(shape, text) else None
+
+    def number_alone(image) -> str | None:
+        return text_alone(image, r"\d[\d,.]*")
+
+    def recognise(image) -> list[str]:
+        boxes = read(image)
+        place = offer_place(boxes, image.shape[1], image.shape[0])
+        if place:
+            left, top, right, bottom = place.strip
+            inside = lambda b, area: area[0] <= (b[0] + b[2]) / 2 <= area[2] and area[1] <= (b[1] + b[3]) / 2 <= area[3]
+            again = [(left + a / ZOOM, top + b / ZOOM, left + c / ZOOM, top + d / ZOOM, text)
+                     for a, b, c, d, text in read(enlarge(image[top:bottom, left:right]))]
+            if again:  # the closer look replaces what the first pass saw there
+                boxes = [b for b in boxes if not inside(b, place.strip)] + again
+            ratio = next((b for b in boxes if inside(b, place.strip)
+                          and _RATIO_ROW.fullmatch(unicodedata.normalize("NFKC", b[4]).strip())), None)
+            row, tall = ((ratio[1] + ratio[3]) / 2, ratio[3] - ratio[1]) if ratio else (place.row, place.tall)
+            if not ratio:
+                # With amounts typed the game dims the ratio between them, and both looks can miss it.
+                half = 0.09 * place.apart
+                area = (int(place.middle - half), max(0, int(row - 0.6 * tall)), int(place.middle + half), int(row + 0.6 * tall))
+                text = text_alone(image[area[1]:area[3], area[0]:area[2]], r"\d[\d,.]*\s*[:;]\s*\d[\d,.]*")
+                if text:
+                    ratio = (area[0], row - tall / 2, area[2], row + tall / 2, text)
+                    boxes.append(ratio)
+            # A field the two looks left empty is read by itself, at a few slightly different cuts:
+            # a lone thin "1" next to the field's frame reads right at some and wrong at others. With
+            # both amounts open to doubt, the pair that gives the ratio shown between them wins.
+            fields = place.fields(row, tall)
+            seen = []
+            for field in fields:
+                if image[field[1]:field[3], field[0]:field[2]].mean(axis=2).max(initial=0) < TYPED_BRIGHT:
+                    # Grey: the game's own suggestion, not an amount the player typed. Never an amount.
+                    boxes = [b for b in boxes if not inside(b, field)]
+                    seen.append(([], False))
+                    continue
+                held = [b[4].strip() for b in boxes if inside(b, field)]
+                if held:
+                    seen.append((held[:1], False))
+                    continue
+                found = []
+                for cut in (0, 0.01, 0.02, -0.01):
+                    inset = int(cut * place.apart)
+                    text = number_alone(image[field[1]:field[3], field[0] + inset:field[2] - inset])
+                    if text and text not in found:
+                        found.append(text)
+                seen.append((found, True))
+            pair = _agreeing(seen[0][0], seen[1][0], unicodedata.normalize("NFKC", ratio[4]) if ratio else None)
+            for field, (found, new), text in zip(fields, seen, pair or (None, None)):
+                text = text or (found[0] if found and not pair else None)
+                if new and text:
+                    boxes.append((field[0], row - tall / 2, field[2], row + tall / 2, text))
+        return reading_order((b[0], b[1], b[3], b[4]) for b in boxes)
 
     return recognise
 
