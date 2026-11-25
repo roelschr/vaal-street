@@ -1,0 +1,83 @@
+# Builds the Windows app: the Python side frozen with PyInstaller, checked, then packed with the
+# Electron shell into one installer. PyInstaller cannot build a Windows program from Linux, so this
+# runs on a Windows machine.
+name: Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/windows-app.yml"
+      - "vaalstreet/desktop.py"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12: the text-recognition library has no build for 3.13 or later.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install the package, the screen check libraries and the build tools
+        run: python -m pip install ".[screen]" pyinstaller pytest
+
+      # --collect-data vaalstreet brings the page; rapidocr keeps its models and settings as data
+      # files, and pynput picks its Windows parts by name at run time, so both are named here.
+      - name: Freeze the Python side
+        working-directory: desktop
+        run: >
+          pyinstaller --noconfirm --name vaal-desk --console
+          --collect-data vaalstreet
+          --collect-all rapidocr_onnxruntime
+          --hidden-import pynput.keyboard._win32
+          --hidden-import pynput.mouse._win32
+          --distpath backend --workpath build/pyinstaller --specpath build/pyinstaller
+          vaal_desk.py
+
+      - name: Check that it starts, serves the page, starts the screen check and stops
+        run: python desktop/smoke.py desktop/backend/vaal-desk/vaal-desk.exe --screen
+
+      - name: Pack the installer
+        working-directory: desktop
+        run: |
+          npm ci
+          npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VaalStreet-Windows
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VaalStreet-Windows
+      - name: Attach the installer to the release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" *.exe --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes || gh release upload "$TAG" *.exe --repo "$GITHUB_REPOSITORY" --clobber
