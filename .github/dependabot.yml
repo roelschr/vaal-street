@@ -1,17 +1,25 @@
 # Weekly checks for newer versions of what the project builds on. Each update arrives as a pull request.
 version: 2
 updates:
-  - package-ecosystem: pip
+  # pyproject.toml and uv.lock. The requirements in pyproject.toml are lower bounds, so most of these
+  # pull requests move uv.lock only. The Windows build installs with pip and does not read uv.lock.
+  - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
+  # Electron and electron-builder together, in one pull request a week and one per security fix,
+  # because separate ones all rewrite package-lock.json and block each other.
   - package-ecosystem: npm
     directory: "/desktop"
     schedule:
       interval: weekly
     groups:
-      electron:
-        patterns: ["electron*"]
+      desktop:
+        applies-to: version-updates
+        patterns: ["*"]
+      desktop-security:
+        applies-to: security-updates
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
