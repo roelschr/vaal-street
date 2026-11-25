@@ -2246,7 +2246,9 @@ function ringControls() {
 // What the screen check read on its last presses, as the companion told the desk: the recognised lines
 // and what the desk understood, or why not. The desk keeps the last 10 in memory only. Recognised text
 // is untrusted, so every line goes through esc. A misread item name can be taught here: "when it reads
-// this, it means that item", saved in your ledger and used by the companion from its next press.
+// this, it means that item", saved in your ledger and used by the companion from its next press. An
+// understood reading can open the "posted" form (askPosted) with what the desk worked out: your own
+// amounts, the flip plan's order or the market ratio, in that order (`order` from the server).
 function readingsPanel(names, cls = '') {
   const p = panel('What the screen check read', cls, '<button type="button" class="btn ghost small" data-rr title="Look for new readings">Refresh</button>');
   const body = document.createElement('div'); body.className = 'body small readings'; p.append(body);
@@ -2260,7 +2262,7 @@ function readingsPanel(names, cls = '') {
       ${r.said ? `<div>Understood: <b>${esc(r.said)}</b></div>` : ''}
       ${r.error ? `<div class="down">${esc(r.error)}</div>` : ''}
       ${r.lines.length ? `<pre class="ocr" title="The lines the text recognition returned, in its order. Click one to teach the desk which item it means.">${r.lines.map((l, i) => `<span data-line="${i}">${esc(l)}</span>`).join('\n')}</pre>` : ''}
-      ${r.kind === 'screen' ? `<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button>` : ''}
+      ${r.kind === 'screen' ? `<div class="bar" style="margin:0;gap:6px">${r.order ? `<button type="button" class="btn small" data-post="${esc(JSON.stringify(r.order))}" title="Posted this order in game? Record it in your Ledger. Nothing is recorded until you press Record, and nothing is sent to the game.">Posted this order…</button>` : ''}<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button></div>` : ''}
     </div>`;
   const draw = () => {
     const d = data;
@@ -2271,8 +2273,9 @@ function readingsPanel(names, cls = '') {
   };
   const load = async force => {
     if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
-    const d = await api('/api/readings');
-    if (!force && data && d.last === last) return;
+    // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
+    const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
+    if (!d.readings || body.querySelector('form.teach')) return;  // a form opened while this was on its way
     last = d.last; data = d; draw();
   };
   const teach = (id, text) => {
