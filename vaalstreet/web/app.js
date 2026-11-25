@@ -2065,7 +2065,7 @@ const TOUR = [
   { page: 'league', title: 'Planning and practice', body: `<ul><li><b>Ladder</b>: what a small purse can run at each size, and when to switch plans.</li>
     <li><b>League start</b> (this page): what past leagues did from today’s league day, and when Divines were cheapest. You can also <b>rehearse a past league</b> here, hour by hour, without touching your real ledger.</li>
     <li><b>Backtest lab</b>: replay a strategy over past leagues and compare it with holding Divines.</li></ul>` },
-  { title: 'While you play', body: `<ul><li><kbd>H</kbd> opens the hideout window: top flips, watchlist and alerts in a small window that stays on top in Chrome and Edge. Run the game in windowed or borderless mode to see it over the game.</li>
+  { title: 'While you play', body: `<ul><li><kbd>H</kbd> opens the hideout window: top flips, watchlist and alerts in a small window that stays on top in Chrome, Edge and the Windows app. Run the game in windowed or borderless mode to see it over the game.</li>
     <li><kbd>C</kbd> checks an offer from the in-game window: type the item and the ratio, and get go, caution or no-go.</li>
     <li><kbd>?</kbd> brings this tour back.</li></ul>` },
 ];
@@ -2385,7 +2385,8 @@ async function viewHideout(main) {
 }
 async function openHideout() {
   const url = '/?hideout=1';
-  if ('documentPictureInPicture' in window) {
+  // Inside the Windows app the shell opens the hideout as a window of its own and keeps it on top.
+  if ('documentPictureInPicture' in window && !navigator.userAgent.includes('Electron')) {
     try {
       const pip = await window.documentPictureInPicture.requestWindow({ width: 400, height: 640 });
       pip.document.body.style.margin = '0';

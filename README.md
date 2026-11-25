@@ -23,6 +23,24 @@ To compare leagues you need more history. Either press **Download full history**
 python -m vaalstreet sync --all      # every hour since July 2024, newest first, resumable (~1.5 GB)
 ```
 
+## Windows app
+
+On Windows, the desk, its hideout window and the screen check can run as one app next to the game, with nothing to start in WSL or in a console.
+
+The app is a window around the same desk. Starting it starts the desk and the screen check together (the `app` command under "Command line"), and quitting it stops both. The page inside is the one a browser shows. **Hideout** (press `H`, or Ctrl+H from the menu) opens as a window of the app that stays on top of other windows, the game included when it runs in windowed or borderless windowed mode. The screen check's keys work as they do for the companion: Ctrl+Alt+F9 reads the offer on screen, and Ctrl+Alt+F10 also records it. The stack check stays off until you tick it under **Screen check** in the menu; a second tick there also writes each copied stack to your stash list. Ticking either starts the desk again. **Desk → What the desk last said…** shows the last lines the desk and the screen check printed, which is where to look when a key seems to do nothing. A link that leaves the desk opens in your normal browser. Starting the app a second time shows the one already running, so two desks never write to one ledger.
+
+The app uses port 3917 on your own machine (the next free one up to 3926 if it is taken), not 3000, so a desk running in WSL does not get in its way. The app itself adds no network traffic: it opens only the local desk.
+
+To run the app from a checkout on Windows, you need Python 3.10 to 3.12 with the package and its screen check libraries installed (see "Screen check (optional)"), and Node.js 20 or later:
+
+```
+cd desktop
+npm install
+npm start
+```
+
+`VAAL_PYTHON` names the Python to use if it is not the `python` on your PATH.
+
 ## The desk
 
 | Page | What it answers |
@@ -344,6 +362,7 @@ vaalstreet/export.py    your records as CSV files
 vaalstreet/searchstring.py  a search string for the game's search box
 vaalstreet/screen.py    screen check companion: one screenshot per key press (optional extra)
 vaalstreet/desktop.py   the desk and the screen check in one process, as the Windows app runs them
+desktop/                the Windows app: an Electron window that starts `vaalstreet app` and shows the desk
 vaalstreet/clipboard.py stack check: what a stack you copy in game is worth, one clipboard read per press
 vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders
