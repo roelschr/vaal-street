@@ -72,7 +72,7 @@ def test_cli_passes_why_to_the_companion(monkeypatch, tmp_path):
 
     seen = []
     monkeypatch.setenv("VAAL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(screen, "run", lambda *args: seen.append(args[-1]))
+    monkeypatch.setattr(screen, "run", lambda *args, **kw: seen.append(args[-1]))
     cli.main(["screen", "--stacks"])
     cli.main(["screen", "--stacks", "--why"])
     assert seen == [False, True]

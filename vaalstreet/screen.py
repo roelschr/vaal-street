@@ -45,8 +45,10 @@ import dataclasses
 import difflib
 import functools
 import json
+import math
 import re
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -61,6 +63,8 @@ CHAOS, DIVINE = "Chaos Orb", "Divine Orb"
 # Ctrl+Alt+C is the game's own "copy item with advanced details", and the listener does not swallow
 # keys (the game sees every press too), so the default stays clear of the game's bindings.
 DEFAULT_HOTKEY = "<ctrl>+<alt>+<f9>"
+DEFAULT_RECORD_HOTKEY = "<ctrl>+<alt>+<f10>"
+RECORD_AGAIN_SECONDS = 60.0  # the same order read again this soon is the same press repeated, not a second order
 DEFAULT_DESK = "http://localhost:3000"
 SETTINGS_FILE = "screen.json"
 # A name is accepted only if it is this close to a known item, and clearly closer than the next
@@ -105,6 +109,8 @@ class Reading:
     # without doubt (`player_amounts`); otherwise both None. Not used by the check: the ratio above is.
     want_amount: int | None = None
     have_amount: int | None = None
+    # The Gold the window says the order costs, when a number stands alone above "Place Order".
+    gold: int | None = None
 
     def describe(self) -> str:
         """What was read, in the words a player would say it, so a misread is easy to spot."""
@@ -163,7 +169,7 @@ _DIGITS = str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "|": "1"})
 _DIGITS_RUN = r"[0-9OolI|][0-9OolI|,.]*(?![0-9OolI|,.])"
 _NUM = r"(?<![A-Za-z0-9])" + _DIGITS_RUN  # not the tail of a word
 _RATIO_ROW = re.compile(rf"({_NUM})\s*[:;]\s*({_NUM})")
-_NOT_A_NAME = ("iwant", "ihave", "marketratio", "placeorder", "availabletrades", "competingtrades")
+_NOT_A_NAME = ("iwant", "ihave", "marketratio", "placeorder", "availabletrades", "competingtrades", "nostock")
 _STOCK = re.compile(rf"stock\s*[:;]?\s*({_DIGITS_RUN})?", re.I)  # "Stock1,280": spaces are often lost
 
 
@@ -188,7 +194,7 @@ def _label(lines: list[str], label: str) -> int | None:
 # How far under the labels the two names are looked for. The window's own rows end within a few
 # lines; the rest of a whole-screen capture (the desk's page can be on screen too) holds other names.
 NAME_WINDOW = 14
-NEARLY = 0.6
+NEARLY = 0.7
 _EMPTY_SIDE = ("selectcurrency", "clicktoselect")
 
 
@@ -197,10 +203,17 @@ def _wordy(text: str) -> bool:
     return bool(_key(text)) and not re.fullmatch(rf"\W*{_DIGITS_RUN}(\s*[:;]\s*{_DIGITS_RUN})?\W*", text.strip())
 
 
-def _nearly_a_name(text: str, names: list[str]) -> bool:
-    """Close enough to some item's name to be a misread of it, as opposed to other text on screen."""
+def _nearness(text: str, names: list[str]) -> float:
+    """How close `text` is to the nearest item name, or 0 when it is too far to be a misread of one.
+
+    Other text on screen (minimap names, buttons) must not be offered for teaching. Short words are
+    never offered: "SHOP" is three quarters of the way to an item called "Hope".
+    """
     key = _key(text)
-    return len(key) >= 4 and any(difflib.SequenceMatcher(None, key, _key(n)).ratio() >= NEARLY for n in names)
+    if len(key) < 6:
+        return 0.0
+    best = max((difflib.SequenceMatcher(None, key, _key(n)).ratio() for n in names), default=0.0)
+    return best if best >= NEARLY else 0.0
 
 
 def _strip_label(text: str, label: str) -> str:
@@ -226,6 +239,9 @@ def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
             if name:
                 found[label] = (name, None)
     end = min(len(lines), second[1] + 1 + NAME_WINDOW)
+    # The window's own names stand above its "Place Order" button; the desk's page, if it is on
+    # screen, has item names of its own further down.
+    end = next((k for k in range(second[1] + 1, end) if _key(lines[k]).startswith("placeorder")), end)
     window = [k for k in range(first[1] + 1, end) if k != second[1]]
     if any(_key(lines[k]).startswith(_EMPTY_SIDE) for k in window):
         raise ScreenError("One side of the exchange window has no item yet. Pick both items in game, then press the key again.")
@@ -233,12 +249,14 @@ def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
     # player can teach it. (In the game's own layout a ratio or the other label stands there.)
     for label, at in (first, second):
         k = at + 1
+        if label == second[0] and first[0] not in found:
+            continue  # the game's layout: both names follow both labels, so the first one is the wanted
         if label not in found and k < len(lines) and k != second[1] and _wordy(lines[k]) \
                 and not _key(lines[k]).startswith(_NOT_A_NAME):
             name = match_name(lines[k], names, corrections)
             if name:
                 found[label] = (name, k)
-            elif (k < second[1] or label == second[0]) and _nearly_a_name(lines[k], names):
+            elif label == second[0] or k < second[1]:  # an offer typed out label by label
                 what = '"I Want"' if label == "iwant" else '"I Have"'
                 raise ScreenError(f"Couldn't tell which item \"{lines[k].strip()}\" is (the {what} side); {TRY_AGAIN}",
                                   text=lines[k].strip())
@@ -256,10 +274,12 @@ def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
             found[label] = (name, k)
     if "iwant" not in found or "ihave" not in found:
         used = {k for _, k in found.values() if k is not None}
-        for k in window:  # a line that is nearly a name is the likely misread: offer it for teaching
-            if k not in used and _wordy(lines[k]) and not _key(lines[k]).startswith(_NOT_A_NAME) \
-                    and _nearly_a_name(lines[k], names):
-                raise ScreenError(f"Couldn't tell which item \"{lines[k].strip()}\" is; {TRY_AGAIN}", text=lines[k].strip())
+        # The line nearest to some item's name is the likely misread: offer it for teaching.
+        near = max(((_nearness(lines[k], names), -k) for k in window if k not in used and _wordy(lines[k])
+                    and not _key(lines[k]).startswith(_NOT_A_NAME)), default=(0.0, 0))
+        if near[0]:
+            text = lines[-near[1]].strip()
+            raise ScreenError(f"Couldn't tell which item \"{text}\" is; {TRY_AGAIN}", text=text)
         side = "either side" if not found else ('the "I Want" side' if "iwant" not in found else 'the "I Have" side')
         raise ScreenError(f"Couldn't read the item on {side}. If its name was misread, click that line under "
                           f"\"What the screen check read\" on the desk and say which item it is; then {TRY_AGAIN}")
@@ -288,6 +308,20 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
 
     ratio_at = _label(lines, "marketratio")
     search = lines[ratio_at:] if ratio_at is not None else lines
+    # The offer to judge is the player's own: the amounts typed either side of the ratio on the names'
+    # row, else that row's ratio (the market's suggestion until the player types). Only when neither
+    # is read does the market's ratio at the top of the window count.
+    want_amount, have_amount = _row_amounts(lines, want_k, have_k)
+    own = None
+    if want_k is not None and have_k is not None and 0 < have_k - want_k <= 6:
+        for line in lines[want_k + 1:have_k]:
+            m = _RATIO_ROW.search(line)
+            if m:
+                try:
+                    own = (_number(m.group(1)), _number(m.group(2)))
+                except ValueError:
+                    own = None
+                break
     rows = []
     for k, line in enumerate(search):
         for m in _RATIO_ROW.finditer(line):
@@ -295,11 +329,20 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
                 rows.append((k, _number(m.group(1)), _number(m.group(2))))
             except ValueError:
                 continue
-    if not rows:
-        raise ScreenError(f"Couldn't read the ratio; {TRY_AGAIN}")
-    if ratio_at is None and len({r[1:] for r in rows}) > 1:
-        raise ScreenError(f"Read more than one ratio and no \"Market Ratio\" label to pick one; {TRY_AGAIN}")
-    row_k, want_units, have_units = rows[0]
+    row_k = rows[0][0] if rows else 0
+    if want_amount is not None:
+        want_units, have_units = float(want_amount), float(have_amount)
+    elif own:
+        want_units, have_units = own
+    else:
+        if not rows and any(_key(ln) == "nostock" for ln in search):
+            raise ScreenError("The window shows \"No Stock\" for this pair, so there is no market ratio to check. "
+                              "Type your own amounts on both sides and press the key again.")
+        if not rows:
+            raise ScreenError(f"Couldn't read the ratio; {TRY_AGAIN}")
+        if ratio_at is None and len({r[1:] for r in rows}) > 1:
+            raise ScreenError(f"Read more than one ratio and no \"Market Ratio\" label to pick one; {TRY_AGAIN}")
+        _, want_units, have_units = rows[0]
 
     stock = None
     for line in search[row_k:row_k + 3]:
@@ -331,10 +374,10 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     item_side, money_side = (want_units, have_units) if side == "buy" else (have_units, want_units)
     ratio = f"{item_side:g}:{money_side:g}"
     item_units, currency_units = parse_ratio(ratio, market)  # the typed check's own ratio rules
-    want_amount, have_amount = _row_amounts(lines, want_k, have_k)
     if want_amount is None:
         want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
-    return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount)
+    return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount,
+                   _gold_fee(lines, have_k))
 
 
 def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tuple[int | None, int | None]:
@@ -349,6 +392,27 @@ def _row_amounts(lines: list[str], want_k: int | None, have_k: int | None) -> tu
         return None, None
     a, b = _amount(between[0].strip()), _amount(between[2].strip())
     return (a, b) if a is not None and b is not None else (None, None)
+
+
+_GOLD = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d+")
+
+
+def _gold_fee(lines: list[str], have_k: int | None) -> int | None:
+    """The Gold the order costs: the last number standing alone between the names' row and "Place Order".
+
+    Seen in game: "455" and "2.100" (the recognition returns the thousands comma as a full stop),
+    with minimap text sometimes between. No "Place Order" within a few lines, no Gold.
+    """
+    if have_k is None:
+        return None
+    found = None
+    for line in lines[have_k + 1:have_k + 9]:
+        if _key(line).startswith("placeorder"):
+            return found
+        text = line.strip()
+        if _GOLD.fullmatch(text):
+            found = int(re.sub(r"[.,]", "", text))
+    return None
 
 
 # The player's own amounts in an offer typed out label by label. This is
@@ -474,19 +538,28 @@ class DeskClient:
     def event(self, title: str, body: str, league: str) -> dict:
         return self._call("/api/event", {"title": title, "body": body, "league": league})
 
+    def order(self, reading: "Reading", league: str) -> dict:
+        """Record the order a reading shows, with its amounts, in the Ledger (the record key)."""
+        items, money = ((reading.want_amount, reading.have_amount) if reading.side == "buy"
+                        else (reading.have_amount, reading.want_amount))
+        common = math.gcd(items, money)
+        return self._call("/api/order", {"league": league, "item": reading.item, "side": reading.side,
+                                         "market": reading.market, "item_units": items // common,
+                                         "currency_units": money // common, "units": items, "gold": reading.gold})
+
     def reading(self, report: dict) -> dict:
         """Tell the desk what one press read (`reading_report`); it keeps the last few in memory."""
         return self._call("/api/reading", report)
 
 
 def reading_report(lines: Iterable[str], reading: Reading | None, error: str | None, league: str,
-                   unmatched: str | None = None) -> dict:
+                   unmatched: str | None = None, recorded: bool = False) -> dict:
     """What the desk is told about one press: the recognised lines, cut to `MAX_LINES` of `MAX_CHARS`,
     in the order the recognition returned them, and what was understood or why not. Never the screenshot."""
     kept = [str(line)[:MAX_CHARS] for line in list(lines)[:MAX_LINES]]
     return {"kind": "screen", "league": league, "lines": kept,
             "reading": dataclasses.asdict(reading) if reading else None,
-            "said": reading.describe() if reading else None, "error": error,
+            "said": reading.describe() if reading else None, "error": error, "recorded": bool(recorded),
             "unmatched": unmatched[:MAX_CHARS] if unmatched else None}
 
 
@@ -504,13 +577,47 @@ def tell_desk(desk, report: dict) -> bool:
 
 
 # ------------------------------------------------------------------ one press
+def record_order(reading: Reading, desk, league: str, say: Callable[[str], None], recent: dict | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> bool:
+    """The record key: write the order the window shows to the Ledger through the desk. True if written.
+
+    It needs both amounts, read without doubt. The same order read again within a minute is the same
+    press repeated and is not written twice. Nothing is sent to the game: the player posts the order.
+    """
+    if reading.want_amount is None or reading.have_amount is None:
+        say("  Not recorded: couldn't read an amount on both sides of the ratio. Type both amounts in the "
+            "window and press the key again, or use \"Posted this order…\" on the desk.")
+        return False
+    key = (league, reading.item, reading.side, reading.market, reading.want_amount, reading.have_amount)
+    now = clock()
+    if recent is not None and now - recent.get(key, -1e9) < RECORD_AGAIN_SECONDS:
+        say("  Not recorded again: this is the order recorded a moment ago. For a second order like it, wait a "
+            "minute or use \"Posted this order…\" on the desk.")
+        return False
+    try:
+        desk.order(reading, league)
+    except RuntimeError as err:
+        say(f"  Not recorded: {err}")
+        return False
+    if recent is not None:
+        recent[key] = now
+    items, money = ((reading.want_amount, reading.have_amount) if reading.side == "buy"
+                    else (reading.have_amount, reading.want_amount))
+    gold = f", {reading.gold:,} Gold" if reading.gold is not None else ", no Gold read"
+    say(f"  Recorded in your Ledger: {'buying' if reading.side == 'buy' else 'selling'} {items:,} {reading.item} "
+        f"for {money:,} {reading.market.title()}{gold}. Didn't post it? Delete it under Orders on the Ledger page.")
+    return True
+
+
 def handle_press(capture: Callable[[], object], recognise: Callable[[object], list[str]],
-                 desk: DeskClient, say: Callable[[str], None] = print) -> dict | None:
+                 desk: DeskClient, say: Callable[[str], None] = print, record: bool = False,
+                 recent: dict | None = None) -> dict | None:
     """Everything one key press does: one capture, one recognition pass, one check, one event.
 
     The screenshot is a local variable and is dropped when this returns; nothing is written to disk.
     The desk is told the recognised lines and what they were understood as, success or not, so the
-    player can see a misread on the page; the screenshot itself is never sent.
+    player can see a misread on the page; the screenshot itself is never sent. With `record` (the
+    record key) the order read is also written to the Ledger (`record_order`).
     """
     image = capture()
     lines = recognise(image)
@@ -527,24 +634,26 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
         # reported in the console as before.
         tell_desk(desk, reading_report(lines, None, str(err), league))
         raise
-    told = tell_desk(desk, reading_report(lines, reading, None, league))
-    hint = ("  Posting this order? Record it from the desk's hideout window: \"Posted this order…\" under "
-            "\"What the screen check read\". Nothing is recorded until you click it.")
     say(f"  Read: {reading.describe()}")
+    recorded = record_order(reading, desk, league, say, recent) if record else False
+    told = tell_desk(desk, reading_report(lines, reading, None, league, recorded=recorded))
+    hint = ("  Posting this order? Press the record key once it is posted, or record it from the desk's hideout "
+            "window: \"Posted this order…\" under \"What the screen check read\".")
     try:
         result = desk.check(reading, league)
     except RuntimeError as err:
         say(f"  The desk could not check it: {err}")
-        if told:
+        if told and not record:
             say(hint)
         return None
     title = verdict_title(result)
     say(f"  {title}")
     for reason in result.get("reasons", []):
         say(f"    - {reason}")
-    if told:
+    if told and not record:
         say(hint)
-    desk.event(title, f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
+    desk.event(("Recorded. " if recorded else "") + title,
+               f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
     return result
 
 
@@ -699,7 +808,7 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
         do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False,
-        why: bool = False) -> None:
+        why: bool = False, record_hotkey: str | None = None) -> None:
     """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
 
     With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
@@ -730,7 +839,16 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         print("\nReading the screen…")
         handle_press(capture, recognise, desk)
 
-    hotkeys = {hotkey: gate.press}
+    record_hotkey = record_hotkey or settings.get("record_hotkey") or DEFAULT_RECORD_HOTKEY
+    recent: dict = {}
+
+    def work_and_record():
+        print("\nReading the screen to record the order…")
+        handle_press(capture, recognise, desk, record=True, recent=recent)
+
+    hotkeys = {hotkey: gate.press, record_hotkey: lambda: gate.press(work_and_record)}
+    print(f"Each press of {record_hotkey} does the same and also records the order shown, with the amounts you "
+          "typed and its Gold, in your Ledger. Press it when you post the order; you still post it yourself.")
     if stacks or stash:
         from vaalstreet import clipboard
 

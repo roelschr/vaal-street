@@ -411,7 +411,8 @@ class App:
             if kind not in ("screen", "stack"):
                 raise ValueError("kind must be screen or stack")
             row: dict = {"kind": kind, "league": _clip(body.get("league"), 80), "error": _clip(body.get("error"), 300),
-                         "lines": [], "reading": None, "said": None, "unmatched": None}
+                         "lines": [], "reading": None, "said": None, "unmatched": None,
+                         "recorded": body.get("recorded") is True}
             if kind == "screen":
                 lines = body.get("lines") or []
                 if not isinstance(lines, list):
@@ -427,7 +428,8 @@ class App:
                         str(got["item"])[:120], str(got["market"]), str(got["side"]),
                         _positive(got["item_units"]), _positive(got["currency_units"]),
                         _positive(stock) if stock not in (None, "") else None,
-                        _whole(want) if want is not None else None, _whole(have) if have is not None else None)
+                        _whole(want) if want is not None else None, _whole(have) if have is not None else None,
+                        _whole(got["gold"]) if got.get("gold") not in (None, "") else None)
                     if reading.market not in ("chaos", "divine") or reading.side not in ("buy", "sell"):
                         raise ValueError("market must be chaos or divine, side buy or sell")
                     row["reading"], row["said"] = vars(reading), reading.describe()
@@ -1313,7 +1315,9 @@ class App:
                     self.ledger.repost_order(body["repost"], body["currency_units"], body["item_units"], body["units"],
                                              gold=body.get("gold"))
                 else:
-                    self.ledger.add_order(league, body["item"], body["side"], body["market"], body["currency_units"],
+                    # The page sends the item's id; the screen check's record key sends its name.
+                    self.ledger.add_order(league, self._ledger_item(self.desk(league), body["item"]), body["side"],
+                                          body["market"], body["currency_units"],
                                           body["item_units"], body["units"], gold=body.get("gold"))
             elif path == "/api/session":
                 if body.get("delete"):
@@ -1487,6 +1491,8 @@ def posted_prefill(reading: dict, item: str, name: str, plan_order: dict | None)
     currency = "Divine" if market == "divine" else "Chaos"
     base = {"item": item, "name": name, "side": side, "market": market, "currency": currency,
             "title": f"{'Buy' if side == 'buy' else 'Sell'} order you posted"}
+    if reading.get("gold") is not None:
+        base["gold"] = reading["gold"]  # the fee the window showed; the form's Gold field starts from it
     want, have = reading.get("want_amount"), reading.get("have_amount")
     if want and have:
         items, money = (want, have) if side == "buy" else (have, want)

@@ -1097,7 +1097,7 @@ function askPosted(o) {
     <div class="body">${o.lead ? `<p style="margin:0 0 10px">${esc(o.lead)}</p>` : ''}<div class="bar" style="margin:0">
       <div class="f ctl">Ratio<span class="num" style="${o.editable ? 'display:flex;gap:6px;align-items:center;' : 'padding:6px 0;'}color:var(--text)">${ratio}</span></div>
       <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units ?? ''}" required style="width:110px"></label>
-      <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" style="width:110px"></label>
+      <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" value="${o.gold ?? ''}" style="width:110px"></label>
       <button class="btn primary">Record</button></div>
       <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. ${o.editable ? 'Change the ratio to the one you posted.' : 'If you posted a different ratio, record the order on the Ledger page instead.'}</p></div>`;
   box.onsubmit = async e => {
@@ -2006,15 +2006,15 @@ function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
 // ----------------------------------------------------------- search string
 // A string for the game's search box that finds the given items and no other (searchstring.py). The
-// game's limit and its reading of the string are untested, so the limit is the player's to change.
+// game takes this form and 200 characters (checked in game); longer is untested, so the limit is the player's to change.
 function openSearchString(ids, what) {
   let host = $('#ss');
   if (!host) { host = document.createElement('aside'); host.id = 'ss'; host.setAttribute('aria-label', 'Search string'); document.body.append(host); }
-  const limit = +localStorage.ssLimit || 50;
+  const limit = +localStorage.ssLimit || 200;
   host.hidden = false;
   host.innerHTML = `<header><h2>Search string</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
-    <div class="body"><p class="small">For ${esc(what)}. Paste it into the search box in game. <span class="gold">Not yet tested in game.</span></p>
-    <label class="f">Length limit<input type="number" name="limit" min="5" step="1" value="${limit}" title="The game's search box is said to stop at 50 characters"></label>
+    <div class="body"><p class="small">For ${esc(what)}. Paste it into the search box in game. It works in the exchange's item picker and in the stash's search box.</p>
+    <label class="f">Length limit<input type="number" name="limit" min="5" step="1" value="${limit}" title="A string of 200 characters worked in the game's search boxes; longer is untested"></label>
     <div data-out><p class="muted">Building…</p></div></div>`;
   const out = $('[data-out]', host);
   let asked = 0;
@@ -2262,7 +2262,7 @@ function readingsPanel(names, cls = '') {
       ${r.said ? `<div>Understood: <b>${esc(r.said)}</b></div>` : ''}
       ${r.error ? `<div class="down">${esc(r.error)}</div>` : ''}
       ${r.lines.length ? `<pre class="ocr" title="The lines the text recognition returned, in its order. Click one to teach the desk which item it means.">${r.lines.map((l, i) => `<span data-line="${i}">${esc(l)}</span>`).join('\n')}</pre>` : ''}
-      ${r.kind === 'screen' ? `<div class="bar" style="margin:0;gap:6px">${r.order ? `<button type="button" class="btn small" data-post="${esc(JSON.stringify(r.order))}" title="Posted this order in game? Record it in your Ledger. Nothing is recorded until you press Record, and nothing is sent to the game.">Posted this order…</button>` : ''}<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button></div>` : ''}
+      ${r.kind === 'screen' ? `<div class="bar" style="margin:0;gap:6px">${r.recorded ? '<span class="up" title="The record key wrote this order to your Ledger. Delete it under Orders if you did not post it.">✓ Recorded in your Ledger</span>' : r.order ? `<button type="button" class="btn small" data-post="${esc(JSON.stringify(r.order))}" title="Posted this order in game? Record it in your Ledger. Nothing is recorded until you press Record, and nothing is sent to the game.">Posted this order…</button>` : ''}<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button></div>` : ''}
     </div>`;
   const draw = () => {
     const d = data;

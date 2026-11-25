@@ -326,7 +326,7 @@ def _screen(args: argparse.Namespace) -> None:
 
     try:
         screen.run(data_dir(), args.desk, args.hotkey, args.league, args.calibrate, args.region, args.stacks or args.stash,
-                   args.stash, args.why)
+                   args.stash, args.why, record_hotkey=args.record_hotkey)
     except (RuntimeError, ValueError) as err:
         sys.exit(str(err))
 
@@ -1028,6 +1028,8 @@ def main(argv: list[str] | None = None) -> None:
                "(vaalstreet serve) can run in WSL; this companion reaches it at http://localhost:<port>.")
     p.add_argument("--desk", default="http://localhost:3000", help="the desk's address (default %(default)s)")
     p.add_argument("--hotkey", help="the key to press, in pynput's form (default <ctrl>+<alt>+<f9>)")
+    p.add_argument("--record-hotkey", help="the key that also records the order shown, with your amounts and its Gold, "
+                                           "in your Ledger (default <ctrl>+<alt>+<f10>)")
     p.add_argument("--calibrate", action="store_true", help="capture once, then save the area around the exchange window")
     p.add_argument("--region", help='save this area and use it: "left top width height" in pixels')
     p.add_argument("--stacks", action="store_true",

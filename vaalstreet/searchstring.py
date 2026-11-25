@@ -5,9 +5,9 @@ What is known, and what is not
 Another tool, Exile UI, copies a string of the form `^(a|b|c)$` for its bookmarked items, where
 each item is its name with spaces replaced by `.`, and a name containing " of " is shortened to
 `.*` plus the part after " of ". Its documentation says the string is meant for the in-game
-exchange's search box, which reads it as a regular expression. The game's search boxes are commonly
-said to cut a search at 50 characters. Neither fact has been checked in game for this desk, so the
-limit is a number the player can change, and the page says plainly that the string is untested.
+exchange's search box, which reads it as a regular expression. Checked in game on 25 November 2026:
+the exchange's item picker and the stash's search box both take this form, and a string of 200
+characters worked in both. Longer strings are untested, so the limit is a number the player can change.
 
 How a string is built
 ---------------------
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 
-DEFAULT_LIMIT = 50
+DEFAULT_LIMIT = 200
 # "^(" and ")$" around the patterns, which are joined by "|".
 WRAP = 4
 

@@ -483,7 +483,7 @@ def test_cli_passes_the_switch_and_it_is_off_unless_asked(monkeypatch, tmp_path)
 
     seen = []
     monkeypatch.setenv("VAAL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(screen, "run", lambda *args: seen.append(args[-3:-1]))  # (stacks, stash); --why comes last
+    monkeypatch.setattr(screen, "run", lambda *args, **kw: seen.append(args[-3:-1]))  # (stacks, stash); --why comes last
     cli.main(["screen"])
     cli.main(["screen", "--stacks"])
     cli.main(["screen", "--stash"])  # writing to the stash turns the stack check on
