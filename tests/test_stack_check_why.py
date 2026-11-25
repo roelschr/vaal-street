@@ -1,7 +1,7 @@
 """`--why`: a Ctrl+C that is ignored because another window is in front can say so.
 
-Without it, "nothing happens" in a first test against the game cannot be told apart from "the key
-was never heard". The clipboard is not read either way.
+Without it, a press that does nothing has two causes that look the same: the key was never heard,
+or it was heard while another window was in front. The clipboard is not read either way.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def test_cli_passes_why_to_the_companion(monkeypatch, tmp_path):
 
     seen = []
     monkeypatch.setenv("VAAL_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(screen, "run", lambda *args: seen.append(args[-1]))
+    monkeypatch.setattr(screen, "run", lambda *args, **kw: seen.append(args[-1]))
     cli.main(["screen", "--stacks"])
     cli.main(["screen", "--stacks", "--why"])
     assert seen == [False, True]

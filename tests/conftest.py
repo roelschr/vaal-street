@@ -260,3 +260,13 @@ def call(url, body=None, headers=None):
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as err:
         return err.code, json.loads(err.read() or b"{}")
+
+
+def exchange(want: str, have: str, ratio: str, amounts: tuple | None = None, gold: str | None = None,
+             market: str | None = None) -> list[str]:
+    """The game's exchange window as text recognition returns it for a whole screen (seen in game,
+    November 2026): the labels with the market's ratio between them, minimap text, then one row with
+    the wanted item, its amount, the ratio, the other amount and the offered item, then the Gold."""
+    row = [want, *([str(amounts[0])] if amounts else []), ratio, *([str(amounts[1])] if amounts else []), have]
+    return ["MARKET RATIO", "I WANT", market or ratio, "I HAVE", "Kir", *row, *([gold] if gold else []),
+            "PLACE ORDER", "0/10"]

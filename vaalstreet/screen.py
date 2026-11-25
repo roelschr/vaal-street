@@ -6,7 +6,8 @@ see the Windows screen nor hear Windows hotkeys. It talks to the desk over `http
 (WSL2 forwards localhost) and never opens the desk's archive or ledger itself.
 
 GGG's rules for tools that read the screen shape the whole design (see docs/data-sources.md):
-- One capture and one text-recognition pass per manual key press. There is no timer, no polling
+- One capture per manual key press; its text is recognised, and the offer's own row a second time,
+  enlarged, from the same picture (`make_recognise`). There is no timer, no polling
   and no trigger on window or log changes. Presses that arrive while a check is still running are
   dropped, not queued, so a held key cannot turn into a stream of captures.
 - The player knows what is read: the console says which rectangle is captured, and every verdict
@@ -18,18 +19,18 @@ GGG's rules for tools that read the screen shape the whole design (see docs/data
   lines (at most `MAX_LINES` of `MAX_CHARS`), what it understood or why not. The page shows the last
   few, so a misread can be seen and taught (a correction: "when it reads this, it means that item").
   The desk keeps them in memory only. The screenshot itself is never sent, stored or shown.
-- An understood reading can be recorded as an order you posted, from the desk's page, by a click
-  there. The companion records nothing itself. When the amounts you typed under "I Want" and "I Have"
-  can be read without doubt (`player_amounts`), the form starts from them; where they appear in the
-  recognised text has not been seen in game, so that reading is strict and gives nothing when unsure.
+- An understood reading can be recorded as an order you posted: by a click on the desk's page, or
+  by the record key, which writes the order with the amounts typed and its Gold through the desk's
+  API (`record_order`). Either way the player posts the order in game; nothing is sent to it.
 
 The parser is the testable core. It is a pure function from recognised text lines to one offer,
-matched against the desk's item names. The layout it assumes is the exchange window's labels:
-"I Want" followed by an item, "I Have" followed by an item, and a "Market Ratio" row reading
-"<want units> : <have units>", with an optional "Stock" number. It keys on those labels, not on
-positions, because text recognition returns lines in a loose order and often drops spaces
-("OrbofAlteration") or splits a row in two. When it is not sure, it fails with a message that tells
-the player to press again or type the offer, rather than guessing a verdict.
+matched against the desk's item names. The layout is the game's own, read from the live window in
+November 2026 (`_find_items` describes it): the "Market Ratio", "I Want" and "I Have" labels, then
+one row with the wanted item's name, its amount, the ratio, the other amount and the offered item's
+name, then the Gold above "Place Order". Text recognition often drops spaces ("OrbofAlteration"),
+and a whole-screen capture holds other text too (minimap names, the desk's own page). When the
+parser is not sure, it fails with a message that tells the player to press again or type the offer,
+rather than guessing a verdict.
 
 The companion can also value a stack you copy in game with the game's own copy key
 (`--stacks`, off unless you ask for it). That reads the clipboard, not the screen, once per press,
@@ -45,8 +46,11 @@ import dataclasses
 import difflib
 import functools
 import json
+import math
 import re
 import threading
+import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -60,6 +64,8 @@ CHAOS, DIVINE = "Chaos Orb", "Divine Orb"
 # Ctrl+Alt+C is the game's own "copy item with advanced details", and the listener does not swallow
 # keys (the game sees every press too), so the default stays clear of the game's bindings.
 DEFAULT_HOTKEY = "<ctrl>+<alt>+<f9>"
+DEFAULT_RECORD_HOTKEY = "<ctrl>+<alt>+<f10>"
+RECORD_AGAIN_SECONDS = 60.0  # the same order read again this soon is the same press repeated, not a second order
 DEFAULT_DESK = "http://localhost:3000"
 SETTINGS_FILE = "screen.json"
 # A name is accepted only if it is this close to a known item, and clearly closer than the next
@@ -100,10 +106,12 @@ class Reading:
     item_units: float
     currency_units: float
     stock: float | None = None
-    # The amounts the player typed into the window, under "I Want" and "I Have", when both were read
-    # without doubt (`player_amounts`); otherwise both None. Not used by the check: the ratio above is.
+    # The amounts the player typed into the window either side of the ratio, when both were read
+    # without doubt (`_row_amounts`); otherwise both None.
     want_amount: int | None = None
     have_amount: int | None = None
+    # The Gold the window says the order costs, when a number stands alone above "Place Order".
+    gold: int | None = None
 
     def describe(self) -> str:
         """What was read, in the words a player would say it, so a misread is easy to spot."""
@@ -119,15 +127,8 @@ def _key(text: str) -> str:
 
 
 def correction_key(text: str) -> str:
-    """The key a correction is saved under: the text as `match_name` sees it, without a leading label.
-
-    "I Want: Exaltd Orb" on one line reaches `match_name` as "Exaltd Orb", so both are keyed "exaltdorb".
-    """
-    key = _key(text)
-    for label in LABELS:
-        if key.startswith(label) and len(key) > len(label):
-            return key[len(label):]
-    return key
+    """The key a correction is saved under: the text as `match_name` sees it."""
+    return _key(text)
 
 
 def match_name(text: str, names: Iterable[str], corrections: dict[str, str] | None = None) -> str | None:
@@ -162,7 +163,7 @@ _DIGITS = str.maketrans({"O": "0", "o": "0", "l": "1", "I": "1", "|": "1"})
 _DIGITS_RUN = r"[0-9OolI|][0-9OolI|,.]*(?![0-9OolI|,.])"
 _NUM = r"(?<![A-Za-z0-9])" + _DIGITS_RUN  # not the tail of a word
 _RATIO_ROW = re.compile(rf"({_NUM})\s*[:;]\s*({_NUM})")
-_STOCK = re.compile(rf"stock\s*[:;]?\s*({_DIGITS_RUN})?", re.I)  # "Stock1,280": spaces are often lost
+_NOT_A_NAME = ("iwant", "ihave", "marketratio", "placeorder", "availabletrades", "competingtrades", "nostock")
 
 
 def _number(token: str) -> float:
@@ -183,19 +184,62 @@ def _label(lines: list[str], label: str) -> int | None:
     return None
 
 
-def _item_after(lines: list[str], at: int, label: str, names: list[str], what: str,
-                corrections: dict[str, str] | None = None) -> str:
-    """The item named on the label's own line, or failing that on the next line."""
-    rest = lines[at]
-    stripped = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", rest, flags=re.I)
-    for text in (stripped, lines[at + 1] if at + 1 < len(lines) else ""):
-        if _key(text):
-            name = match_name(text, names, corrections)
-            if name:
-                return name
-            raise ScreenError(f"Couldn't tell which item \"{text.strip()}\" is (the {what} side); {TRY_AGAIN}",
-                              text=text.strip())
-    raise ScreenError(f"Couldn't read the item on the {what} side; {TRY_AGAIN}")
+# How far under the labels the two names are looked for. The window's own rows end within a few
+# lines; the rest of a whole-screen capture (the desk's page can be on screen too) holds other names.
+NAME_WINDOW = 14
+NEARLY = 0.7
+AMOUNTS_AGREE = 0.02  # the shown ratio is rounded to two or three digits
+_EMPTY_SIDE = ("selectcurrency", "clicktoselect")
+
+
+def _wordy(text: str) -> bool:
+    """Text that could be a name: letters, and not a number or a ratio with misread digits."""
+    return bool(_key(text)) and not re.fullmatch(rf"\W*{_DIGITS_RUN}(\s*[:;]\s*{_DIGITS_RUN})?\W*", text.strip())
+
+
+def _nearness(text: str, names: list[str]) -> float:
+    """How close `text` is to the nearest item name, or 0 when it is too far to be a misread of one.
+
+    Other text on screen (minimap names, buttons) must not be offered for teaching. Short words are
+    never offered: "SHOP" is three quarters of the way to an item called "Hope".
+    """
+    key = _key(text)
+    if len(key) < 6:
+        return 0.0
+    best = max((difflib.SequenceMatcher(None, key, _key(n)).ratio() for n in names), default=0.0)
+    return best if best >= NEARLY else 0.0
+
+
+def _find_items(lines: list[str], want_at: int, have_at: int, names: list[str],
+                corrections: dict[str, str] | None = None) -> tuple[str, str, int, int]:
+    """(item wanted, item offered, and the line each name stands on).
+
+    The game's window, as its recognised text reads top to bottom and left to right (seen in game,
+    November 2026): "MARKET RATIO"; then "I WANT", the market's ratio, "I HAVE" on one row; then one
+    row with the wanted item's name, its amount, the ratio, the other amount, and the offered item's
+    name; then the Gold and "PLACE ORDER". So both names come after both labels and above the
+    button, the wanted one first.
+    """
+    start = max(want_at, have_at) + 1
+    end = min(len(lines), start + NAME_WINDOW)
+    # The window's own names stand above its "Place Order" button; the desk's page, if it is on
+    # screen, has item names of its own further down.
+    end = next((k for k in range(start, end) if _key(lines[k]).startswith("placeorder")), end)
+    window = [k for k in range(start, end) if _wordy(lines[k]) and not _key(lines[k]).startswith(_NOT_A_NAME)]
+    if any(_key(lines[k]).startswith(_EMPTY_SIDE) for k in window):
+        raise ScreenError("One side of the exchange window has no item yet. Pick both items in game, then press the key again.")
+    named = [(k, name) for k in window if (name := match_name(lines[k], names, corrections))]
+    if len(named) >= 2:
+        return named[0][1], named[1][1], named[0][0], named[1][0]
+    # The line nearest to some item's name is the likely misread: offer it for teaching.
+    used = {k for k, _ in named}
+    near = max(((_nearness(lines[k], names), -k) for k in window if k not in used), default=(0.0, 0))
+    if near[0]:
+        text = lines[-near[1]].strip()
+        raise ScreenError(f"Couldn't tell which item \"{text}\" is; {TRY_AGAIN}", text=text)
+    raise ScreenError(f"Couldn't read {'one of the two items' if named else 'the two items'} under the labels. If a "
+                      "name was misread, click that line under \"What the screen check read\" on the desk and say "
+                      f"which item it is; then {TRY_AGAIN}")
 
 
 def parse_screen(text: str | Iterable[str], names: Iterable[str],
@@ -206,19 +250,34 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     `match_name`). Raises ScreenError with a plain message whenever a part cannot be read with
     confidence.
     """
-    lines = [ln for ln in (text.splitlines() if isinstance(text, str) else list(text)) if ln.strip()]
+    # Recognition returns some punctuation in its full-width form ("1：2"); fold it to the plain one.
+    lines = [unicodedata.normalize("NFKC", ln) for ln in (text.splitlines() if isinstance(text, str) else list(text))
+             if ln.strip()]
     names = list(dict.fromkeys([CHAOS, DIVINE, *names]))
     want_at, have_at = _label(lines, "iwant"), _label(lines, "ihave")
     if want_at is None or have_at is None:
         raise ScreenError("Couldn't find the \"I Want\" and \"I Have\" labels. Check the captured area covers the "
                           f"exchange window (vaalstreet screen --calibrate), then {TRY_AGAIN}")
-    want = _item_after(lines, want_at, "iwant", names, "\"I Want\"", corrections)
-    have = _item_after(lines, have_at, "ihave", names, "\"I Have\"", corrections)
+    want, have, want_k, have_k = _find_items(lines, want_at, have_at, names, corrections)
     if want == have:
         raise ScreenError(f"Read {want} on both sides; {TRY_AGAIN}")
 
     ratio_at = _label(lines, "marketratio")
     search = lines[ratio_at:] if ratio_at is not None else lines
+    # The offer to judge is the player's own: the amounts typed either side of the ratio on the names'
+    # row, else that row's ratio (the market's suggestion until the player types). Only when neither
+    # is read does the market's ratio at the top of the window count.
+    want_amount, have_amount = _row_amounts(lines, want_k, have_k)
+    own = None
+    if 0 < have_k - want_k <= 6:
+        for line in lines[want_k + 1:have_k]:
+            m = _RATIO_ROW.search(line)
+            if m:
+                try:
+                    own = (_number(m.group(1)), _number(m.group(2)))
+                except ValueError:
+                    own = None
+                break
     rows = []
     for k, line in enumerate(search):
         for m in _RATIO_ROW.finditer(line):
@@ -226,26 +285,19 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
                 rows.append((k, _number(m.group(1)), _number(m.group(2))))
             except ValueError:
                 continue
-    if not rows:
-        raise ScreenError(f"Couldn't read the ratio; {TRY_AGAIN}")
-    if ratio_at is None and len({r[1:] for r in rows}) > 1:
-        raise ScreenError(f"Read more than one ratio and no \"Market Ratio\" label to pick one; {TRY_AGAIN}")
-    row_k, want_units, have_units = rows[0]
-
-    stock = None
-    for line in search[row_k:row_k + 3]:
-        m = _STOCK.search(line)
-        if not m:
-            continue
-        token = m.group(1)
-        if token is None:  # "Stock" on its own line, the number split onto the next one
-            k = search.index(line)
-            token = search[k + 1] if k + 1 < len(search) else ""
-        try:
-            stock = _number(token)
-        except ValueError:
-            stock = None  # stock is optional: a check without it is still a check
-        break
+    if want_amount is not None:
+        want_units, have_units = float(want_amount), float(have_amount)
+    elif own:
+        want_units, have_units = own
+    else:
+        if not rows and any(_key(ln) == "nostock" for ln in search):
+            raise ScreenError("The window shows \"No Stock\" for this pair, so there is no market ratio to check. "
+                              "Type your own amounts on both sides and press the key again.")
+        if not rows:
+            raise ScreenError(f"Couldn't read the ratio; {TRY_AGAIN}")
+        if ratio_at is None and len({r[1:] for r in rows}) > 1:
+            raise ScreenError(f"Read more than one ratio and no \"Market Ratio\" label to pick one; {TRY_AGAIN}")
+        _, want_units, have_units = rows[0]
 
     # The window reads want : have. Whichever side is Chaos or Divine is the market's currency;
     # Divine against Chaos is the Divine Orb's own Chaos market.
@@ -262,15 +314,53 @@ def parse_screen(text: str | Iterable[str], names: Iterable[str],
     item_side, money_side = (want_units, have_units) if side == "buy" else (have_units, want_units)
     ratio = f"{item_side:g}:{money_side:g}"
     item_units, currency_units = parse_ratio(ratio, market)  # the typed check's own ratio rules
-    want_amount, have_amount = player_amounts(lines, names, want, have, corrections)
-    return Reading(item, market, side, item_units, currency_units, stock, want_amount, have_amount)
+    return Reading(item, market, side, item_units, currency_units, None, want_amount, have_amount,
+                   _gold_fee(lines, have_k))
 
 
-# The player's own amounts. Where the window shows them in the recognised text is untested, so this is
-# strict: a whole number with at least one real digit, standing alone on a line or right after the
-# item's name, between the side's label and the next label. Anything less sure gives nothing.
-_CLOSERS = ("iwant", "ihave", "marketratio", "stock")
-_AMOUNT = re.compile(r"(?<![A-Za-z0-9])([0-9OolI|]{1,3}(?:,[0-9OolI|]{3})+|[0-9OolI|]+)\s*$")
+def _row_amounts(lines: list[str], want_k: int, have_k: int) -> tuple[int | None, int | None]:
+    """The two amounts on the game's own row: wanted name, amount, ratio, amount, offered name.
+
+    Only that exact shape counts: one whole number on each side of one ratio, between the two names,
+    and the two numbers must give the ratio shown between them.
+    """
+    if not 0 < have_k - want_k <= 6:
+        return None, None
+    between = [ln for ln in lines[want_k + 1:have_k] if not _wordy(ln) or _RATIO_ROW.search(ln)]
+    if len(between) != 3 or not _RATIO_ROW.fullmatch(between[1].strip()):
+        return None, None
+    a, b = _amount(between[0].strip()), _amount(between[2].strip())
+    if a is None or b is None:
+        return None, None
+    # The window shows the ratio of the two amounts between them. Amounts that do not give that ratio
+    # hold a misread digit ("11" for "1"), and a wrong amount must never reach the Ledger.
+    m = _RATIO_ROW.fullmatch(between[1].strip())
+    try:
+        left, right = _number(m.group(1)), _number(m.group(2))
+    except ValueError:
+        return None, None
+    if left <= 0 or right <= 0 or abs((a / b) / (left / right) - 1) > AMOUNTS_AGREE:
+        return None, None
+    return a, b
+
+
+_GOLD = re.compile(r"\d{1,3}(?:[.,]\d{3})+|\d+")
+
+
+def _gold_fee(lines: list[str], have_k: int) -> int | None:
+    """The Gold the order costs: the last number standing alone between the names' row and "Place Order".
+
+    Seen in game: "455" and "2.100" (the recognition returns the thousands comma as a full stop),
+    with minimap text sometimes between. No "Place Order" within a few lines, no Gold.
+    """
+    found = None
+    for line in lines[have_k + 1:have_k + 9]:
+        if _key(line).startswith("placeorder"):
+            return found
+        text = line.strip()
+        if _GOLD.fullmatch(text):
+            found = int(re.sub(r"[.,]", "", text))
+    return None
 
 
 def _amount(token: str) -> int | None:
@@ -281,47 +371,6 @@ def _amount(token: str) -> int | None:
     except ValueError:
         return None
     return int(value) if value == int(value) and value > 0 else None
-
-
-def _side_amount(lines: list[str], at: int, label: str, item: str, names: list[str],
-                 corrections: dict[str, str] | None) -> int | None:
-    """The one amount under a label, or None when there is none, more than one, or the region has no end."""
-    end = next((k for k in range(at + 1, len(lines)) if _key(lines[k]).startswith(_CLOSERS)), None)
-    if end is None:
-        return None
-    item_ends_in_digit = _key(item)[-1:].isdigit()
-    found = []
-    for k in range(at, end):
-        text = lines[k]
-        if k == at:
-            text = re.sub(r"^\W*" + r"\W*".join(label) + r"\W*", "", text, flags=re.I)
-        m = _AMOUNT.search(text)
-        if not m:
-            continue
-        before = text[:m.start()].strip()
-        if before:
-            # "Exalted Orb 5": the number must follow the item's own name, and must not be part of it.
-            if item_ends_in_digit or match_name(before, names, corrections) != item:
-                return None
-        value = _amount(m.group(1))
-        if value is None:
-            return None
-        found.append(value)
-    return found[0] if len(found) == 1 else None
-
-
-def player_amounts(lines: list[str], names: list[str], want: str, have: str,
-                   corrections: dict[str, str] | None = None) -> tuple[int | None, int | None]:
-    """(amount under "I Want", amount under "I Have"): both read without doubt, or (None, None)."""
-    try:
-        want_at, have_at = _label(lines, "iwant"), _label(lines, "ihave")
-        if want_at is None or have_at is None:
-            return None, None
-        a = _side_amount(lines, want_at, "iwant", want, names, corrections)
-        b = _side_amount(lines, have_at, "ihave", have, names, corrections)
-    except Exception:  # the amounts are extra: they must never cost the player the reading itself
-        return None, None
-    return (a, b) if a is not None and b is not None else (None, None)
 
 
 # ------------------------------------------------------------------ verdict
@@ -389,19 +438,28 @@ class DeskClient:
     def event(self, title: str, body: str, league: str) -> dict:
         return self._call("/api/event", {"title": title, "body": body, "league": league})
 
+    def order(self, reading: "Reading", league: str) -> dict:
+        """Record the order a reading shows, with its amounts, in the Ledger (the record key)."""
+        items, money = ((reading.want_amount, reading.have_amount) if reading.side == "buy"
+                        else (reading.have_amount, reading.want_amount))
+        common = math.gcd(items, money)
+        return self._call("/api/order", {"league": league, "item": reading.item, "side": reading.side,
+                                         "market": reading.market, "item_units": items // common,
+                                         "currency_units": money // common, "units": items, "gold": reading.gold})
+
     def reading(self, report: dict) -> dict:
         """Tell the desk what one press read (`reading_report`); it keeps the last few in memory."""
         return self._call("/api/reading", report)
 
 
 def reading_report(lines: Iterable[str], reading: Reading | None, error: str | None, league: str,
-                   unmatched: str | None = None) -> dict:
+                   unmatched: str | None = None, recorded: bool = False) -> dict:
     """What the desk is told about one press: the recognised lines, cut to `MAX_LINES` of `MAX_CHARS`,
     in the order the recognition returned them, and what was understood or why not. Never the screenshot."""
     kept = [str(line)[:MAX_CHARS] for line in list(lines)[:MAX_LINES]]
     return {"kind": "screen", "league": league, "lines": kept,
             "reading": dataclasses.asdict(reading) if reading else None,
-            "said": reading.describe() if reading else None, "error": error,
+            "said": reading.describe() if reading else None, "error": error, "recorded": bool(recorded),
             "unmatched": unmatched[:MAX_CHARS] if unmatched else None}
 
 
@@ -419,13 +477,47 @@ def tell_desk(desk, report: dict) -> bool:
 
 
 # ------------------------------------------------------------------ one press
+def record_order(reading: Reading, desk, league: str, say: Callable[[str], None], recent: dict | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> bool:
+    """The record key: write the order the window shows to the Ledger through the desk. True if written.
+
+    It needs both amounts, read without doubt. The same order read again within a minute is the same
+    press repeated and is not written twice. Nothing is sent to the game: the player posts the order.
+    """
+    if reading.want_amount is None or reading.have_amount is None:
+        say("  Not recorded: couldn't read an amount on both sides of the ratio. Type both amounts in the "
+            "window and press the key again, or use \"Posted this order…\" on the desk.")
+        return False
+    key = (league, reading.item, reading.side, reading.market, reading.want_amount, reading.have_amount)
+    now = clock()
+    if recent is not None and now - recent.get(key, -1e9) < RECORD_AGAIN_SECONDS:
+        say("  Not recorded again: this is the order recorded a moment ago. For a second order like it, wait a "
+            "minute or use \"Posted this order…\" on the desk.")
+        return False
+    try:
+        desk.order(reading, league)
+    except RuntimeError as err:
+        say(f"  Not recorded: {err}")
+        return False
+    if recent is not None:
+        recent[key] = now
+    items, money = ((reading.want_amount, reading.have_amount) if reading.side == "buy"
+                    else (reading.have_amount, reading.want_amount))
+    gold = f", {reading.gold:,} Gold" if reading.gold is not None else ", no Gold read"
+    say(f"  Recorded in your Ledger: {'buying' if reading.side == 'buy' else 'selling'} {items:,} {reading.item} "
+        f"for {money:,} {reading.market.title()}{gold}. Didn't post it? Delete it under Orders on the Ledger page.")
+    return True
+
+
 def handle_press(capture: Callable[[], object], recognise: Callable[[object], list[str]],
-                 desk: DeskClient, say: Callable[[str], None] = print) -> dict | None:
-    """Everything one key press does: one capture, one recognition pass, one check, one event.
+                 desk: DeskClient, say: Callable[[str], None] = print, record: bool = False,
+                 recent: dict | None = None) -> dict | None:
+    """Everything one key press does: one capture, one recognition of it, one check, one event.
 
     The screenshot is a local variable and is dropped when this returns; nothing is written to disk.
     The desk is told the recognised lines and what they were understood as, success or not, so the
-    player can see a misread on the page; the screenshot itself is never sent.
+    player can see a misread on the page; the screenshot itself is never sent. With `record` (the
+    record key) the order read is also written to the Ledger (`record_order`).
     """
     image = capture()
     lines = recognise(image)
@@ -442,24 +534,26 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
         # reported in the console as before.
         tell_desk(desk, reading_report(lines, None, str(err), league))
         raise
-    told = tell_desk(desk, reading_report(lines, reading, None, league))
-    hint = ("  Posting this order? Record it from the desk's hideout window: \"Posted this order…\" under "
-            "\"What the screen check read\". Nothing is recorded until you click it.")
     say(f"  Read: {reading.describe()}")
+    recorded = record_order(reading, desk, league, say, recent) if record else False
+    told = tell_desk(desk, reading_report(lines, reading, None, league, recorded=recorded))
+    hint = ("  Posting this order? Press the record key once it is posted, or record it from the desk's hideout "
+            "window: \"Posted this order…\" under \"What the screen check read\".")
     try:
         result = desk.check(reading, league)
     except RuntimeError as err:
         say(f"  The desk could not check it: {err}")
-        if told:
+        if told and not record:
             say(hint)
         return None
     title = verdict_title(result)
     say(f"  {title}")
     for reason in result.get("reasons", []):
         say(f"    - {reason}")
-    if told:
+    if told and not record:
         say(hint)
-    desk.event(title, f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
+    desk.event(("Recorded. " if recorded else "") + title,
+               f"Read: {reading.describe()}. " + " ".join(result.get("reasons", [])[:2]), league)
     return result
 
 
@@ -496,9 +590,14 @@ class PressGate:
         self._pressed.set()
 
     def serve(self, work: Callable[[], object]) -> None:
-        """Run `work` once per taken press until stopped. It waits on the press; there is no timer."""
+        """Run `work` once per taken press until stopped. Nothing runs without a press.
+
+        The wait wakes twice a second and goes back to waiting. On Windows a wait with no end never
+        hears Ctrl+C in the console, so the companion could not be stopped.
+        """
         while True:
-            self._pressed.wait()
+            while not self._pressed.wait(0.5):
+                pass
             if self.stopped.is_set():
                 return
             with self._busy:
@@ -560,14 +659,168 @@ def make_capture(mss, region: dict | None):
     return capture
 
 
+def reading_order(boxes: Iterable[tuple[float, float, float, str]]) -> list[str]:
+    """Recognised texts, top to bottom by row and left to right within a row.
+
+    `boxes` are (left, top, bottom, text). Two texts are on one row when their vertical centres are
+    closer than half the taller one's height. The parser depends on this: the wanted item's name and
+    the offered item's stand on one row, a few pixels apart in height, and the left one is the wanted.
+    (Rounding each top edge to a grid, as before, put them in the wrong order about every other press.)
+    """
+    rows: list[list] = []  # [centre of the row's first text, its height, [(left, text), ...]]
+    for left, top, bottom, text in sorted(boxes, key=lambda b: (b[1] + b[2]) / 2):
+        centre, height = (top + bottom) / 2, bottom - top
+        if rows and centre - rows[-1][0] <= max(height, rows[-1][1]) / 2:
+            rows[-1][2].append((left, text))
+        else:
+            rows.append([centre, height, [(left, text)]])
+    return [text for _, _, row in rows for _, text in sorted(row, key=lambda x: x[0])]
+
+
+ZOOM = 3
+TYPED_BRIGHT = 170  # typed amounts are near white (226 of 255 in game); the grey suggestions reach about 117
+FIELD_SCORE = 0.5  # how sure the recognition must be of a number read from an amount field alone
+
+
+@dataclasses.dataclass
+class OfferPlace:
+    """Where the offer's own row is in the picture, worked out from the two labels."""
+    strip: tuple[int, int, int, int]  # left, top, right, bottom of the row with names, amounts and ratio
+    middle: float  # the x half way between the labels, where the ratio stands
+    apart: float  # the distance between the labels' left edges: the window's scale
+    row: float  # the y where the row's text is expected, until the ratio is found
+    tall: float  # the height of a label's text
+
+    def fields(self, row: float, tall: float) -> list[tuple[int, int, int, int]]:
+        """The wanted amount's field and the offered amount's, either side of the ratio.
+
+        Measured in game on a 2560 x 1440 screen: the labels 671 pixels apart, the fields from 72 to
+        170 pixels either side of the middle. The numbers here are those, as shares of the distance.
+        """
+        near, far = 0.10 * self.apart, 0.26 * self.apart
+        top, bottom = max(0, int(row - 0.6 * tall)), int(row + 0.6 * tall)  # inside the field's frame
+        return [(max(0, int(self.middle - far)), top, int(self.middle - near), bottom),
+                (int(self.middle + near), top, int(self.middle + far), bottom)]
+
+
+def offer_place(boxes: Iterable[tuple[float, float, float, float, str]], width: int, height: int) -> OfferPlace | None:
+    """Where the offer's row is, from (left, top, right, bottom, text) boxes, or None without both labels.
+
+    The row with the two names, the two amounts and the ratio stands right under the "I Want" and
+    "I Have" labels and reaches a little past them on both sides. The amount fields are small, and a
+    pass over a whole screen often misses what is typed in them, so the strip is recognised a second
+    time, enlarged, and a field still without a number a third time by itself (`make_recognise`).
+    """
+    boxes = list(boxes)
+    wants = sorted((b for b in boxes if _key(b[4]) == "iwant"), key=lambda b: b[1])
+    for want in wants:  # the topmost pair on one row: the desk's page may show the same words lower down
+        tall = want[3] - want[1]
+        for have in boxes:
+            if _key(have[4]) == "ihave" and have[0] > want[2] and abs(have[1] - want[1]) < tall:
+                apart = have[0] - want[0]
+                strip = (max(0, int(want[0] - 0.3 * apart)), max(0, int(want[3])),
+                         min(width, int(have[2] + 0.3 * apart)), min(height, int(want[3] + 4 * tall)))
+                return OfferPlace(strip, ((want[0] + want[2]) / 2 + (have[0] + have[2]) / 2) / 2, apart,
+                                  (want[1] + want[3]) / 2 + 2.4 * tall, tall)
+    return None
+
+
+def _agreeing(wants: list[str], haves: list[str], ratio: str | None) -> tuple[str, str] | None:
+    """The first pair of readings, one per field, whose amounts give the ratio shown; None if none does."""
+    m = _RATIO_ROW.fullmatch(ratio.strip()) if ratio else None
+    if not m:
+        return None
+    try:
+        shown = _number(m.group(1)) / _number(m.group(2))
+    except (ValueError, ZeroDivisionError):
+        return None
+    for a in wants:
+        for b in haves:
+            x, y = _amount(a), _amount(b)
+            if x and y and shown > 0 and abs((x / y) / shown - 1) <= AMOUNTS_AGREE:
+                return a, b
+    return None
+
+
 def make_recognise(RapidOCR):
     engine = RapidOCR()
 
-    def recognise(image) -> list[str]:
+    def read(image) -> list[tuple[float, float, float, float, str]]:
         result, _ = engine(image)
-        # Top to bottom, then left to right, so labels come before what follows them.
-        boxes = sorted(result or [], key=lambda r: (round(r[0][0][1] / 12), r[0][0][0]))
-        return [r[1] for r in boxes]
+        # Each result is (four corner points, text, score); the corners start top left, clockwise.
+        return [(min(p[0] for p in r[0]), min(p[1] for p in r[0]), max(p[0] for p in r[0]), max(p[1] for p in r[0]), r[1])
+                for r in result or []]
+
+    def enlarge(image):
+        try:
+            import cv2  # the recognition library's own dependency
+            return cv2.resize(image, None, fx=ZOOM, fy=ZOOM, interpolation=cv2.INTER_CUBIC)
+        except Exception:
+            return image.repeat(ZOOM, axis=0).repeat(ZOOM, axis=1)
+
+    def text_alone(image, shape: str) -> str | None:
+        """The text a small picture holds, when it has the given shape and the recognition is sure."""
+        try:
+            result, _ = engine(enlarge(image), use_det=False, use_cls=False)
+        except Exception:
+            return None
+        if not result:
+            return None
+        text, score = unicodedata.normalize("NFKC", str(result[0][0])).strip(), float(result[0][1])
+        return text if score >= FIELD_SCORE and re.fullmatch(shape, text) else None
+
+    def number_alone(image) -> str | None:
+        return text_alone(image, r"\d[\d,.]*")
+
+    def recognise(image) -> list[str]:
+        boxes = read(image)
+        place = offer_place(boxes, image.shape[1], image.shape[0])
+        if place:
+            left, top, right, bottom = place.strip
+            inside = lambda b, area: area[0] <= (b[0] + b[2]) / 2 <= area[2] and area[1] <= (b[1] + b[3]) / 2 <= area[3]
+            again = [(left + a / ZOOM, top + b / ZOOM, left + c / ZOOM, top + d / ZOOM, text)
+                     for a, b, c, d, text in read(enlarge(image[top:bottom, left:right]))]
+            if again:  # the closer look replaces what the first pass saw there
+                boxes = [b for b in boxes if not inside(b, place.strip)] + again
+            ratio = next((b for b in boxes if inside(b, place.strip)
+                          and _RATIO_ROW.fullmatch(unicodedata.normalize("NFKC", b[4]).strip())), None)
+            row, tall = ((ratio[1] + ratio[3]) / 2, ratio[3] - ratio[1]) if ratio else (place.row, place.tall)
+            if not ratio:
+                # With amounts typed the game dims the ratio between them, and both looks can miss it.
+                half = 0.09 * place.apart
+                area = (int(place.middle - half), max(0, int(row - 0.6 * tall)), int(place.middle + half), int(row + 0.6 * tall))
+                text = text_alone(image[area[1]:area[3], area[0]:area[2]], r"\d[\d,.]*\s*[:;]\s*\d[\d,.]*")
+                if text:
+                    ratio = (area[0], row - tall / 2, area[2], row + tall / 2, text)
+                    boxes.append(ratio)
+            # A field the two looks left empty is read by itself, at a few slightly different cuts:
+            # a lone thin "1" next to the field's frame reads right at some and wrong at others. With
+            # both amounts open to doubt, the pair that gives the ratio shown between them wins.
+            fields = place.fields(row, tall)
+            seen = []
+            for field in fields:
+                if image[field[1]:field[3], field[0]:field[2]].mean(axis=2).max(initial=0) < TYPED_BRIGHT:
+                    # Grey: the game's own suggestion, not an amount the player typed. Never an amount.
+                    boxes = [b for b in boxes if not inside(b, field)]
+                    seen.append(([], False))
+                    continue
+                held = [b[4].strip() for b in boxes if inside(b, field)]
+                if held:
+                    seen.append((held[:1], False))
+                    continue
+                found = []
+                for cut in (0, 0.01, 0.02, -0.01):
+                    inset = int(cut * place.apart)
+                    text = number_alone(image[field[1]:field[3], field[0] + inset:field[2] - inset])
+                    if text and text not in found:
+                        found.append(text)
+                seen.append((found, True))
+            pair = _agreeing(seen[0][0], seen[1][0], unicodedata.normalize("NFKC", ratio[4]) if ratio else None)
+            for field, (found, new), text in zip(fields, seen, pair or (None, None)):
+                text = text or (found[0] if found and not pair else None)
+                if new and text:
+                    boxes.append((field[0], row - tall / 2, field[2], row + tall / 2, text))
+        return reading_order((b[0], b[1], b[3], b[4]) for b in boxes)
 
     return recognise
 
@@ -591,7 +844,7 @@ def calibrate(root: Path, mss, ask: Callable[[str], str] = input) -> dict:
 
 def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, league: str | None = None,
         do_calibrate: bool = False, region: str | None = None, stacks: bool = False, stash: bool = False,
-        why: bool = False) -> None:
+        why: bool = False, record_hotkey: str | None = None) -> None:
     """The companion: wait for the hotkey, and do one check per press until Ctrl+C.
 
     With `stacks`, the game's own copy key also values the stack under the cursor (`clipboard.py`).
@@ -622,7 +875,16 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         print("\nReading the screen…")
         handle_press(capture, recognise, desk)
 
-    hotkeys = {hotkey: gate.press}
+    record_hotkey = record_hotkey or settings.get("record_hotkey") or DEFAULT_RECORD_HOTKEY
+    recent: dict = {}
+
+    def work_and_record():
+        print("\nReading the screen to record the order…")
+        handle_press(capture, recognise, desk, record=True, recent=recent)
+
+    hotkeys = {hotkey: gate.press, record_hotkey: lambda: gate.press(work_and_record)}
+    print(f"Each press of {record_hotkey} does the same and also records the order shown, with the amounts you "
+          "typed and its Gold, in your Ledger. Press it when you post the order; you still post it yourself.")
     if stacks or stash:
         from vaalstreet import clipboard
 
