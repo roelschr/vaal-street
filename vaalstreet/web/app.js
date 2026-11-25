@@ -946,8 +946,8 @@ function postedLine(r, side, mine = []) {
 function askPosted(o) {
   $('.posted')?.remove();
   const box = document.createElement('form'); box.className = 'panel pend posted'; box.autocomplete = 'off';
-  box.innerHTML = `<header><h2>${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
-    <div class="body"><div class="bar" style="margin:0">
+  box.innerHTML = `<header><h2>${o.lead ? 'The sell order for what you bought' : `${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted`}: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <div class="body">${o.lead ? `<p style="margin:0 0 10px">${esc(o.lead)}</p>` : ''}<div class="bar" style="margin:0">
       <div class="f ctl">Ratio<span class="num" style="padding:6px 0;color:var(--text)">${order(o, o.side === 'buy')}</span></div>
       <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units}" required style="width:110px"></label>
       <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" style="width:110px"></label>
@@ -1268,15 +1268,33 @@ async function viewLedger(main) {
   const selling = d.orders.some(r => r.side === 'sell' && r.status !== 'filled');
   const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>'
     + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
+  // The second half of a flip. A buy order knows the sell order its plan pairs it with (`then_sell`).
+  // What can go on offer is what the ledger holds of the item, less what your open sell orders already
+  // offer, in whole multiples of the sell ratio. `extra` is a fill the page has not drawn yet.
+  const sellAfter = (r, extra = 0) => {
+    const s = r.then_sell; if (!s) return null;
+    const held = (d.positions.find(p => p.id === r.item)?.units || 0) + extra;
+    const offered = d.orders.filter(x => x.item === r.item && x.side === 'sell').reduce((n, x) => n + x.units - x.filled, 0);
+    const free = Math.max(0, held - offered), units = Math.floor(free / s.item_units + 1e-9) * s.item_units;
+    return { item: r.item, name: r.name, side: 'sell', market: s.market, currency: s.currency, currency_units: s.currency_units, item_units: s.item_units, units, free };
+  };
+  // Shown on a buy order while you hold items of it that no sell order offers yet.
+  const sellButton = r => {
+    const s = r.side === 'buy' && r.filled > 0 ? sellAfter(r) : null;
+    if (!s || !(s.units > 0)) return '';
+    const lead = `The plan sells what this order bought at ${s.item_units} for ${s.currency_units} ${s.currency}. You hold ${itemCount(s.free)} that no sell order offers yet.`;
+    return `<button class="btn ghost" data-post="${esc(JSON.stringify({ ...s, lead }))}" title="Posted the plan's sell order for what this order bought? Record it without typing it">Sell order posted…</button>`;
+  };
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
     { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
-    { h: '', f: r => r.status === 'filled'
+    { h: '', f: r => (r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
-      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>` },
+      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
+      + sellButton(r) },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
   ot.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -1285,7 +1303,14 @@ async function viewLedger(main) {
     if (b.dataset.fill) {
       const n = prompt('How many items filled?', b.dataset.left);
       const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
-      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => { saleToast(a.trade); route(); }, err => toast(err.message, true));
+      const row = d.orders.find(r => r.id === +b.dataset.fill);
+      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => {
+        saleToast(a.trade); route();
+        // A buy just filled: offer the plan's sell order for what is now held, ready to record.
+        const s = row?.side === 'buy' && a.trade ? sellAfter(row, +n) : null;
+        if (s && s.units > 0) askPosted({ ...s, lead: `Your buy order filled. The plan sells these at ${s.item_units} for ${s.currency_units} ${s.currency}: post that in game, then record it here. You hold ${itemCount(s.free)} that no sell order offers yet. Close this to decide later; the order keeps a "Sell order posted…" button.` });
+        else if (s) toast(`The plan sells ${row.name} ${s.item_units} at a time, and you hold ${itemCount(s.free)} not yet on offer: not enough for one sell order.`);
+      }, err => toast(err.message, true));
     }
   };
   ord.append(ot);

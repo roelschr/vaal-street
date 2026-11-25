@@ -807,18 +807,26 @@ class App:
         return self.api_stash({"league": desk.league}) | {"was": was}
 
     def _advise(self, desk) -> list[dict]:
-        """Open orders with advice, from today's prices and the flip plan's own order levels."""
+        """Open orders with advice, from today's prices and the flip plan's own order levels.
+
+        A buy order also carries `then_sell`: the sell order of the best plan that buys this item in
+        this order's market, with the market it sells in. A flip is two orders, and the second is the
+        one that gets forgotten: when the buy fills, the page offers this sell order ready to record.
+        """
         prices = {r["id"]: {"fair": r["price"], "chaos": r["chaos"], "divine": r["divine"]} for r in desk.market()}
         plans: dict[str, dict] = {}
+        sell_after: dict[tuple[str, str], dict] = {}
         markets = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cross": ("chaos", "divine")}
         for plan in desk.flips():  # best first; every plan's level is kept, since two plans can share a market
             buy_market, sell_market = markets[plan["kind"]]
             sides = plans.setdefault(plan["id"], {})
             sides.setdefault("buy", {}).setdefault(buy_market, []).append(plan["buy_order"])
             sides.setdefault("sell", {}).setdefault(sell_market, []).append(plan["sell_order"])
+            sell_after.setdefault((plan["id"], buy_market), plan["sell_order"] | {"market": sell_market, "kind": plan["kind"]})
         orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
         for order in orders:
             order["name"] = desk._name(order["item"])
+            order["then_sell"] = sell_after.get((order["item"], order["market"])) if order["side"] == "buy" else None
         return orders
 
     def _recipes(self, desk) -> dict:

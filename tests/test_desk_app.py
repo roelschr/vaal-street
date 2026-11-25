@@ -454,3 +454,25 @@ def test_api_ledger_shows_loot_apart_from_trading(server):
     orb = next(p for p in ledger["positions"] if p["id"] == ITEM)
     assert orb["realized"] == pytest.approx(42) and orb["loot"] == pytest.approx(22)
     assert ledger["totals"]["realized"] == pytest.approx(42) and ledger["totals"]["loot"] == pytest.approx(22)
+def test_a_buy_order_knows_the_sell_order_its_plan_pairs_it_with(server):
+    """A flip is two orders. Known answer: a buy order comes back with the sell order of the best plan that buys
+    this item in the order's market, and the market that plan sells in; a sell order has none, and neither has
+    a buy of an item no plan covers."""
+    flips = call(f"{server}/api/flips")[1]["flips"]
+    best = {}
+    for plan in flips:  # best first
+        buy_market = "divine" if plan["kind"] == "divine" else "chaos"
+        best.setdefault((plan["id"], buy_market), plan)
+    (item, market), plan = next(iter(best.items()))
+    buy = plan["buy_order"]
+    assert call(f"{server}/api/order", {"item": item, "side": "buy", "market": market, "currency_units": buy["currency_units"],
+                                        "item_units": buy["item_units"], "units": 4 * buy["item_units"]})[0] == 200
+    assert call(f"{server}/api/order", {"item": item, "side": "sell", "market": "chaos", "currency_units": 30,
+                                        "item_units": 1, "units": 2})[0] == 200
+    assert all(p["id"] != CARD for p in flips), "the test card has no flip plan in this archive"
+    assert call(f"{server}/api/order", {"item": CARD, "side": "buy", "market": "chaos", "currency_units": 2,
+                                        "item_units": 1, "units": 5})[0] == 200
+    bought, sold, other = call(f"{server}/api/ledger")[1]["orders"]
+    sell = plan["sell_order"]
+    assert bought["then_sell"] == sell | {"market": "chaos" if plan["kind"] == "chaos" else "divine", "kind": plan["kind"]}
+    assert sold["then_sell"] is None and other["then_sell"] is None
