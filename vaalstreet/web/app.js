@@ -322,12 +322,16 @@ async function viewMarkets(main) {
       <label class="f">Category<select id="cat"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
       <label class="f">Min. traded / 24h (c)<input type="number" id="minv" value="${f.minValue}" min="0" step="500"></label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:6px"><input type="checkbox" id="wonly" ${f.watched ? 'checked' : ''}> Watchlist only</label>
+      <button class="btn" id="ssBtn" hidden title="A search string for the game's search box that finds the items shown">Copy search string</button>
       <span class="muted small" id="count" style="padding-bottom:7px"></span>
     </div><section class="panel" id="tbl"></section>`;
   const draw = () => {
     const q = f.q.toLowerCase();
     const rows = d.market.filter(r => (!q || r.name.toLowerCase().includes(q)) && (!f.category || r.category === f.category) && (r.value_24h || 0) >= f.minValue && (!f.watched || r.watched));
     $('#count', main).textContent = `${rows.length} of ${d.market.length} items`;
+    const ss = $('#ssBtn', main);  // for the watchlist: shown with "Watchlist only" on
+    ss.hidden = !f.watched || !rows.length;
+    ss.onclick = () => openSearchString(rows.map(r => r.id), 'your watchlist');
     const t = table([
       { h: '', l: 1, f: r => `<button class="star ${r.watched ? 'on' : ''}" data-watch="${esc(r.id)}" title="Watch">★</button>` },
       { h: 'Item', l: 1, f: r => itemCell(r, esc(r.category)), s: r => r.name },
@@ -454,6 +458,10 @@ async function viewFlips(main) {
       { h: 'Minutes', f: r => mins(r.minutes) },
       { h: 'Last 7 days', f: r => replayCell(r.replay, false), title: replayTitle },
     ], picks, { onRow: r => openItem(r.id), empty: sp.trailing_divines ? `Nothing beat holding Divines (${pct(sp.divines, 0)} over the last week): ${sp.trailing_divines} plan${sp.trailing_divines === 1 ? '' : 's'} made Chaos but less than the Divine rose.` : sp.gold_budget != null ? 'No plan with a known Gold fee fits this bankroll and Gold budget.' : 'No plan fits this bankroll with the current filters.' }));
+    if (picks.length) {
+      $('header', p).insertAdjacentHTML('beforeend', '<button class="btn" data-ss title="A search string for the game\'s search box that finds this plan\'s items">Copy search string</button>');
+      $('[data-ss]', p).onclick = () => openSearchString([...new Set(picks.map(r => r.id))], 'this session plan');
+    }
     if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record a trade's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
     host.append(p);
   };
@@ -1996,6 +2004,43 @@ function offerLadder(r) {
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
+// ----------------------------------------------------------- search string
+// A string for the game's search box that finds the given items and no other (searchstring.py). The
+// game's limit and its reading of the string are untested, so the limit is the player's to change.
+function openSearchString(ids, what) {
+  let host = $('#ss');
+  if (!host) { host = document.createElement('aside'); host.id = 'ss'; host.setAttribute('aria-label', 'Search string'); document.body.append(host); }
+  const limit = +localStorage.ssLimit || 50;
+  host.hidden = false;
+  host.innerHTML = `<header><h2>Search string</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+    <div class="body"><p class="small">For ${esc(what)}. Paste it into the search box in game. <span class="gold">Not yet tested in game.</span></p>
+    <label class="f">Length limit<input type="number" name="limit" min="5" step="1" value="${limit}" title="The game's search box is said to stop at 50 characters"></label>
+    <div data-out><p class="muted">Building…</p></div></div>`;
+  const out = $('[data-out]', host);
+  let asked = 0;
+  const ask = async () => {
+    const id = ++asked, n = $('[name=limit]', host).value.trim();
+    try {
+      const r = await api(withLeague('/api/search_string', { items: ids.join(','), limit: n }));
+      if (id !== asked) return;
+      localStorage.ssLimit = r.limit;
+      out.innerHTML = r.strings.map(x => `<div class="ssrow"><code>${esc(x.text)}</code><span class="muted small">${x.length} characters</span><button type="button" class="btn ghost" data-copy="${esc(x.text)}">Copy</button>
+          <div class="muted small">Finds ${x.items.map(esc).join(', ')}</div></div>`).join('')
+        + (r.too_long.length ? `<p class="down small">Does not fit even alone in ${r.limit} characters: ${r.too_long.map(t => `${esc(t.name)} (needs ${t.length})`).join(', ')}.</p>` : '');
+    } catch (err) { if (id === asked) out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
+  };
+  host.onclick = e => {
+    if (e.target.closest('[data-x]')) return closeSearchString();
+    const b = e.target.closest('[data-copy]');
+    if (b) navigator.clipboard.writeText(b.dataset.copy).then(() => toast('Copied the search string.'), () => toast('Could not copy: the browser refused.', true));
+  };
+  host.oninput = () => ask();
+  host.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSearchString(); } };
+  ask();
+}
+function closeSearchString() { const host = $('#ss'); if (host) host.hidden = true; }
+const searchStringOpen = () => $('#ss') && !$('#ss').hidden;
+
 // -------------------------------------------------------------------- tour
 // A short first-visit walk through the pages. Each step opens the page it talks about, so the
 // panel sits in a corner instead of covering the desk. Seen once, it stays away until `?` asks.
@@ -2284,7 +2329,7 @@ function enterPage() {
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; if (!state.hideout) enterPage(); route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === 'Escape') { if (fractionsOpen()) closeFractions(); else if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
+  if (e.key === 'Escape') { if (fractionsOpen()) closeFractions(); else if (searchStringOpen()) closeSearchString(); else if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
   else if (e.ctrlKey || e.metaKey || e.altKey) return;
   else if (e.key === '?') { e.preventDefault(); if (!state.hideout) openTour(); }
   else if (e.key === 'h' || e.key === 'H') openHideout();

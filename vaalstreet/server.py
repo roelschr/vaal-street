@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, search, wealth
+from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, search, searchstring, wealth
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -844,6 +844,26 @@ class App:
         except ValueError as err:
             raise ApiError(f"Bad request: {err}") from err
 
+    def api_search_string(self, q: dict) -> dict:
+        """Search strings for the game's search box that find the given items and no other item of the league."""
+        desk = self.desk(q.get("league"))
+        ids = [i for i in (q.get("items") or "").split(",") if i.strip()]
+        if not ids:
+            raise ApiError("Bad request: name at least one item.")
+        try:
+            limit = int(q.get("limit") or searchstring.DEFAULT_LIMIT)
+            names = [desk.panel.names[desk.panel.index(i.strip())] for i in ids]
+        except KeyError as err:
+            raise ApiError(f"Bad request: no item {err} trades in {desk.league}.") from err
+        except ValueError as err:
+            raise ApiError(f"Bad request: the length limit must be a whole number ({err}).") from err
+        # Every name the league trades, and the Chaos Orb the prices are counted in, which is not one of them.
+        known = set(desk.panel.names) | {desk._name(ANCHORS[desk.realm][0])}
+        try:
+            return {"league": desk.league, **searchstring.build(names, known, limit)}
+        except ValueError as err:
+            raise ApiError(f"Bad request: {err}") from err
+
     def api_stash_paste(self, body: dict) -> dict:
         """A pasted list of what you hold, read into stash lines. Written only with "write": true.
 
@@ -1363,6 +1383,7 @@ GET_ROUTES = {
     "/api/snapshots": "api_snapshots", "/api/snapshot_diff": "api_snapshot_diff",
     "/api/alerts": "api_alerts", "/api/events": "api_events", "/api/names": "api_names",
     "/api/rehearsal": "api_rehearsal", "/api/ratio": "api_ratio",
+    "/api/search_string": "api_search_string",
 }
 
 
