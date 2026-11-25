@@ -13,6 +13,7 @@ on:
       - ".github/workflows/windows-app.yml"
       - "vaalstreet/desktop.py"
       - "pyproject.toml"
+      - "uv.lock"
 
 permissions:
   contents: read
@@ -48,8 +49,16 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Install the package, the screen check libraries and the build tools
-        run: python -m pip install ".[screen]" pyinstaller pytest
+      # Everything that goes into the installer comes from uv.lock, at the exact versions and file
+      # hashes recorded there, so two builds of one commit carry the same libraries. pip refuses any
+      # file whose hash is not in the list. The package itself is then added without its dependencies.
+      - name: Install the libraries pinned in uv.lock, then the package
+        shell: bash
+        run: |
+          python -m pip install uv==0.8.13
+          uv export --frozen --extra screen --extra dev --group build --no-emit-project -o "$RUNNER_TEMP/requirements.txt"
+          python -m pip install --require-hashes -r "$RUNNER_TEMP/requirements.txt"
+          python -m pip install --no-deps .
 
       # --collect-data vaalstreet brings the page; rapidocr keeps its models and settings as data
       # files, and pynput picks its Windows parts by name at run time, so both are named here.

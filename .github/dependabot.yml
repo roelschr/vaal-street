@@ -2,7 +2,8 @@
 version: 2
 updates:
   # pyproject.toml and uv.lock. The requirements in pyproject.toml are lower bounds, so most of these
-  # pull requests move uv.lock only. The Windows build installs with pip and does not read uv.lock.
+  # pull requests move uv.lock only. The Windows installer is built from uv.lock, so each one
+  # changes what the next installer contains, and the build checks it.
   - package-ecosystem: uv
     directory: "/"
     schedule:
