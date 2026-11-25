@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaalstreet"
-version = "2.0.0"
+version = "2.0.1"
 description = "Pricing models, flips, arbitrage, league-start analytics and backtests for the Path of Exile Currency Exchange"
 readme = "README.md"
 license = { text = "MIT" }
@@ -16,6 +16,11 @@ dev = ["pytest"]
 # The screen check companion, run under Windows Python next to the game. rapidocr-onnxruntime ships its
 # models in the wheel (no download on first run) but has no build for Python 3.13 or later.
 screen = ["mss>=9", "pynput>=1.7.6", "rapidocr-onnxruntime>=1.3.24; python_version < '3.13'"]
+
+# Not installed with the package: what the Windows installer's build needs (.github/workflows/windows-app.yml).
+# It lives here so that uv.lock pins it, and every build of one commit puts the same libraries in the installer.
+[dependency-groups]
+build = ["pyinstaller>=6"]
 
 [project.scripts]
 vaal = "vaalstreet.cli:main"

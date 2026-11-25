@@ -1,6 +1,6 @@
 {
   "name": "vaal-street-desktop",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Vaal Street as one Windows app: the desk, its hideout window and the screen check",
   "private": true,
   "license": "MIT",
@@ -11,8 +11,8 @@
     "dist": "electron-builder --win --publish never"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0"
   },
   "build": {
     "appId": "io.github.roelschr.vaalstreet",
@@ -41,5 +41,9 @@
       "perMachine": false,
       "deleteAppDataOnUninstall": false
     }
+  },
+  "overrides": {
+    "minimatch@9": "^11.0.1",
+    "minimatch@10": "^11.0.1"
   }
 }
