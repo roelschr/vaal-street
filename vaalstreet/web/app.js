@@ -1156,7 +1156,7 @@ function alertsPanel(d, names) {
 
 async function viewLedger(main) {
   if (!state.summary) await loadDesk();
-  const d = await api(withLeague('/api/ledger'));
+  const d = await api(withLeague('/api/ledger', { share: state.share }));
   state.bridge = d.bridge; renderTop();
   const t = d.totals, names = state.market.map(r => r.name);
   main.innerHTML = `<div class="head"><div><h1>Ledger</h1><p>Record what you actually bought and sold; positions are marked at fair value. Stored only on this machine.</p></div></div>
@@ -1309,6 +1309,14 @@ async function viewLedger(main) {
     const why = `Gold is not refunded when you cancel, so every posting of this order paid it again.${r.chain_gold_known ? '' : ' Some postings have no Gold recorded, so the real sum is higher.'}`;
     return `<div class="muted small">${steps} · <span title="${esc(why)}">Gold on posting: ${gold}</span></div>`;
   };
+  // The desk cannot see fills, but it can guess them: its share of what traded through the order's
+  // price since it was posted, in whole lots. Only a proposal: "Filled…" starts from it, and you confirm.
+  const proposedLine = r => {
+    if (!(r.proposed_fill > 0)) return '';
+    const source = r.fill_share_orders > 0 ? `a share learned from ${r.fill_share_orders === 1 ? 'one order' : `${r.fill_share_orders} orders`} you have filled, cancelled or collected in this market` : 'a share assumed, since your orders have not measured one in this market yet';
+    const why = `About ${itemCount(r.traded_through)} traded at or beyond your price since you posted this order. At ${plainPct(r.fill_share, 1)} of that (${source}), in whole lots of ${r.item_units}, about ${itemCount(r.likely_filled)} would have filled; you recorded ${itemCount(r.filled)}. The desk's prices are one to two hours behind the game, and it cannot see your fills: check the order in game before you record anything.`;
+    return `<div class="muted small" title="${esc(why)}">about ${itemCount(r.proposed_fill)} more may have filled: check in game</div>`;
+  };
   // Re-pricing is cancel and post again in game. This records both at once: the old order is marked
   // cancelled and the new one points back at it. The plan's ratio is filled in, but you may have posted another.
   const repostButton = r => {
@@ -1323,12 +1331,12 @@ async function viewLedger(main) {
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}${repostLine(r)}` },
     { h: 'Age', f: r => `<span title="How long this order has stood at its ratio">${dur(r.age / 3600)}</span>${r.listed != null ? `<div class="muted small" title="Counted from the first order you re-posted into this one">listed ${dur(r.listed / 3600)} in all</div>` : ''}`, s: r => r.age, title: 'How long each order has stood at its ratio, by the desk’s clock. Click to put the oldest first' },
-    { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}` },
+    { h: 'Each', f: r => money(r.price) }, { h: 'Filled', f: r => `${fmt(r.filled)} / ${fmt(r.units)}${proposedLine(r)}` },
     { h: 'Gold', f: r => r.gold == null ? '–' : fmt(r.gold) },
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => (r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
-      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button>${repostButton(r)}<button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
+      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.proposed_fill > 0 ? r.proposed_fill : r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button>${repostButton(r)}<button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
       + sellButton(r) },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
   ot.onclick = e => {

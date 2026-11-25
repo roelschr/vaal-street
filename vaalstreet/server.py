@@ -608,15 +608,19 @@ class App:
         except (TypeError, ValueError, LookupError) as err:
             raise ApiError(str(err)) from err
 
-    def fill_calibration(self, desk, default: float = 0.1) -> list[dict]:
-        """Share of the flow your orders caught, from orders and volume up to the desk's last hour."""
-        rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default)
+    def fill_calibration(self, desk, default: float = 0.1, settled: bool = False) -> list[dict]:
+        """Share of the flow your orders caught, from orders and volume up to the desk's last hour.
+
+        `settled` counts only orders that are filled, cancelled or collected (see `calibrate.from_ledger`).
+        """
+        rows = calibrate.from_ledger(self.ledger, desk.league, desk.panel, desk.as_of + HOUR, default, settled)
         for row in rows:
             row["name"] = desk._name(row["item"])
         return rows
 
     def api_ledger(self, q: dict) -> dict:
         desk = self.desk(q.get("league"))
+        share = float(q.get("share", 0.1))  # the share of the flow the page assumes, as Flips takes it
         positions = []
         total_value = total_cost = total_realized = total_loot = 0.0
         for item_id, p in self.ledger.positions(desk.league).items():
@@ -654,10 +658,10 @@ class App:
                        "unrealized": _num(total_value - total_cost), "realized": _num(total_realized),
                        "loot": _num(total_loot)},
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
-            "fill_calibration": self.fill_calibration(desk),
+            "fill_calibration": self.fill_calibration(desk, share),
             "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,
             "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
-            "orders": self._advise(desk), "sessions": self.ledger.sessions(desk.league),
+            "orders": self._advise(desk, share), "sessions": self.ledger.sessions(desk.league),
             # For the "Record items you made" form: what each item is made from, by name.
             "made_from": {desk._name(out): [{"inputs": [[desk._name(i), n] for i, n in r["inputs"]], "gives": r["gives"]}
                                             for r in rs] for out, rs in self._merge_recipes(desk, for_sale=False).items()},
@@ -806,12 +810,15 @@ class App:
             raise ApiError(f"Bad request: {err}") from err
         return self.api_stash({"league": desk.league}) | {"was": was}
 
-    def _advise(self, desk) -> list[dict]:
+    def _advise(self, desk, share: float = 0.1) -> list[dict]:
         """Open orders with advice, from today's prices and the flip plan's own order levels.
 
         A buy order also carries `then_sell`: the sell order of the best plan that buys this item in
         this order's market, with the market it sells in. A flip is two orders, and the second is the
         one that gets forgotten: when the buy fills, the page offers this sell order ready to record.
+
+        An order still on the exchange also carries a proposed fill (`_proposed_fill`), from `share`
+        where your own orders have not measured one for its item and market.
         """
         prices = {r["id"]: {"fair": r["price"], "chaos": r["chaos"], "divine": r["divine"]} for r in desk.market()}
         plans: dict[str, dict] = {}
@@ -825,11 +832,29 @@ class App:
             sell_after.setdefault((plan["id"], buy_market), plan["sell_order"] | {"market": sell_market, "kind": plan["kind"]})
         orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
         now = self.ledger.clock()  # in a rehearsal, practice time
+        # Settled orders only: an open order must not lower the share that proposes its own fills.
+        learned = calibrate.shares(self.fill_calibration(desk, share, settled=True)) if orders else {}
         for order in orders:
             order["name"] = desk._name(order["item"])
             order["then_sell"] = sell_after.get((order["item"], order["market"])) if order["side"] == "buy" else None
             order.update(self._order_history(order, now))
+            order.update(self._proposed_fill(desk, order, learned, share))
         return orders
+
+    @staticmethod
+    def _proposed_fill(desk, order: dict, learned: dict, share: float) -> dict:
+        """How much more of an open order has probably filled, for the page to propose (`calibrate.likely_filled`).
+
+        The share is measured from the orders you have settled in the order's item and market
+        (`fill_share_orders` > 0: filled, cancelled or collected ones), otherwise it is `share`. Only hours published up to the
+        desk's last one count, so the estimate is one to two hours behind the game, like every price here.
+        """
+        if order["status"] not in ("open", "part-filled"):
+            return {"proposed_fill": None}
+        used, n = (learned.get(order["item"]) or {}).get(order["market"]) or [share, 0]
+        guess = calibrate.likely_filled(order, desk.panel, used, desk.as_of + HOUR)
+        return {"proposed_fill": _num(guess["more"]), "likely_filled": _num(guess["likely"]),
+                "traded_through": _num(guess["through"]), "fill_share": used, "fill_share_orders": n}
 
     def _order_history(self, order: dict, now: float) -> dict:
         """How long an order has stood, and for a re-posted one what came before it.
