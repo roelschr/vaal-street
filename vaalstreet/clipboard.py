@@ -268,16 +268,21 @@ def wait_changed(sequence: Callable[[], int], since: int, timeout: float = WAIT,
 
 
 def handle_copy(clip, since: int, desk, say: Callable[[str], None] = print,
-                tally: Tally | None = None) -> dict | None:
+                tally: Tally | None = None, why: bool = False) -> dict | None:
     """Everything one press of the copy key does: at most one clipboard read, one valuation, one event.
 
     `clip` is the clipboard (`WindowsClipboard`, or a stand-in in tests); `since` is its change
     counter from the moment the key went down. Nothing is read unless the game is in front and the
     clipboard changed after the press. Text that is not an item is dropped without being shown.
     With a `tally` (`--stash`) the stack is also written to the stash list; without one, nothing is
-    saved on the desk.
+    saved on the desk. With `why` (`--why`, for checking the setup) a press that is ignored because
+    another window is in front says so, with that window's class name; the clipboard is still not read.
     """
     if not clip.game_in_front():
+        if why:
+            front = getattr(clip, "front_class", lambda: "")() or "no window"
+            say(f"\nCtrl+C heard, but ignored: the window in front is \"{front}\", not the game "
+                f"(\"{GAME_CLASS}\"). Nothing was read.")
         return None
     if not wait_changed(clip.sequence, since):
         # The game copied nothing, so nothing is read. Said aloud, or a first try that fails is a riddle.
@@ -344,13 +349,18 @@ class WindowsClipboard:
         """How many times the clipboard has changed. A counter: it says nothing of the contents."""
         return int(self._user32.GetClipboardSequenceNumber())
 
-    def game_in_front(self) -> bool:
+    def front_class(self) -> str:
+        """The class name of the window in front; empty when there is none. A name such as
+        "POEWindowClass" or "Chrome_WidgetWin_1": it says which program, nothing of what it shows."""
         window = self._user32.GetForegroundWindow()
         if not window:
-            return False
+            return ""
         name = self._ctypes.create_unicode_buffer(256)
         self._user32.GetClassNameW(window, name, 256)
-        return name.value == GAME_CLASS
+        return name.value
+
+    def game_in_front(self) -> bool:
+        return self.front_class() == GAME_CLASS
 
     def read(self) -> str:
         """The clipboard's text, read once. Empty when it holds no text."""
