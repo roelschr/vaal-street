@@ -1839,7 +1839,8 @@ function openCheck(item) {
       <label class="f"><span data-cur>${mkt === 'divine' ? 'Divine' : 'Chaos'}</span><input type="number" name="cu" min="1" step="1" placeholder="1"></label>
       <label class="f">Stock (optional)<input type="number" name="stock" min="0" step="1" placeholder="on offer"></label></div>
     <button class="btn primary">Check</button>
-    <div data-out></div></form>`;
+    <div data-out></div></form>
+    ${ratioHelperHtml()}`;
   const form = $('form', host), out = $('[data-out]', host);
   const pick = g => $(`[data-g="${g}"] .on`, form).dataset.v;
   form.onclick = e => {
@@ -1862,7 +1863,82 @@ function openCheck(item) {
         <ul>${r.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
     } catch (err) { out.innerHTML = `<p class="down">${esc(err.message)}</p>`; }
   };
+  ratioHelper(host, form);
   (item ? form.elements.iu : form.elements.what).focus();
+}
+// The ratio helper: a price per item in, the whole-number ratio to type out. It sits outside the
+// check form, so Enter in its fields and its buttons never send a check. The rounding is the server's
+// (/api/ratio), the same flip plans post with, so the page never searches ratios on its own.
+function ratioHelperHtml() {
+  const cur = localStorage.rhCur === 'divine' ? 'divine' : 'chaos';
+  return `<details class="rh"${localStorage.rhOpen === '1' ? ' open' : ''}><summary>Ratio helper <span class="muted small">a price each → the ratio to type</span></summary>
+    <div class="row"><label class="f">Price each<input type="number" name="rp" min="0" step="any" placeholder="9.5"></label>
+      <div class="seg" data-rc title="The price is in Chaos or in Divines">${[['chaos', 'Chaos'], ['divine', 'Divine']].map(([k, l]) => `<button type="button" data-v="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="row"><label class="f">I hold (optional)<input type="number" name="rh" min="1" step="1" placeholder="items"></label>
+      <label class="f">I can pay (optional)<input type="number" name="rpay" min="1" step="1" placeholder="${cur === 'divine' ? 'Divines' : 'Chaos'}"></label></div>
+    <div data-rout></div></details>`;
+}
+function ratioHelper(host, form) {
+  const box = $('.rh', host), out = $('[data-rout]', box);
+  const field = name => $(`input[name="${name}"]`, box);
+  let answer = null, choices = [], pick = null, lots = 1, asked = 0, timer = null;
+  const cur = () => $('[data-rc] .on', box).dataset.v;
+  const unit = () => (cur() === 'divine' ? CUR.d : CUR.c);
+  const off = e => Math.abs(e) < 0.0005 ? 'exactly what you typed' : `${(Math.abs(e) * 100).toFixed(1)}% ${e > 0 ? 'over' : 'under'} what you typed`;
+  const render = () => {
+    if (!answer) return;
+    if (!pick) { out.innerHTML = `<p class="muted">${esc(answer.note)}</p>`; return; }
+    const c = pick.currency_units * lots, n = pick.item_units * lots, o = { currency_units: c, item_units: n, currency: pick.currency };
+    const most = pick.max_lots;
+    const each = cur() === 'divine' && state.bridge ? ` <span class="muted small">(about ${fmt(pick.price * state.bridge)}${CUR.c} at today’s Divine price)</span>` : '';
+    out.innerHTML = `<div class="rhpair"><span><b>${c}</b> ${curWord(pick.currency)} <button type="button" class="btn ghost" data-copy="${c}" title="Copy ${c}">Copy</button></span>
+        <span class="dim">for</span><span><b>${n}</b> items <button type="button" class="btn ghost" data-copy="${n}" title="Copy ${n}">Copy</button></span></div>
+      <p class="small">Buying, type <b>${order(o, true)}</b>. Selling, type <b>${order(o, false)}</b>.</p>
+      <p class="small muted">That is ${fmt(pick.price)}${unit()} each${each}, ${off(pick.error)}.</p>
+      <div class="row rhlots"><span class="muted small">Lots</span><button type="button" class="btn" data-lot="-1" ${lots <= 1 ? 'disabled' : ''}>−</button><b>${lots}</b>
+        <button type="button" class="btn" data-lot="1" ${most != null && lots >= most ? 'disabled' : ''}>+</button>
+        ${most != null ? `<span class="muted small">up to ${most} with what you hold and can pay</span>` : ''}</div>
+      ${choices.length > 1 ? `<div class="rhalt"><span class="muted small">Choices</span>${choices.map((a, k) => `<button type="button" class="btn ghost${a === pick ? ' on' : ''}" data-alt="${k}" title="${a.kind === 'posted' ? 'The ratio flip plans would post' : a.kind === 'rounder' ? 'Smaller lots, further off' : 'Closer, in bigger lots'}">${a.currency_units} for ${a.item_units} <span class="dim">${a.error > 0 ? '+' : ''}${(a.error * 100).toFixed(1)}%</span></button>`).join('')}</div>` : ''}
+      <button type="button" class="btn" data-use>Check this offer</button>`;
+  };
+  const ask = async () => {
+    const price = field('rp').value.trim(), id = ++asked;
+    if (!price) { answer = null; out.innerHTML = ''; return; }
+    const q = { price, currency: cur() };
+    if (field('rh').value.trim()) q.max_items = field('rh').value.trim();
+    if (field('rpay').value.trim()) q.max_currency = field('rpay').value.trim();
+    try {
+      const r = await api(`/api/ratio?${new URLSearchParams(q)}`);
+      if (id !== asked) return;  // a newer question is on its way
+      // The posted ratio among the others, smallest lot first, as the server orders the others.
+      answer = r; pick = r.ratio; lots = 1;
+      choices = r.ratio ? [r.ratio, ...r.alternatives].sort((a, c) => Math.min(a.currency_units, a.item_units) - Math.min(c.currency_units, c.item_units)) : [];
+      render();
+    } catch (err) { if (id === asked) { answer = null; out.innerHTML = `<p class="down">${esc(err.message)}</p>`; } }
+  };
+  box.addEventListener('toggle', () => { localStorage.rhOpen = box.open ? '1' : ''; if (box.open) field('rp').focus(); });
+  box.oninput = () => { clearTimeout(timer); timer = setTimeout(ask, 250); };
+  box.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCheck(); } };
+  box.onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.closest('[data-rc]')) {
+      b.parentNode.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      localStorage.rhCur = b.dataset.v;
+      field('rpay').placeholder = b.dataset.v === 'divine' ? 'Divines' : 'Chaos';
+      ask();
+    } else if (b.dataset.copy) {
+      navigator.clipboard.writeText(b.dataset.copy).then(() => toast(`Copied ${b.dataset.copy}.`), () => toast('Could not copy: the browser refused.', true));
+    } else if (b.dataset.lot) {
+      lots = Math.max(1, lots + +b.dataset.lot); render();
+    } else if (b.dataset.alt) {
+      pick = choices[+b.dataset.alt];
+      lots = 1; render();
+    } else if (b.hasAttribute('data-use')) {
+      form.elements.iu.value = pick.item_units * lots; form.elements.cu.value = pick.currency_units * lots;
+      $(`[data-g="market"] [data-v="${cur()}"]`, form).click();  // the market's own handler relabels and remembers it
+      (form.elements.what.value.trim() ? $('.btn.primary', form) : form.elements.what).focus();
+    }
+  };
 }
 function closeCheck() { const host = $('#tc'); if (host) host.hidden = true; }
 
