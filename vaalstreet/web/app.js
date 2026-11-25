@@ -84,6 +84,8 @@ const BI = {
   check: '<svg class="bi" viewBox="0 0 24 24"><path d="M12 4v16M7 20h10M4 8h16M6.5 8l-3 6.5a3.2 3.2 0 006 0L6.5 8zM17.5 8l-3 6.5a3.2 3.2 0 006 0L17.5 8z"/></svg>',
   hideout: '<svg class="bi" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M13 13h4v3h-4z"/></svg>',
 };
+// What to do with an order you posted, as the Ledger and the hideout window word it.
+const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
 const KIND = { chaos: 'Chaos market', divine: 'Divine market', cross: 'Chaos → Divine' };
 // Currency icons in place of unit words. The letter or word stays in the page, so copying a price keeps
 // its unit and the page still reads right if the icons cannot be fetched: style.css shows the icons
@@ -1607,7 +1609,6 @@ async function viewLedger(main) {
     catch (err) { toast(err.message, true); }
   };
   const post = async (path, body) => { try { await api(path, { league: state.league, ...body }); route(); } catch (err) { toast(err.message, true); } };
-  const ADVICE = { keep: 'Keep', 're-price': '<span class="gold">Re-price</span>', cancel: '<span class="down">Cancel</span>', collect: '<span class="up">Collect</span>' };
   const selling = d.orders.some(r => r.side === 'sell' && r.status !== 'filled');
   const ord = panel('Orders', 'c12', '<span class="muted small">Advice compares each order with its own market\'s price now and with where the flip plan would post it.</span>'
     + exportLink('orders') + (selling ? '<label class="small" style="display:flex;align-items:center;gap:6px" title="A sell order filled for more than the ledger holds? It records the merges that made the rest from items it holds. Untick it when you looted them."><input type="checkbox" id="ofm" checked> Sell fills made from what I hold</label>' : ''));
@@ -2228,10 +2229,9 @@ async function pollEvents() {
   ringing.busy = false;
 }
 function ringControls() {
-  const box = document.createElement('div'); box.className = 'panel'; box.style.padding = '8px 12px';
+  const box = document.createElement('div'); box.className = 'body small';
   const notifyState = !window.Notification ? 'unsupported' : Notification.permission;
-  box.innerHTML = `<div class="muted small" style="margin-bottom:4px">When an alert fires</div>
-    <label style="display:flex;gap:7px;align-items:center"><input type="checkbox" data-ring="hoNotify" ${ringOn('hoNotify') && notifyState === 'granted' ? 'checked' : ''} ${notifyState === 'unsupported' || notifyState === 'denied' ? 'disabled' : ''}> Show a notification${notifyState === 'denied' ? ' <span class="dim small">(blocked in the browser’s site settings)</span>' : notifyState === 'unsupported' ? ' <span class="dim small">(this browser cannot)</span>' : ''}</label>
+  box.innerHTML = `<label style="display:flex;gap:7px;align-items:center"><input type="checkbox" data-ring="hoNotify" ${ringOn('hoNotify') && notifyState === 'granted' ? 'checked' : ''} ${notifyState === 'unsupported' || notifyState === 'denied' ? 'disabled' : ''}> Show a notification${notifyState === 'denied' ? ' <span class="dim small">(blocked in the browser’s site settings)</span>' : notifyState === 'unsupported' ? ' <span class="dim small">(this browser cannot)</span>' : ''}</label>
     <label style="display:flex;gap:7px;align-items:center"><input type="checkbox" data-ring="hoSpeak" ${ringOn('hoSpeak') ? 'checked' : ''} ${window.speechSynthesis ? '' : 'disabled'}> Read its title aloud</label>`;
   box.onchange = async e => {
     const key = e.target.dataset.ring; if (!key) return;
@@ -2249,27 +2249,30 @@ function ringControls() {
 // this, it means that item", saved in your ledger and used by the companion from its next press. An
 // understood reading can open the "posted" form (askPosted) with what the desk worked out: your own
 // amounts, the flip plan's order or the market ratio, in that order (`order` from the server).
-function readingsPanel(names, cls = '') {
+function readingsPanel(names, cls = '', compact = false) {
   const p = panel('What the screen check read', cls, '<button type="button" class="btn ghost small" data-rr title="Look for new readings">Refresh</button>');
   const body = document.createElement('div'); body.className = 'body small readings'; p.append(body);
   const known = [...new Set(['Chaos Orb', 'Divine Orb', ...names])];
   let last = null, data = null;
+  const open = new Set();  // readings whose recognised lines you opened: they stay open when the list is drawn again
   const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   // The text a correction is saved for, without the label the item may share its line with.
   const bare = line => String(line).trim();
   const reading = r => `<div class="rd" data-id="${r.id}">
-      <div class="rdh"><b>${clock(r.t)}</b> <span class="muted">${r.kind === 'stack' ? 'Copied stack' : 'Screen'} · ${ago(r.t)}</span></div>
-      ${r.said ? `<div>Understood: <b>${esc(r.said)}</b></div>` : ''}
-      ${r.error ? `<div class="down">${esc(r.error)}</div>` : ''}
-      ${r.lines.length ? `<pre class="ocr" title="The lines the text recognition returned, in its order. Click one to teach the desk which item it means.">${r.lines.map((l, i) => `<span data-line="${i}">${esc(l)}</span>`).join('\n')}</pre>` : ''}
-      ${r.kind === 'screen' ? `<div class="bar" style="margin:0;gap:6px">${r.recorded ? '<span class="up" title="The record key wrote this order to your Ledger. Delete it under Orders if you did not post it.">✓ Recorded in your Ledger</span>' : r.order ? `<button type="button" class="btn small" data-post="${esc(JSON.stringify(r.order))}" title="Posted this order in game? Record it in your Ledger. Nothing is recorded until you press Record, and nothing is sent to the game.">Posted this order…</button>` : ''}<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button></div>` : ''}
+      ${compact ? '' : `<div class="rdh"><b>${clock(r.t)}</b> <span class="muted">${r.kind === 'stack' ? 'Copied stack' : 'Screen'} · ${ago(r.t)}</span></div>`}
+      ${r.said ? `<div>${compact ? '' : 'Understood: '}<b>${esc(r.said)}</b>${compact ? ` <span class="muted">· ${ago(r.t)}</span>` : ''}</div>` : ''}
+      ${r.error ? `<div class="down">${esc(r.error)}${compact ? ` <span class="muted">· ${ago(r.t)}</span>` : ''}</div>` : ''}
+      ${r.lines.length ? `<details class="rdl" data-lines="${r.id}"${open.has(r.id) ? ' open' : ''}><summary title="The lines the text recognition returned, for when a reading looks wrong">What it saw <span class="dim">(${r.lines.length} lines)</span></summary><pre class="ocr" title="Click a line to teach the desk which item it means.">${r.lines.map((l, i) => `<span data-line="${i}">${esc(l)}</span>`).join('\n')}</pre><button type="button" class="btn ghost small" data-copylines="${r.id}" title="Copy these lines, to paste them somewhere">Copy the lines</button></details>` : ''}
+      ${r.kind === 'screen' ? `<div class="bar" style="margin:0;gap:6px">${r.recorded ? '<span class="up" title="The record key wrote this order to your Ledger. Delete it under Orders if you did not post it.">✓ Recorded in your Ledger</span>' : r.order ? `<button type="button" class="btn small" data-post="${esc(JSON.stringify(r.order))}" title="Posted this order in game? Record it in your Ledger. Nothing is recorded until you press Record, and nothing is sent to the game.">Posted this order…</button>` : ''}${!compact || r.error ? `<button type="button" class="btn ghost small" data-teach="${r.id}" title="The recognition misread an item's name? Say which item it means.">Teach a name…</button>` : ''}</div>` : ''}
     </div>`;
   const draw = () => {
     const d = data;
-    body.innerHTML = `${d.readings.length ? d.readings.map(reading).join('') : '<p class="muted" style="margin:0">Nothing read yet. Press the screen check’s key in game (see “Screen check” in the README), or copy a stack with --stacks on.</p>'}
-      <datalist id="rdnames">${known.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+    // The hideout window shows the last three and leaves the list of taught names to the Ledger page.
+    const rows = compact ? d.readings.slice(0, 3) : d.readings;
+    body.innerHTML = `${rows.length ? rows.map(reading).join('') : `<p class="muted" style="margin:0">Nothing read yet. ${compact ? 'Press the screen check’s key in game.' : 'Press the screen check’s key in game (see “Screen check” in the README), or copy a stack with --stacks on.'}</p>`}
+      <datalist id="rdnames">${known.map(n => `<option value="${esc(n)}">`).join('')}</datalist>${compact ? '' : `
       <div class="muted" style="margin-top:8px">${d.corrections.length ? 'Names you taught it:' : 'No names taught yet.'} <span class="dim">Kept in your ledger; the screen check uses them from its next press.</span></div>
-      ${d.corrections.map(c => `<div class="rdc">When it reads <code>${esc(c.text)}</code>, it means <b>${esc(c.item)}</b> <button type="button" class="btn ghost small" data-uncorrect="${esc(c.key)}" title="Delete this">✕</button></div>`).join('')}`;
+      ${d.corrections.map(c => `<div class="rdc">When it reads <code>${esc(c.text)}</code>, it means <b>${esc(c.item)}</b> <button type="button" class="btn ghost small" data-uncorrect="${esc(c.key)}" title="Delete this">✕</button></div>`).join('')}`}`;
   };
   const load = async force => {
     if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
@@ -2295,7 +2298,14 @@ function readingsPanel(names, cls = '') {
     };
     f.querySelector('[data-cancel]').onclick = () => f.remove();
   };
+  // `toggle` does not bubble, so it is caught on the way down.
+  p.addEventListener('toggle', e => { const id = +e.target.dataset?.lines; if (id) e.target.open ? open.add(id) : open.delete(id); }, true);
   p.addEventListener('click', async e => {
+    const copy = e.target.closest('[data-copylines]');
+    if (copy) {
+      const r = data.readings.find(x => x.id === +copy.dataset.copylines);
+      return navigator.clipboard.writeText(r.lines.join('\n')).then(() => toast(`Copied ${r.lines.length} lines.`), () => toast('Could not copy: the browser refused.', true));
+    }
     if (e.target.closest('[data-rr]')) { body.querySelector('form.teach')?.remove(); return load(true).catch(err => toast(err.message, true)); }
     const del = e.target.closest('[data-uncorrect]');
     if (del) { try { data = await api('/api/screen_correction', { delete: del.dataset.uncorrect }); draw(); } catch (err) { toast(err.message, true); } return; }
@@ -2310,22 +2320,68 @@ function readingsPanel(names, cls = '') {
   const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => {}); }, 5000);
   return p;
 }
+// A panel of the hideout window that closes to its header with a click, so the ones you do not need
+// now take one line. Which are closed is remembered in this browser.
+function fold(p, key, shut = false) {
+  const head = p.querySelector('header'), stored = localStorage['hoShut_' + key];
+  p.classList.toggle('shut', stored == null ? shut : stored === '1');
+  head.classList.add('fold'); head.title = 'Click to close or open this panel';
+  head.addEventListener('click', e => {
+    if (e.target.closest('button,select,input,label,a')) return;
+    localStorage['hoShut_' + key] = p.classList.toggle('shut') ? '1' : '0';
+  });
+  return p;
+}
+// The hideout window is for a trading session next to the game: what the screen check just read, what
+// your orders need, and a short list of plans, each closable. Details live on the desk's own pages.
+const HO_LIQUID = [[0, 'any'], [20, '20+'], [100, '100+'], [500, '500+']];
 async function viewHideout(main) {
-  const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
+  const [d, f, led] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, ...bankQuery() })), api(withLeague('/api/ledger'))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b data-divfrac role="button" tabindex="0" title="Parts of a Divine in Chaos, and a converter">Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
-    <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">${BI.check}Check an offer <kbd>C</kbd></button>`;
+  main.innerHTML = `<div class="hotop"><div class="kpi"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b data-divfrac role="button" tabindex="0" title="Parts of a Divine in Chaos, and a converter">Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
+    <button class="btn" id="tcBtn" title="Is an offer in the order window a good deal?">${BI.check}Check <kbd>C</kbd></button></div>`;
   $('#tcBtn', main).onclick = () => openCheck();
+
+  // Orders: the ones that need something from you first; the rest are counted, not listed.
+  const orders = led.orders || [], act = orders.filter(r => r.advice !== 'keep'), fine = orders.length - act.length;
+  const op = panel('Your orders', '', `<span class="muted small">${orders.length ? `${act.length} to act on · ${fine} fine` : 'none recorded'}</span>`);
+  op.insertAdjacentHTML('beforeend', `<div class="body small hoorders">${act.map(r => `<div class="hoo"><div><b>${esc(r.name)}</b> <span class="muted">${r.side === 'buy' ? 'buying' : 'selling'} ${esc(ratioWords(r.side, r.item_units, r.currency_units, r.market === 'divine' ? 'Divine' : 'Chaos'))} · ${itemCount(r.filled)} of ${itemCount(r.units)} filled</span></div>
+      <div>${ADVICE[r.advice] || esc(r.advice)} <span class="muted">${esc(r.reason || '')}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span></div></div>`).join('')
+    || `<p class="muted" style="margin:0">${orders.length ? 'Nothing to do: every order you recorded is fine where it is.' : 'Record an order with the screen check’s record key, or “Posted…” on a plan, and the desk says here when to re-price, cancel or collect it.'}</p>`}
+    ${act.length ? '<p class="muted" style="margin:6px 0 0">Record fills and cancels on the Ledger page.</p>' : ''}</div>`);
+
+  // Flips: a short list, by margin unless you ask for Chaos an hour, and only plans with enough volume.
   const fp = panel('Flips', '');
-  fp.append(table([
-    { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">Buy ${order(r.buy_order, true)}</span><span class="sub">Sell ${order(r.sell_order, false)}</span>` },
-    { h: 'Margin', f: r => pct(r.margin, 0) }, { h: '/ hour', f: r => money(r.profit_per_hour) },
-  ], f.flips.slice(0, 10)));
-  const wp = panel('Watchlist', '');
+  const opt = { sort: localStorage.hoSort === 'hour' ? 'hour' : 'margin', liquid: +(localStorage.hoLiquid ?? 100), rows: +(localStorage.hoRows || 6) };
+  const bar = document.createElement('div'); bar.className = 'bar small hobar';
+  bar.innerHTML = `<label title="Which plans come first">Sort <select data-ho="sort"><option value="margin">margin</option><option value="hour">per hour</option></select></label>
+    <label title="Chaos an hour: how much of the item, at the buy price, the plan expects you to turn over in an hour. Thin items look good on paper and then do not fill.">Volume <select data-ho="liquid">${HO_LIQUID.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+    <label title="How many plans to list">Show <select data-ho="rows">${[4, 6, 10].map(n => `<option value="${n}">${n}</option>`).join('')}</select></label>`;
+  const list = document.createElement('div');
+  const drawFlips = () => {
+    const pass = f.flips.filter(r => (r.flow_value || 0) >= opt.liquid);
+    pass.sort((x, y) => opt.sort === 'margin' ? (y.margin || 0) - (x.margin || 0) : (y.profit_per_hour || 0) - (x.profit_per_hour || 0));
+    list.replaceChildren(table([
+      { h: 'Item', l: 1, f: r => `<b>${esc(r.name)}</b><span class="sub">Buy ${order(r.buy_order, true)}</span><span class="sub">Sell ${order(r.sell_order, false)}</span>` },
+      { h: 'Margin', f: r => pct(r.margin, 0) }, { h: '/ hour', f: r => money(r.profit_per_hour) },
+    ], pass.slice(0, opt.rows), { empty: 'No plan has that much volume. Choose a lower one.' }));
+    if (pass.length > opt.rows) list.insertAdjacentHTML('beforeend', `<div class="muted small" style="padding:4px 8px">${pass.length - opt.rows} more on the Flips page.</div>`);
+  };
+  for (const sel of bar.querySelectorAll('select')) sel.value = String(opt[sel.dataset.ho]);
+  bar.onchange = e => {
+    const key = e.target.dataset.ho; if (!key) return;
+    opt[key] = key === 'sort' ? e.target.value : +e.target.value;
+    localStorage[{ sort: 'hoSort', liquid: 'hoLiquid', rows: 'hoRows' }[key]] = e.target.value;
+    drawFlips();
+  };
+  fp.append(bar, list); drawFlips();
+
+  const wp = panel('Watchlist', '', `<span class="muted small">${watched.length || 'no'} item${watched.length === 1 ? '' : 's'}</span>`);
   wp.append(table([{ h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Price', f: r => money(r.price) }, { h: '24h', f: r => pct(r.change_24h, 0) }], watched, { empty: 'Star items in Markets.' }));
-  main.append(fp, wp);
-  if (d.events.length) { const ev = panel('Alerts', ''); ev.innerHTML += `<div class="body small">${d.events.slice(0, 5).map(e => `<div><b>${esc(e.title)}</b> <span class="muted">${ago(e.t)}</span></div>`).join('')}</div>`; main.append(ev); }
-  main.append(readingsPanel(d.market.map(r => r.name)), ringControls());
+  main.append(fold(readingsPanel(d.market.map(r => r.name), '', true), 'read'), fold(op, 'orders'), fold(fp, 'flips'), fold(wp, 'watch', !watched.length));
+  if (d.events.length) { const ev = panel('Alerts', ''); ev.innerHTML += `<div class="body small">${d.events.slice(0, 5).map(e => `<div><b>${esc(e.title)}</b> <span class="muted">${ago(e.t)}</span></div>`).join('')}</div>`; main.append(fold(ev, 'alerts')); }
+  const rp = panel('When an alert fires', ''); rp.append(ringControls());
+  main.append(fold(rp, 'ring', true));
 }
 async function openHideout() {
   const url = '/?hideout=1';

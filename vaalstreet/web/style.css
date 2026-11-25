@@ -299,6 +299,18 @@ body.hideout #main{padding:10px}
 body.hideout .panel{margin-bottom:10px;box-shadow:0 0 0 1px #000}
 body.hideout .panel::before,body.hideout .panel>header::after{display:none}
 body.hideout th,body.hideout td{padding:5px 8px}
+body.hideout .panel>header.fold{cursor:pointer;user-select:none}
+body.hideout .panel>header.fold h2::before{content:"▾";display:inline-block;width:14px;color:var(--muted)}
+body.hideout .panel.shut>header.fold h2::before{content:"▸"}
+body.hideout .panel.shut>:not(header){display:none}
+body.hideout .panel.shut{margin-bottom:6px}
+body.hideout .hotop{display:flex;gap:8px;align-items:stretch;margin-bottom:10px}
+body.hideout .hotop .kpi{flex:1;margin:0}
+body.hideout .hobar{gap:10px;margin:0;padding:6px 8px;border-bottom:1px solid var(--line)}
+body.hideout .hobar select{font-size:12px;padding:2px 4px}
+body.hideout .hoo{padding:6px 0;border-bottom:1px solid var(--line)}
+body.hideout .hoo:first-child{padding-top:0}
+body.hideout .hoo:last-of-type{border-bottom:0}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:#0b0a08}::-webkit-scrollbar-thumb{background:linear-gradient(90deg,#4a3b27,#3a2e1f);border-radius:2px;border:2px solid var(--bg)}
 ::-webkit-scrollbar-thumb:hover{background:var(--bronze)}
 .member{display:grid;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
@@ -331,6 +343,8 @@ body.hideout #practice{position:sticky}
 .readings .rd:first-child{padding-top:0}
 .readings .rd>*+*{margin-top:4px}
 .readings .ocr{font:11.5px/1.45 var(--mono);background:#0d0b08;border:1px solid var(--line);border-radius:2px;padding:6px 8px;margin:6px 0;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.readings .rdl summary{cursor:pointer;color:var(--muted)}
+.readings .rdl summary:hover{color:var(--text)}
 .readings .ocr span{cursor:pointer}
 .readings .ocr span:hover{color:var(--gold)}
 .readings .teach{margin:6px 0 0}
