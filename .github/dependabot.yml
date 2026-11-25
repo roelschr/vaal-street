@@ -1,0 +1,18 @@
+# Weekly checks for newer versions of what the project builds on. Each update arrives as a pull request.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/desktop"
+    schedule:
+      interval: weekly
+    groups:
+      electron:
+        patterns: ["electron*"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
