@@ -1,0 +1,15 @@
+{
+  "name": "vaal-street-desktop",
+  "version": "2.0.0",
+  "description": "Vaal Street as one Windows app: the desk, its hideout window and the screen check",
+  "private": true,
+  "license": "MIT",
+  "author": "Vaal Street",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
