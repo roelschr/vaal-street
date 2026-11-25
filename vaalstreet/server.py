@@ -926,6 +926,10 @@ class App:
                         recipes=recipes))
                 elif body.get("status"):
                     self.ledger.set_order_status(body["id"], body["status"])
+                elif body.get("repost"):
+                    # Cancelled in game and posted again: the old order's item, side and market carry over.
+                    self.ledger.repost_order(body["repost"], body["currency_units"], body["item_units"], body["units"],
+                                             gold=body.get("gold"))
                 else:
                     self.ledger.add_order(league, body["item"], body["side"], body["market"], body["currency_units"],
                                           body["item_units"], body["units"], gold=body.get("gold"))

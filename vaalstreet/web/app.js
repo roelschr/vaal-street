@@ -77,6 +77,8 @@ const itemCell = (r, sub) => `<div class="item">${icon(r.id)}<div style="min-wid
 const order = (o, buying) => buying
   ? `${o.currency_units} ${curWord(o.currency)} <span class="dim">for</span> ${o.item_units}`
   : `${o.item_units} <span class="dim">for</span> ${o.currency_units} ${curWord(o.currency)}`;
+// The same, as plain text for toasts and sentences: "8 Chaos for 1" buying, "1 for 8 Chaos" selling.
+const ratioWords = (side, itemUnits, currencyUnits, currency) => side === 'buy' ? `${currencyUnits} ${currency} for ${itemUnits}` : `${itemUnits} for ${currencyUnits} ${currency}`;
 // Small icons for the buttons used most: weigh an offer, and the hideout window.
 const BI = {
   check: '<svg class="bi" viewBox="0 0 24 24"><path d="M12 4v16M7 20h10M4 8h16M6.5 8l-3 6.5a3.2 3.2 0 006 0L6.5 8zM17.5 8l-3 6.5a3.2 3.2 0 006 0L17.5 8z"/></svg>',
@@ -974,7 +976,9 @@ function askPosted(o) {
       await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units, item_units, units, gold: optional(box.elements.gold.value), ...(o.extra || {}) });
     } catch (err) { delete box.dataset.busy; return toast(err.message, true); }
     box.remove();
-    toast(`Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
+    toast(o.extra?.repost
+      ? `Recorded the re-post: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name} at ${ratioWords(o.side, item_units, currency_units, o.currency)}. The old order is marked cancelled.`
+      : `Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
     // Draw the page again so the plan says it is posted, and the item's panel too when it shows this item.
     const drawer = $('#drawer');
     if (drawer && !drawer.hidden && drawer.dataset.item === o.item) openItem(o.item);
@@ -1297,6 +1301,16 @@ async function viewLedger(main) {
     const lead = `The plan sells what this order bought at ${s.item_units} for ${s.currency_units} ${s.currency}. You hold ${itemCount(s.free)} that no sell order offers yet.`;
     return `<button class="btn ghost" data-post="${esc(JSON.stringify({ ...s, lead }))}" title="Posted the plan's sell order for what this order bought? Record it without typing it">Sell order posted…</button>`;
   };
+  // Re-pricing is cancel and post again in game. This records both at once: the old order is marked
+  // cancelled and the new one points back at it. The plan's ratio is filled in, but you may have posted another.
+  const repostButton = r => {
+    if (r.advice !== 're-price' || !r.suggest) return '';
+    const currency = r.market === 'divine' ? 'Divine' : 'Chaos', left = r.units - r.filled;
+    const ask = { item: r.item, name: r.name, side: r.side, market: r.market, currency, currency_units: r.suggest.currency_units, item_units: r.suggest.item_units, units: left, editable: true,
+      title: 'Order you re-posted', extra: { repost: r.id },
+      lead: `Recording this marks your order at ${ratioWords(r.side, r.item_units, r.currency_units, currency)} as cancelled, and records the new one in its place. Change the ratio if you posted another one.` };
+    return `<button class="btn ghost" data-post="${esc(JSON.stringify(ask))}" title="Cancelled this order in game and posted it again? Record both in one step">Re-posted…</button>`;
+  };
   const ot = table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Side', l: 1, f: r => r.side === 'buy' ? 'Buying' : 'Selling' },
     { h: 'Ratio', l: 1, f: r => `${r.item_units} for ${r.currency_units} ${curWord(r.market === 'divine' ? 'Divine' : 'Chaos')}` },
@@ -1305,7 +1319,7 @@ async function viewLedger(main) {
     { h: 'Advice', l: 1, f: r => `${ADVICE[r.advice]} <span class="muted small">${esc(r.reason)}${r.suggest ? ` Try ${r.suggest.item_units} for ${r.suggest.currency_units}.` : ''}</span>${r.repost_gold != null ? `<div class="gold small" title="Gold is not refunded on cancel, so re-posting pays the fee again">re-posting costs about ${Math.round(r.repost_gold).toLocaleString('en-US')} Gold</div>` : ''}` },
     { h: '', f: r => (r.status === 'filled'
       ? `<button class="btn ghost" data-close="${r.id}" title="You took the proceeds from the exchange">Collected</button>`
-      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button><button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
+      : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button>${repostButton(r)}<button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
       + sellButton(r) },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
   ot.onclick = e => {
