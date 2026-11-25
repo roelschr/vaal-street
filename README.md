@@ -183,6 +183,7 @@ python -m vaalstreet check "Orb of Alteration" --market divine --side buy --rati
 python -m vaalstreet screen                      # on Windows: press a key to read an offer off the exchange window (optional)
 python -m vaalstreet screen --stacks             # also: press Ctrl+C over a stack in game to see what it is worth
 python -m vaalstreet screen --stash              # the same, and each copied stack goes into your stash list
+python -m vaalstreet app                         # on Windows: the desk and the screen check together, in one process
 python -m vaalstreet stash set "Divine Orb" 3     # what you hold; stash alone lists it, stash --ledger values your positions
 python -m vaalstreet stash import holdings.txt   # a list with one item per line ("45 Divine Orb"); shown first, written with --yes
 python -m vaalstreet stash --plan                # a sell order for every line of your stash, at the flip plans' own levels
@@ -280,6 +281,15 @@ pip install -e ".[screen]"
 
 This installs the desk's three libraries plus `mss` (screen capture), `pynput` (the hotkey; it works without administrator rights, unlike the `keyboard` library on some systems, and is maintained) and `rapidocr-onnxruntime` (text recognition with its models inside the package, so nothing is downloaded when it runs and no separate program such as Tesseract is needed). Use double quotes: cmd does not understand single ones.
 
+**Or run both together on Windows.** When the desk's data is on the Windows side too, one command runs the desk and the screen check in one process, with nothing in WSL:
+
+```
+python -m vaalstreet app            # the desk at http://localhost:3000 and the screen check; Ctrl+C stops both
+python -m vaalstreet app --stash    # the same, with the stack check writing copied stacks to your stash list
+```
+
+The screen check starts once the desk has market data (on a first start, after the first download). If its libraries are not installed, the desk runs alone and says so. `--no-screen` runs the desk alone on purpose, and `--hotkey` and `--record-hotkey` change the keys.
+
 **Run it next to the desk in WSL.** Start the desk in WSL as usual (`python -m vaalstreet serve`). WSL2 passes `localhost` through to Windows, so on Windows run:
 
 ```
@@ -333,6 +343,7 @@ vaalstreet/basket.py    a named list of items, priced now and over time
 vaalstreet/export.py    your records as CSV files
 vaalstreet/searchstring.py  a search string for the game's search box
 vaalstreet/screen.py    screen check companion: one screenshot per key press (optional extra)
+vaalstreet/desktop.py   the desk and the screen check in one process, as the Windows app runs them
 vaalstreet/clipboard.py stack check: what a stack you copy in game is worth, one clipboard read per press
 vaalstreet/ladder.py    bankroll ladder and compounding plan
 vaalstreet/calibrate.py share of the flow learned from your orders

@@ -1693,7 +1693,7 @@ def _default(o):
     raise TypeError(type(o).__name__)
 
 
-def serve(port: int = 3000, root: Path | None = None, *, sync: bool = True) -> None:
+def _listen(port: int, root: Path | None, sync: bool) -> tuple[ThreadingHTTPServer, App]:
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), None)
     except OSError as err:
@@ -1701,7 +1701,35 @@ def serve(port: int = 3000, root: Path | None = None, *, sync: bool = True) -> N
                            f"Try --port {port + 1}.") from err
     app = App(root, sync=sync)
     httpd.RequestHandlerClass = make_handler(app)
-    print(f"Vaal Street desk: http://localhost:{port}   (data in {app.root})", flush=True)
+    return httpd, app
+
+
+class Running:
+    """A desk that answers on a background thread, for a program that has other work on its main thread."""
+
+    def __init__(self, httpd: ThreadingHTTPServer, app: App) -> None:
+        self.httpd, self.app = httpd, app
+        self.port = httpd.server_port
+        # 127.0.0.1 and not localhost: on Windows localhost can resolve to ::1 first, where nothing listens.
+        self.url = f"http://127.0.0.1:{self.port}"
+        self._thread = threading.Thread(target=httpd.serve_forever, name="vaal-desk", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self.app._stop.set()
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self._thread.join(timeout=5)
+
+
+def start(port: int = 3000, root: Path | None = None, *, sync: bool = True) -> Running:
+    """Start the desk without blocking. Port 0 takes any free port; read it from the result."""
+    return Running(*_listen(port, root, sync))
+
+
+def serve(port: int = 3000, root: Path | None = None, *, sync: bool = True) -> None:
+    httpd, app = _listen(port, root, sync)
+    print(f"Vaal Street desk: http://localhost:{httpd.server_port}   (data in {app.root})", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

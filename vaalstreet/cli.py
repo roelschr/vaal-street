@@ -124,6 +124,17 @@ def _serve(args: argparse.Namespace) -> None:
     serve(args.port, sync=not args.no_sync)
 
 
+def _app(args: argparse.Namespace) -> None:
+    from vaalstreet import desktop
+
+    options = {"hotkey": args.hotkey, "record_hotkey": args.record_hotkey,
+               "stacks": args.stacks or args.stash, "stash": args.stash}
+    try:
+        desktop.run(args.port, sync=not args.no_sync, screen_check=not args.no_screen, options=options)
+    except RuntimeError as err:
+        sys.exit(str(err))
+
+
 def _status(args: argparse.Namespace) -> None:
     con = connect(realm=args.realm)
     con.sql(
@@ -930,6 +941,25 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT", 3000)))
     p.add_argument("--no-sync", action="store_true", help="do not download new hours in the background")
     p.set_defaults(run=_serve)
+
+    p = commands.add_parser(
+        "app", help="run the desk and the screen check together, as the Windows app does",
+        description="One process that runs the desk and, when its optional libraries are installed, the screen "
+                    "check next to it. The Windows app starts this for you; run it by hand under Windows Python "
+                    "to get the same without the app window. The stack check stays off unless you ask for it.",
+        epilog="The first line printed is VAAL-DESK-READY and the desk's address. The process stops when its "
+               "standard input closes, or on Ctrl+C.")
+    p.add_argument("--port", type=int, default=int(os.environ.get("PORT", 3000)),
+                   help="the desk's port (default %(default)s); 0 takes any free port")
+    p.add_argument("--no-sync", action="store_true", help="do not download new hours in the background")
+    p.add_argument("--no-screen", action="store_true", help="run the desk alone, without the screen check")
+    p.add_argument("--hotkey", help="the screen check's key, in pynput's form (default <ctrl>+<alt>+<f9>)")
+    p.add_argument("--record-hotkey", help="the key that also records the order shown (default <ctrl>+<alt>+<f10>)")
+    p.add_argument("--stacks", action="store_true",
+                   help="also value the stack under the cursor when you press Ctrl+C in game (see `screen -h`)")
+    p.add_argument("--stash", action="store_true",
+                   help="like --stacks, and also write each copied stack to your stash list")
+    p.set_defaults(run=_app)
 
     p = commands.add_parser("sync", help="download exchange hours not yet on disk (newest first) and index them")
     p.add_argument("--days", type=int, default=14, help="how far back to reach (default 14)")
