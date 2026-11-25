@@ -181,7 +181,7 @@ function renderTop() {
   const leagues = (s.leagues || []).filter(l => l.kind !== 'variant' || l.league === state.league).slice(0, 40);
   $('#top').innerHTML = `
     <select id="leagueSel" title="${state.practice ? 'Stop the practice to change league' : 'League'}" ${state.practice ? 'disabled' : ''}>${leagues.map(l => `<option value="${esc(l.league)}" ${l.league === state.league ? 'selected' : ''}>${esc(l.league)}${l.family ? ` · ${esc(familyWord(l.family))}` : ''}</option>`).join('')}</select>
-    ${sm ? `<div class="stat orb"><i class="ci d big"></i><div><b${flash ? ` class="${flash}"` : ''}>${fmt(sm.bridge)}${CUR.c} ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div></div>
+    ${sm ? `<div class="stat orb" data-divfrac role="button" tabindex="0" title="Parts of a Divine in Chaos, and a converter"><i class="ci d big"></i><div><b${flash ? ` class="${flash}"` : ''}>${fmt(sm.bridge)}${CUR.c} ${pct(sm.bridge_change_24h)}</b><span>Divine Orb</span></div></div>
     <div class="stat" title="${sm.league_day == null ? 'The archive does not reach back to this league’s first hour.' : ''}"><b>Day ${sm.league_day ?? '–'}</b><span>of league</span></div>
     <div class="stat"><b>${compactMoney(sm.value_24h, sm.bridge)}</b><span>traded, 24h</span></div>
     ${state.practice ? `<div class="stat"><b class="violet">${esc(practiceTime(state.practice))}</b><span>practice hour</span></div>` : `<div class="stat"><b>${ago(sm.as_of + 3600)}</b><span>latest hour</span></div>`}` : ''}
@@ -192,7 +192,53 @@ function renderTop() {
   $('#leagueSel').onchange = async e => { state.league = e.target.value; await api('/api/league', { league: state.league }); state.summary = null; route(); };
   $('#unitSeg').onclick = e => { const u = e.target.closest('[data-u]')?.dataset.u; if (u) { state.unit = localStorage.unit = u; route(); } };
   $('#hideoutBtn').onclick = openHideout;
+  if ($('#dfrac') && !$('#dfrac').hidden) drawFractions();  // a new hour or practice step moves the Divine price
 }
+
+// ------------------------------------------------------- parts of a Divine
+// Prices under one Divine are paid in Chaos, so 0.1 to 0.9 Divine in whole Chaos, and a two-way
+// converter. It reads state.bridge, the price the top bar shows, so in a rehearsal it follows the
+// practice hour. Opened from any [data-divfrac] (the top bar's Divine price, the hideout's).
+function openFractions(anchor) {
+  let pop = $('#dfrac');
+  if (!pop) {
+    pop = document.createElement('aside'); pop.id = 'dfrac'; pop.setAttribute('aria-label', 'Parts of a Divine'); document.body.append(pop);
+    pop.innerHTML = `<header><h2>Parts of a Divine</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+      <div data-parts></div>
+      <div class="conv"><label class="f">Chaos<input type="number" name="fc" min="0" step="any" placeholder="75"></label><span data-fc class="muted"></span></div>
+      <div class="conv"><label class="f">Divines<input type="number" name="fd" min="0" step="any" placeholder="0.5"></label><span data-fd class="muted"></span></div>`;
+    pop.oninput = drawFractions;
+    pop.onclick = e => { if (e.target.closest('[data-x]')) closeFractions(); };
+    pop.onkeydown = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFractions(); } };
+  }
+  pop.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = `${Math.round(r.bottom + 6)}px`;
+  pop.style.left = `${Math.round(Math.max(6, Math.min(r.left, innerWidth - pop.offsetWidth - 6)))}px`;
+  drawFractions();
+}
+function drawFractions() {
+  const pop = $('#dfrac'), b = state.bridge;
+  if (!pop) return;
+  if (!b) { $('[data-parts]', pop).innerHTML = '<p class="muted">No Divine price yet.</p>'; return; }
+  $('[data-parts]', pop).innerHTML = `<p class="muted small">1 Divine is ${fmt(b)}${CUR.c}${state.practice ? ' at the practice hour' : ''}.</p>
+    <div class="parts">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(k => `<span>0.${k}${CUR.d}</span><b>${Math.round(k / 10 * b)}${CUR.c}</b>`).join('')}</div>`;
+  const read = name => { const v = $(`[name="${name}"]`, pop).value.trim(); return v === '' ? null : +v; };
+  const c = read('fc'), d = read('fd');
+  $('[data-fc]', pop).innerHTML = c == null ? '' : c >= 0 && isFinite(c) ? `= ${fmt(c / b)}${CUR.d}` : 'Type an amount of zero or more.';
+  $('[data-fd]', pop).innerHTML = d == null ? '' : d >= 0 && isFinite(d) ? `= ${fmt(d * b)}${CUR.c}` : 'Type an amount of zero or more.';
+}
+function closeFractions() { const pop = $('#dfrac'); if (pop) pop.hidden = true; }
+const fractionsOpen = () => $('#dfrac') && !$('#dfrac').hidden;
+document.addEventListener('click', e => {
+  const anchor = e.target.closest('[data-divfrac]');
+  if (anchor) { fractionsOpen() ? closeFractions() : openFractions(anchor); return; }
+  if (fractionsOpen() && !e.target.closest('#dfrac')) closeFractions();
+});
+document.addEventListener('keydown', e => {
+  const anchor = e.target.closest?.('[data-divfrac]');
+  if (anchor && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openFractions(anchor); $('#dfrac [name=fc]').focus(); }
+});
 
 // -------------------------------------------------------------------- views
 async function loadDesk() {
@@ -2155,7 +2201,7 @@ function ringControls() {
 async function viewHideout(main) {
   const [d, f] = await Promise.all([loadDesk(), api(withLeague('/api/flips', { share: state.share, limit: 12, ...bankQuery() }))]);
   const s = d.summary, watched = d.market.filter(r => r.watched);
-  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b>Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
+  main.innerHTML = `<div class="kpi" style="margin-bottom:10px"><span>${esc(s.league)}${s.league_day == null ? '' : ' · day ' + s.league_day} · ${state.practice ? 'practice' : ago(s.as_of + 3600)}</span><b data-divfrac role="button" tabindex="0" title="Parts of a Divine in Chaos, and a converter">Divine ${fmt(s.bridge)}${CUR.c}</b><i>${pct(s.bridge_change_24h)}</i></div>
     <button class="btn" id="tcBtn" style="width:100%;margin-bottom:10px" title="Is an offer in the order window a good deal?">${BI.check}Check an offer <kbd>C</kbd></button>`;
   $('#tcBtn', main).onclick = () => openCheck();
   const fp = panel('Flips', '');
@@ -2238,7 +2284,7 @@ function enterPage() {
 window.addEventListener('hashchange', () => { closeDrawer(); $('#main').scrollTop = 0; if (!state.hideout) enterPage(); route(); });
 window.addEventListener('keydown', e => {
   if (e.target.matches('input,select,textarea')) { if (e.key === 'Escape') e.target.blur(); return; }
-  if (e.key === 'Escape') { if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
+  if (e.key === 'Escape') { if (fractionsOpen()) closeFractions(); else if ($('#tc') && !$('#tc').hidden) closeCheck(); else if (tourOpen()) closeTour(); else closeDrawer(); }
   else if (e.ctrlKey || e.metaKey || e.altKey) return;
   else if (e.key === '?') { e.preventDefault(); if (!state.hideout) openTour(); }
   else if (e.key === 'h' || e.key === 'H') openHideout();
