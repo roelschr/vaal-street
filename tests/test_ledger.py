@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from vaalstreet.ingest import CHAOS, DIVINE
 from vaalstreet.ledger import Ledger, recipe_key
 from vaalstreet.paths import ledger_file
 
@@ -65,11 +66,17 @@ def test_gold_fees_are_learned_from_records_and_never_counted_twice(tmp_path):
     ledger.add_trade("L", "orb", "buy", 10, 1, gold=5000)  # a typo: the median shrugs it off
     ledger.add_trade("L", "orb", "buy", 10, 1)  # no Gold given: unknown, not zero
     ledger.add_trade("L", "gem", "buy", 1, 1, gold=0)  # a real zero is kept
-    order = ledger.add_order("L", "orb", "sell", "chaos", 2, 1, 10, gold=110)  # 11 per unit
+    ledger.add_trade("L", "orb", "sell", 10, 1, gold=70)  # a sale typed by hand names no market: teaches nothing
+    order = ledger.add_order("L", "orb", "sell", "chaos", 2, 1, 10, gold=110)  # asks 20 Chaos: 5.5 a Chaos
     ledger.fill_order(order, 10)
+    bought = ledger.add_order("L", "orb", "buy", "divine", 1, 5, 10, gold=140)  # wants 10 orbs: 14 each
+    sold = ledger.add_order("L", "orb", "sell", "divine", 1, 5, 10, gold=500)  # asks 2 Divines: 250 a Divine
     fees = ledger.gold_fees("L")
-    # Samples 10, 12, 500 and the order's 11: the fill's trade carries no Gold of its own.
-    assert fees["orb"] == {"gold_per_unit": pytest.approx(11.5), "trades": 4}
+    # An order pays for what it wants. The orb's samples are the buys: 10, 12, 500 and 14.
+    assert fees["orb"] == {"gold_per_unit": pytest.approx(13), "trades": 4}
+    # The sell orders teach their currency's fee; the fill's trade carries no Gold of its own.
+    assert fees[CHAOS] == {"gold_per_unit": pytest.approx(5.5), "trades": 1}
+    assert fees[DIVINE] == {"gold_per_unit": pytest.approx(250), "trades": 1} and bought and sold
     assert fees["gem"]["gold_per_unit"] == 0 and "chaos" not in fees
     assert ledger.trades("L")[-1]["gold"] is None and ledger.trades("L")[-1]["order_id"] == order
     with pytest.raises(ValueError):

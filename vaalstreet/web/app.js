@@ -378,11 +378,11 @@ function fairRange(r) {
   const half = (r.fair_high - r.fair_low) / 2 / r.price, unit = state.unit === 'divine' && state.bridge ? state.bridge : 1;
   return `<span class="dim small" title="Model sure within ${fmt(r.fair_low / unit)} to ${fmt(r.fair_high / unit)} ${unit === 1 ? 'Chaos' : 'Divine'}. How sure the model is about the value now. Not a forecast: single trades often land outside."> ${plusMinus(half)}</span>`;
 }
-// Where each Gold fee came from, in words: the fee schedule is not published, so it is learned or assumed.
-const feeSource = r => (r.gold_sources || []).map(x => x.source === 'your trades' ? `from your trades (${x.trades})` : x.source === 'your assumption' ? 'your assumed fee' : 'unknown').filter((v, i, a) => a.indexOf(v) === i).join(', ');
+// Where each Gold fee came from, in words: your own records, the fee table from poedb.tw, or your assumption.
+const feeSource = r => (r.gold_sources || []).map(x => x.source === 'your trades' ? `from your trades (${x.trades})` : x.source === 'fee table' ? 'fee table' : x.source === 'your assumption' ? 'your assumed fee' : 'unknown').filter((v, i, a) => a.indexOf(v) === i).join(', ');
 const goldCell = (r, value) => r.gold == null
-  ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. Record the Gold of a trade in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
-  : `${value}<div class="muted small">${feeSource(r)}</div>`;
+  ? `<span class="dim" title="No Gold fee known for ${esc((r.gold_sources || []).filter(x => x.source === 'unknown').map(x => x.id).join(', '))}. The fee table from poedb.tw has not been fetched or does not list it. Record the Gold of an order in the Ledger, or enter an assumed fee on the Flips page.">Gold unknown</span>`
+  : `<span${r.gold_buy != null && r.gold_sell != null ? ` title="One item: ${fmt(r.gold_buy)} Gold to buy it, ${fmt(r.gold_sell)} Gold to sell it"` : ''}>${value}</span><div class="muted small">${feeSource(r)}</div>`;
 const flipCols = (mine = []) => [
   { h: 'Item', l: 1, f: r => itemCell(r, `${marketTag(r.kind)}${flipWarn(r)}`), s: r => r.name },
   { h: 'Buy order', f: r => order(r.buy_order, true) + postedLine(r, 'buy', mine), s: r => r.buy, title: 'Currency you pay, for how many items' },
@@ -396,7 +396,7 @@ const flipCols = (mine = []) => [
   { h: 'Capital', f: r => money(r.capital), s: r => r.capital, title: 'Roughly six hours of buying held as inventory' },
   { h: 'Bid queue', f: r => dur(r.bid_queue_hours), s: r => r.bid_queue_hours, title: 'Resting bids already in the buy market, in hours of that market’s volume' },
   { h: 'Offer queue', f: r => dur(r.ask_queue_hours), s: r => r.ask_queue_hours, title: 'Items already on offer in the sell market, in hours of that market’s volume' },
-  { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the orders cost. Each order costs Gold for every item it buys or sells' },
+  { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the orders cost. An order costs Gold for each thing it asks for: each item when you buy, each Chaos or Divine when you sell. Hover a figure for the two parts' },
   { h: 'Gold / hour', f: r => goldCell(r, fmt(r.gold_per_hour)), s: r => r.gold_per_hour, title: 'Gold the orders cost at the units per hour this plan expects' },
   { h: 'Minutes', f: r => `${mins(r.minutes)} <span class="dim">· ${r.orders} order${r.orders === 1 ? '' : 's'}</span>`, s: r => r.minutes, title: 'Your time to post this plan’s orders once, at the minutes per order you set' },
   { h: 'Per hour of your time', f: r => money(r.profit_per_own_hour), s: r => r.profit_per_own_hour, title: 'Est. / hour × 60 ÷ minutes: if you post one buy and one sell order for each hour the market runs' },
@@ -429,14 +429,14 @@ async function viewFlips(main) {
   const st = d.settings;
   main.innerHTML = `<div class="head"><div><h1>Flips</h1><p>Buy low in one market, sell high in the same or the other. Ranked by estimated profit per hour.</p></div></div>
     <p class="note">Each plan rests a buy order at a price the market's <b>hourly average</b> has dipped to, and a sell order at a price it has risen to — levels a stated share of the last two days' volume actually traded beyond. “Chaos → Divine” buys from people dumping loot for Chaos and sells to people paying Divines, who consistently pay more. Estimates assume you capture ${plainPct(state.share)} of the market's flow and ignore who is ahead of you in the queue. The “Last 7 days” replay does wait in line: its orders fill only after the stock already on offer has traded. Check the in-game book before sizing up.</p>
-    <p class="note">Every order costs Gold, and the game does not publish how much. The desk uses the Gold per item from the trades you recorded in the Ledger; for other items it uses the fee you assume below, and otherwise says “Gold unknown”. Minutes assume ${+(+st.minutes_per_order).toFixed(2)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
+    <p class="note">Every order costs Gold for each thing it asks for, at a fixed fee per item whatever its price: buying 13 Stacked Decks costs 13 × 35 Gold; selling for Chaos costs 15 Gold for every Chaos you ask for, selling for Divines 250 for every Divine (the selling cost is assumed from the same rule: record a sell order’s Gold in the Ledger and the desk learns the real figure). So cheap items bought in bulk cost the most Gold for what they earn, and selling for Divines costs far less Gold than selling for Chaos. Fees come from your own recorded orders first, then from the fee table fetched from poedb.tw, then from the fee you assume below; otherwise the desk says “Gold unknown”. Minutes assume ${+(+st.minutes_per_order).toFixed(2)} minute${st.minutes_per_order === 1 ? '' : 's'} per order — your guess, change it below.</p>
     <div class="bar">
       <div class="seg" id="kind">${['all', 'chaos', 'divine', 'cross'].map(k => `<button data-k="${k}" class="${f.kind === k ? 'on' : ''}">${k === 'all' ? 'All plans' : KIND[k]}</button>`).join('')}</div>
       <label class="f">Your share of the flow: <span id="shareL">${plainPct(state.share)}</span><input type="range" id="share" min="0.01" max="0.3" step="0.01" value="${state.share}"></label>
       <label class="f">Min. margin (%)<input type="number" id="mm" value="${f.minMargin * 100}" min="0" step="1"></label>
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 5000" min="0" step="1000"></label>
       <label class="f" title="Gold is paid when you post an order. With a budget, the session plan picks the plans that earn most per Gold until posting their orders once would spend it">Gold to spend this session<input type="number" id="gb" value="${f.goldBudget || ''}" placeholder="optional" min="0" step="1000"></label>
-      <label class="f" title="Gold per item bought or sold, for items you have no recorded trade for. Leave empty to say “unknown”">Assumed fee (Gold / item)<input type="number" id="fee" value="${st.assumed_gold_fee ?? ''}" placeholder="unknown" min="0" step="any"></label>
+      <label class="f" title="Gold per thing an order asks for, used only where neither your records nor the fee table know the fee. Leave empty to say “unknown”">Assumed fee (Gold / item)<input type="number" id="fee" value="${st.assumed_gold_fee ?? ''}" placeholder="unknown" min="0" step="any"></label>
       <label class="f">Minutes per order<input type="number" id="mpo" value="${st.minutes_per_order}" min="0" step="0.5"></label>
       <label class="f">Rank by<select id="rank">${[['profit', 'Est. / hour'], ['gold', 'Chaos per 1,000 Gold'], ['own', 'Per hour of your time']].map(([k, l]) => `<option value="${k}" ${f.rankBy === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="f">Search<input type="search" id="q" value="${esc(f.q)}" placeholder="Item name"></label>
@@ -472,7 +472,7 @@ async function viewFlips(main) {
       $('header', p).insertAdjacentHTML('beforeend', '<button class="btn" data-ss title="A search string for the game\'s search box that finds this plan\'s items">Copy search string</button>');
       $('[data-ss]', p).onclick = () => openSearchString([...new Set(picks.map(r => r.id))], 'this session plan');
     }
-    if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record a trade's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
+    if (sp.gold_unknown.length) p.insertAdjacentHTML('beforeend', `<div class="body"><p class="note"><b>Gold unknown</b> — left out of the plan because the desk does not know what their orders cost in Gold: ${sp.gold_unknown.map(r => esc(r.name)).join(', ')}. Record an order's Gold in the Ledger or enter an assumed fee to include them.</p></div>`);
     host.append(p);
   };
   // The session plan is built on the server for one kind of plan, so a new kind asks again.
@@ -571,7 +571,7 @@ async function viewArbitrage(main) {
     { h: 'Waiting now', f: r => r.resting_value > 0 ? money(r.resting_value) : '<span class="dim">nothing</span>', s: r => r.resting_value, title: 'Value of orders resting on the other side of the thinnest swap in the latest hour: what you could take immediately' },
     { h: 'Went through 24h', f: r => money(r.value_24h), s: r => r.value_24h, title: 'Value traded in the thinnest step of the path' },
     { h: 'Hours active', f: r => r.hours + ' / 24', s: r => r.hours },
-    { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold for one trip per unit of the first item: buying it, each swap, and selling the last item. The game does not say what a swap costs; the desk assumes the fee of the item you give, as if you sold it' },
+    { h: 'Gold', f: r => goldCell(r, fmt(r.gold)), s: r => r.gold, title: 'Gold for one trip per unit of the first item: buying it, each swap, and selling the last item for Chaos. Each order pays for what it asks for, so a swap costs the fee of the item you receive. That is the rule as seen on buy and sell orders; no swap’s Gold was checked in game' },
     { h: 'Per 1,000 Gold', f: r => goldCell(r, money(r.chaos_per_1000_gold)), s: r => r.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold the trip costs' },
     { h: 'In game', l: 1, f: checkCell, s: r => r.check, title: 'Whether you marked this round trip as working when you tried it in game' },
   ], d.loops.filter(r => fits(r.lot_cost)), { sort: 5, limit: 15, empty: 'No round trip traded steadily in the last day.' }));
@@ -1708,11 +1708,11 @@ async function viewLedger(main) {
   const start = $('#sstart', ses), stop = $('#sstop', ses);
   if (start) start.onclick = () => post('/api/session', plan ? { expected_per_hour: plan.expected_per_hour, plan } : {});
   if (stop) stop.onclick = () => post('/api/session', { stop: running.id, gold_earned: optional($('#sge', ses).value) });
-  const fee = panel('Gold fees you paid', 'c12', '<span class="muted small">Learned from the Gold you record; the game does not publish its fees.</span>');
+  const fee = panel('Gold fees you paid', 'c12', '<span class="muted small">Learned from the Gold you record on orders; these win over the fee table from poedb.tw.</span>');
   fee.append(table([
-    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Gold per item', f: r => fmt(r.gold_per_unit), title: 'The middle value over your records' },
+    { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Gold per item', f: r => fmt(r.gold_per_unit), title: 'The middle value over your records. A buy order teaches the fee of the item; a sell order teaches the fee of the Chaos Orb or Divine Orb it asks for' },
     { h: 'From', f: r => `${r.trades} record${r.trades === 1 ? '' : 's'}` },
-  ], d.gold_fees, { empty: 'Unknown until you record the Gold a trade or order cost.' }));
+  ], d.gold_fees, { empty: 'None yet: fees come from the fee table. Record the Gold an order cost and your own figure is used instead.' }));
   const rc = panel('Recipe checks', 'c12', '<span class="muted small">Did a conversion or round trip work when you tried it in game? Kept for every league.</span>');
   const rform = document.createElement('div'); rform.className = 'body bar'; rform.style.margin = '0';
   rform.innerHTML = `<label class="f">Recipe<select id="rk" style="max-width:420px">${d.recipes.map(r => `<option value="${esc(r.key)}">${esc(r.label)}${r.check ? ` (${r.check.status})` : ''}</option>`).join('')}</select></label>

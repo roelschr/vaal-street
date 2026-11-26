@@ -180,6 +180,17 @@ def test_the_desk_fetches_once_and_reports_it(archive_root, tmp_path, fake, monk
     assert status["items"] == len(KNOWN) - 2 + 12 and status["league"] == NEW and not status["stale"]
     assert status["credit"] == "Gold fees from poedb.tw"
 
+    # Plans are costed from the table, and a fee your own order taught wins over it.
+    import shutil
+
+    from vaalstreet.ledger import Ledger
+
+    shutil.copytree(archive_root / "items", tmp_path / "items")
+    app.ledger = Ledger(tmp_path / "ledger")
+    assert app.costs(NEW).fee(ITEM) == (40.0, {"source": "fee table"})
+    app.ledger.add_order(NEW, ITEM, "buy", "chaos", 10, 1, 4, gold=168)  # 42 Gold each
+    assert app.costs(NEW).fee(ITEM) == (42.0, {"source": "your trades", "trades": 1})
+
 
 def test_the_live_league_ignores_the_league_you_chose(archive_root, tmp_path):
     from vaalstreet.ledger import Ledger

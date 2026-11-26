@@ -594,7 +594,8 @@ class App:
         return [{k: o[k] for k in keep} for o in self.ledger.orders(league) if o["status"] in ("open", "part-filled")]
 
     def costs(self, league: str) -> Costs:
-        return self.ledger.costs(league)
+        """Your records first, then the fee table. The table is a game fact, so a rehearsal uses it as it is."""
+        return self.ledger.costs(league, fees.by_item(self.root, REALM))
 
     def settings(self) -> dict:
         return self.ledger.settings()
@@ -1200,7 +1201,7 @@ class App:
             sides.setdefault("buy", {}).setdefault(buy_market, []).append(plan["buy_order"])
             sides.setdefault("sell", {}).setdefault(sell_market, []).append(plan["sell_order"])
             sell_after.setdefault((plan["id"], buy_market), plan["sell_order"] | {"market": sell_market, "kind": plan["kind"]})
-        orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge)
+        orders = self.ledger.advise_orders(desk.league, prices, plans, desk.bridge, self.costs(desk.league))
         now = self.ledger.clock()  # in a rehearsal, practice time
         # Settled orders only: an open order must not lower the share that proposes its own fills.
         learned = calibrate.shares(self.fill_calibration(desk, share, settled=True)) if orders else {}
