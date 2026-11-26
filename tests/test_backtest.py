@@ -617,3 +617,78 @@ def test_gold_is_not_refunded_when_an_order_is_cancelled_and_posted_again():
     sim = backtest.Simulation(tiny_panel([10.0] * 4), capital=1000, gold_per_unit=1.0)
     result = sim.run(PostCancelPost())
     assert result.fills == 0 and sim.gold_spent == pytest.approx(20.0)
+
+
+def test_a_fee_table_charges_each_order_for_what_it_asks_for():
+    from vaalstreet.ingest import CHAOS, DIVINE
+
+    panel = tiny_panel([10, 10, 10, 10, 10])
+    # Known fees: the item 4 Gold, a Chaos half a Gold, a Divine 20.
+    table = backtest.FeeTable({"x": 4.0, CHAOS: 0.5, DIVINE: 20.0})
+    orders = {0: [("buy", 10, 10.5)], 2: [("sell", 10, 9.5)]}
+    sim = backtest.Simulation(panel, capital=1000, participation=1.0, **backtest._options(panel, table))
+    result = sim.run(Script(orders))
+    # The buy asks for 10 items: 40 Gold. The sell asks for 10 x 9.5 = 95 Chaos: 47.5 Gold.
+    assert result.gold.tolist() == [40, 40, 87.5, 87.5, 87.5]
+    # The same orders at a flat fee per unit pay for the item on both sides: 40 and 40.
+    flat = backtest.Simulation(panel, capital=1000, participation=1.0, **backtest._options(panel, {"x": 4.0}))
+    assert flat.run(Script(orders)).gold.tolist() == [40, 40, 80, 80, 80]
+    assert table.missing(panel) == [] and backtest.FeeTable({CHAOS: 1.0, DIVINE: 1.0}).missing(panel) == ["X"]
+    with pytest.raises(ValueError, match="fees refresh"):
+        backtest._options(panel, backtest.FeeTable({"x": 4.0}))
+
+
+def test_cli_and_api_backtest_with_the_fee_table(archive_root, tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+
+    from conftest import ITEM, NEW
+    from vaalstreet import cli, fees
+    from vaalstreet.ingest import CHAOS, DIVINE
+    from vaalstreet.paths import fees_file
+    from vaalstreet.server import ApiError, App
+
+    root = tmp_path / "data"
+    shutil.copytree(archive_root, root, ignore=shutil.ignore_patterns("desk.sqlite*", "fees"))
+    monkeypatch.setenv("VAAL_DATA_DIR", str(root))
+    app = App(root, sync=False)
+    with pytest.raises(ApiError, match="not been fetched"):
+        app._lab_gold({"fee_table": True})
+    with pytest.raises(SystemExit, match="fees refresh"):
+        cli.main(["backtest", "swing", "--league", NEW, "--fee-table"])
+    # A table as `fees.refresh` writes it, by name: the Test Orb 40 Gold, a Chaos 15, a Divine 250.
+    path = fees_file(root, "poe1")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": fees.VERSION, "fetched": 1, "league": NEW,
+                                "fees": {"Test Orb": 40.0, "Chaos Orb": 15.0, "Divine Orb": 250.0}}))
+    table = app._lab_gold({"fee_table": True})
+    assert isinstance(table, backtest.FeeTable) and (table[ITEM], table[CHAOS], table[DIVINE]) == (40, 15, 250)
+    assert app._lab_gold({"gold_per_unit": 3}) == 3
+    cli.main(["backtest", "swing", "--league", NEW, "--fee-table", "--days", "3"])
+    assert "c/1k Gold" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="not both"):
+        cli.main(["backtest", "swing", "--league", NEW, "--fee-table", "--gold-per-unit", "2"])
+
+
+def test_a_shared_file_names_the_fee_table_and_does_not_copy_it(archive_root, tmp_path, monkeypatch, capsys):
+    import json
+    import shutil
+
+    from conftest import NEW
+    from vaalstreet import cli, fees
+    from vaalstreet.paths import fees_file
+
+    root = tmp_path / "data"
+    shutil.copytree(archive_root, root, ignore=shutil.ignore_patterns("desk.sqlite*", "fees"))
+    monkeypatch.setenv("VAAL_DATA_DIR", str(root))
+    path = fees_file(root, "poe1")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": fees.VERSION, "fetched": 1, "league": NEW,
+                                "fees": {"Test Orb": 40.0, "Chaos Orb": 15.0, "Divine Orb": 250.0}}))
+    out = tmp_path / "swing.json"
+    cli.main(["backtest", "swing", "--league", NEW, "--fee-table", "--days", "3", "--export", str(out)])
+    assert json.loads(out.read_text())["options"]["gold_per_unit"] == "fee table"
+    capsys.readouterr()
+    cli.main(["search", "swing", "--grid", "reach=0.2,0.3", "--fee-table", "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["options"]["gold_per_unit"] == "fee table"

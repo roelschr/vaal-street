@@ -780,7 +780,7 @@ class App:
                 days=float(body["days"]) if body.get("days") else None,
                 attention=int(body.get("attention", 1)), compound=bool(body.get("compound", False)),
                 whole_lots=bool(body.get("whole_lots", False)),
-                gold_per_unit=float(body.get("gold_per_unit") or 0),
+                gold_per_unit=self._lab_gold(body),
                 gold_budget=float(body["gold_budget"]) if body.get("gold_budget") not in (None, "") else None,
                 schedule=body.get("schedule") or None,
                 fill_model=str(body.get("fill_model") or "queue"),
@@ -822,6 +822,16 @@ class App:
             raise ApiError("params and options must be sets of named values, results a list.")
         return sharing.document(spec, params, options, results)
 
+    def _lab_gold(self, body: dict):
+        """A backtest's Gold: the fee table when asked for (each order pays for what it asks for), else a flat fee."""
+        if not body.get("fee_table"):
+            return float(body.get("gold_per_unit") or 0)
+        table = fees.by_item(self.root, REALM)
+        if not table:
+            raise ApiError("The Gold fee table has not been fetched yet. It arrives with the next sync, "
+                           "or run `python -m vaalstreet fees refresh`.")
+        return backtest.FeeTable(table)
+
     def api_search(self, body: dict) -> dict:
         """A small walk-forward strategy search. Requests are synchronous, so the grid is capped hard."""
         strategy = body.get("strategy", "swing")
@@ -833,7 +843,7 @@ class App:
         try:
             options = dict(
                 capital=float(body.get("capital", 10000)), days=float(body["days"]) if body.get("days") else None,
-                gold_per_unit=float(body.get("gold_per_unit") or 0),
+                gold_per_unit=self._lab_gold(body),
             )
             return search.walk_forward(self.cursor(), strategy, body.get("grid"), leagues=leagues,
                                        how=str(body.get("score") or "divine"), cap=12, max_runs=48, **options)
