@@ -436,7 +436,7 @@ async function viewFlips(main) {
       <label class="f">Min. margin (%)<input type="number" id="mm" value="${f.minMargin * 100}" min="0" step="1"></label>
       <label class="f">My bankroll (c)<input type="number" id="cap" value="${f.capital}" placeholder="e.g. 5000" min="0" step="1000"></label>
       <label class="f" title="Gold is paid when you post an order. With a budget, the session plan picks the plans that earn the most Chaos an hour while posting their orders once stays within it">Gold to spend this session<input type="number" id="gb" value="${f.goldBudget || ''}" placeholder="optional" min="0" step="1000"></label>
-      <label class="f" title="Gold per thing an order asks for, used only where neither your records nor the fee table know the fee. Leave empty to say “unknown”">Assumed fee (Gold / item)<input type="number" id="fee" value="${st.assumed_gold_fee ?? ''}" placeholder="unknown" min="0" step="any"></label>
+      <label class="f" title="Gold per item, used only where neither your records nor the fee table know an item’s fee. It never stands in for the Chaos or Divines a sale asks for. Leave empty to say “unknown”">Assumed fee (Gold / item)<input type="number" id="fee" value="${st.assumed_gold_fee ?? ''}" placeholder="unknown" min="0" step="any"></label>
       <label class="f">Minutes per order<input type="number" id="mpo" value="${st.minutes_per_order}" min="0" step="0.5"></label>
       <label class="f">Rank by<select id="rank">${[['profit', 'Est. / hour'], ['gold', 'Chaos per 1,000 Gold'], ['own', 'Per hour of your time']].map(([k, l]) => `<option value="${k}" ${f.rankBy === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="f">Search<input type="search" id="q" value="${esc(f.q)}" placeholder="Item name"></label>
@@ -1024,7 +1024,7 @@ async function viewLab(main) {
       { h: 'Per day', f: r => fmt(r.summary.per_day) + ' c', s: r => r.summary.per_day },
       { h: 'Worst drawdown', f: r => plainPct(r.summary.max_drawdown, 1) },
       { h: 'Fills', f: r => r.summary.fills.toLocaleString('en-US') }, { h: 'Turnover', f: r => r.summary.turnover + '×', title: 'Traded value over bankroll' },
-      { h: 'Gold spent', f: r => fmt(Math.round(r.summary.gold_spent)), s: r => r.summary.gold_spent },
+      { h: 'Gold spent', f: r => fmt(Math.round(r.summary.gold_spent)) + (r.summary.gold_unpriced ? ` <span class="neg" title="Too low: the fee table does not list ${esc(r.summary.gold_unpriced.join(', '))}, so buying ${r.summary.gold_unpriced.length === 1 ? 'it' : 'them'} cost no Gold in this run">+ ?</span>` : ''), s: r => r.summary.gold_spent },
       { h: 'Per 1,000 Gold', f: r => r.summary.chaos_per_1000_gold == null ? '–' : fmt(r.summary.chaos_per_1000_gold) + ' c', s: r => r.summary.chaos_per_1000_gold, title: 'Chaos earned for every 1,000 Gold spent' },
       { h: 'Most held', f: r => fmt(r.summary.peak_holdings) + ' c', s: r => r.summary.peak_holdings, title: 'The most Chaos you had in items at any hour, at fair value' },
       { h: 'Worst drop', f: r => fmt(r.summary.peak_risk) + ' c', s: r => r.summary.peak_risk, title: 'What your holdings could lose on a bad day for these items (about 1 day in 20), at the riskiest hour' },
@@ -1709,10 +1709,12 @@ async function viewLedger(main) {
   const start = $('#sstart', ses), stop = $('#sstop', ses);
   if (start) start.onclick = () => post('/api/session', plan ? { expected_per_hour: plan.expected_per_hour, plan } : {});
   if (stop) stop.onclick = () => post('/api/session', { stop: running.id, gold_earned: optional($('#sge', ses).value) });
-  const fee = panel('Gold fees you paid', 'c12', '<span class="muted small">Learned from the Gold you record on orders; these win over the fee table from poedb.tw.</span>');
+  const fee = panel('Gold fees you paid', 'c12', '<span class="muted small">Learned from the Gold you record on orders; these win over the fee table from poedb.tw. One or two records far from the table are shown but not used: three that agree are.</span>');
   fee.append(table([
     { h: 'Item', l: 1, f: r => esc(r.name) }, { h: 'Gold per item', f: r => fmt(r.gold_per_unit), title: 'The middle value over your records. A buy order teaches the fee of the item; a sell order teaches the fee of the Chaos Orb or Divine Orb it asks for' },
     { h: 'From', f: r => `${r.trades} record${r.trades === 1 ? '' : 's'}` },
+    { h: 'Fee table', f: r => r.table == null ? '–' : fmt(r.table) },
+    { h: '', l: 1, f: r => r.disputed ? '<span class="neg" title="Your record is more than 1.5 times away from the fee table, and there are fewer than three. That is more often a typo than a new fee, so the desk uses the fee table. If the Gold is right, the desk’s rule for this kind of order may be wrong: please report it">not used: far from the fee table</span>' : '' },
   ], d.gold_fees, { empty: 'None yet: fees come from the fee table. Record the Gold an order cost and your own figure is used instead.' }));
   const rc = panel('Recipe checks', 'c12', '<span class="muted small">Did a conversion or round trip work when you tried it in game? Kept for every league.</span>');
   const rform = document.createElement('div'); rform.className = 'body bar'; rform.style.margin = '0';

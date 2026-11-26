@@ -213,10 +213,22 @@ class App:
 
     def refresh_fees(self) -> None:
         """Fetch the Gold fee table when there is none, or when the live league is a new one. Never raises."""
+        # The desk's own clock as well as the file's: if the data directory cannot be written, the
+        # failed try is not on disk, and without this every sync round would ask poedb again.
+        now = time.time()
+        if now < getattr(self, "_fees_wait", 0.0):
+            return
         try:
-            fees.refresh(self.root, REALM, self.live_league(), url=self.fees_url)
+            league = self.live_league()
         except Exception:
-            pass  # no league yet: the next round of the sync loop tries again
+            return  # no league yet: the next round of the sync loop tries again
+        if not fees.due(self.root, REALM, league, now):
+            return
+        self._fees_wait = now + fees.RETRY_AFTER
+        try:
+            fees.refresh(self.root, REALM, league, url=self.fees_url)
+        except Exception:
+            pass
 
     def fees_status(self) -> dict:
         """What the desk knows about the Gold fee table, for the status line. Reads the cache only."""
@@ -906,6 +918,7 @@ class App:
         positions, totals = self._positions(desk)
         trades, made = self._trades(desk)
         fees = self.ledger.gold_fees(desk.league)
+        costs = self.costs(desk.league)
         return {
             "league": desk.league, "bridge": _num(desk.bridge), "positions": positions, "trades": trades[::-1][:200],
             "made": made[::-1][:200],
@@ -913,7 +926,10 @@ class App:
             "watchlist": self.ledger.watchlist(desk.league), "alerts": self._alerts(desk),
             "fill_calibration": self.fill_calibration(desk, share),
             "alert_fields": ALERT_FIELDS, "alert_kinds": ALERT_KINDS,
-            "gold_fees": [{"id": k, "name": desk._name(k), **v} for k, v in sorted(fees.items())],
+            # `table` is what the fee table says, and `disputed` whether the desk keeps to the table
+            # because too few of your records disagree with it by too much (`Costs.fee`).
+            "gold_fees": [{"id": k, "name": desk._name(k), **v, "table": costs.table.get(k),
+                           "disputed": "disputed" in costs.fee(k)[1]} for k, v in sorted(fees.items())],
             "orders": self._advise(desk, share), "sessions": self.ledger.sessions(desk.league),
             # For the "Record items you made" form: what each item is made from, by name.
             "made_from": {desk._name(out): [{"inputs": [[desk._name(i), n] for i, n in r["inputs"]], "gives": r["gives"]}

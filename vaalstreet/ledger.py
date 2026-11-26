@@ -602,8 +602,10 @@ class Ledger:
             past = price / market - 1 if buying else 1 - price / market
             open_units = max(float(order["units"]) - float(order["filled"] or 0), 0.0)
             # A re-post is a new order: it pays again for what it wants (the item, or the currency of a sale).
+            # It would go up at the plan's level, so a sale asks for that level's currency, not the old order's.
+            asks = level if level and level.get("currency_units") and level.get("item_units") else order
             repost = costs.posted(order["item"], order["side"], order["market"], open_units,
-                                  order["currency_units"] / order["item_units"])
+                                  asks["currency_units"] / asks["item_units"])
             if past > WRONG_SIDE_TOLERANCE and not near_plan:
                 row["advice"] = "cancel"
                 row["reason"] = (f"You are {'paying' if buying else 'asking'} {abs(past):.0%} "

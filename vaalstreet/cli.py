@@ -587,7 +587,7 @@ def _fees(args: argparse.Namespace) -> None:
         rows = [{"name": name, "gold": gold} for name, gold in sorted(table.fees.items()) if words in name.casefold()]
         if not rows:
             sys.exit(f"No item in the table matches {' '.join(args.item)!r}.")
-        _table(rows, [("name", "Item", ""), ("gold", "Gold per item", ",.4g")], len(rows))
+        _table(rows, [("name", "Item", ""), ("gold", "Gold per item", ",.3f")], len(rows))
 
 
 def _when(t: int | None) -> str:
@@ -826,6 +826,11 @@ def _backtest(args: argparse.Namespace) -> None:
     print("  Vs Divines: the return measured in Divines, so beating simply holding Divines is above zero.")
     print("  Most held: the most Chaos held in items at fair value. Worst / Avg drop: what the holdings would lose"
           f" on a bad day for these items, about 1 day in 20 over {args.risk_hours:g} hours (the peak, and the average over the run).")
+    for s in summaries:
+        if s.get("gold_unpriced"):
+            names = s["gold_unpriced"]
+            print(f"  {s['league']}: the fee table does not list {len(names)} item(s) this run bought, so their buy orders"
+                  f" cost no Gold here and the Gold figure is too low: {', '.join(names[:8])}{' ...' if len(names) > 8 else ''}")
     for s in summaries:
         tops = ", ".join(f"{t['name']} {t['profit']:+,.0f}" for t in s["top_items"][:5])
         print(f"  {s['league']}: {tops}")

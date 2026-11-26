@@ -379,6 +379,7 @@ class Result:
     risk: np.ndarray | None = None  # [T] what the holdings lose on a bad day (about 1 in 20) for these items
     capital: np.ndarray | None = None  # [T] Chaos tied up in holdings, at what they cost
     members: list[dict] | None = None  # a portfolio's strategies, each with its share
+    unpriced: list[str] | None = None  # items ordered that the Gold fee table does not list: charged nothing
 
     @property
     def peak_holdings(self) -> float:
@@ -452,6 +453,8 @@ class Result:
             "peak_risk": round(self.peak_risk, 2),
             "average_risk": round(self.average_risk, 2),
             **({"strategies": self.members} if self.members is not None else {}),
+            # Buy orders for these cost no Gold in this run, because the fee table does not list them.
+            **({"gold_unpriced": self.unpriced} if self.unpriced else {}),
             "top_items": [
                 {"name": self.names[i], "profit": round(float(self.realized[i]), 2)} for i in order if self.realized[i]
             ],
@@ -473,6 +476,7 @@ class Simulation:
         gold_per_unit: float | np.ndarray = 0.0,
         gold_budget: float | None = None,
         gold_currency: tuple[float, float] | None = None,
+        gold_unknown: np.ndarray | None = None,
         schedule: str | np.ndarray | None = None,
         fill_model: str = "queue",
         wallet: Wallet | None = None,
@@ -497,6 +501,10 @@ class Simulation:
         # (Gold per Chaos, Gold per Divine) a sell order pays for the currency it asks for, as the game
         # charges it (`FeeTable`). Without it, a sell pays `gold_per_unit` per item, like a buy.
         self.gold_currency = gold_currency
+        # [N] items the fee table does not list. Their buy orders cost nothing here, which flatters the
+        # run, so the ones it really ordered are kept (`unpriced`) and reported with the result.
+        self.gold_unknown = gold_unknown
+        self.unpriced: set[int] = set()
         self.gold_budget = math.inf if gold_budget is None else float(gold_budget)
         self.gold_spent = 0.0
         if isinstance(schedule, str):
@@ -805,6 +813,8 @@ class Simulation:
         item's fee per item; a sell, when the currencies' fees are known, the fee of each Chaos or
         Divine it asks for. A sell with no limit asks for what the market pays this hour."""
         if side == "buy" or self.gold_currency is None:
+            if self.gold_unknown is not None and self.gold_unknown[item] and units > 0:
+                self.unpriced.add(item)
             return float(self.gold_fee[item] * units)
         if not (math.isfinite(limit) and limit > 0):
             limit = float(self.panel[f"{key}_price"][t, item])
@@ -896,6 +906,7 @@ class Simulation:
             self.panel.league, name or type(strategy).__name__, self.panel.hours, tape["equity"], tape["cash"],
             self.start_capital, self.fills, self.bought, self.sold, self.realized, self.panel.names, params or {},
             self.benchmark(), tape["gold"], holdings=tape["holdings"], risk=tape["risk"], capital=tape["capital"],
+            unpriced=[self.panel.names[i] for i in sorted(self.unpriced)],
         )
 
     def benchmark(self) -> np.ndarray:
@@ -1173,8 +1184,12 @@ class FeeTable(dict):
 
     The table is today's (`fees.py`). Fees of past leagues are not kept anywhere, so a backtest of an
     old league is charged today's fees: a cost assumption, like slippage, not a look into the future
-    of prices. An item the table does not list costs nothing, so say how many were missing
-    (`missing`) when you report a run.
+    of prices. An item the table does not list costs nothing to buy; a run names the ones it ordered
+    in its summary (`gold_unpriced`), so the Gold figure is never quietly too low. `missing` lists
+    every such item a panel holds, ordered or not.
+
+    Only the table is used: not the fees your own orders taught the desk, and not your assumed fee.
+    A backtest is a shared, repeatable run, and those live in one person's ledger.
     """
 
     def missing(self, panel: Panel) -> list[str]:
@@ -1193,7 +1208,8 @@ def _options(panel: Panel, gold_per_unit: float | dict[str, float], **options) -
         if chaos not in gold_per_unit or divine not in gold_per_unit:
             raise ValueError("The Gold fee table has no fee for the Chaos Orb or the Divine Orb. "
                              "Run `python -m vaalstreet fees refresh`.")
-        options = dict(options, gold_currency=(float(gold_per_unit[chaos]), float(gold_per_unit[divine])))
+        options = dict(options, gold_currency=(float(gold_per_unit[chaos]), float(gold_per_unit[divine])),
+                       gold_unknown=np.array([item not in gold_per_unit for item in panel.items]))
     if isinstance(gold_per_unit, dict):
         gold_per_unit = np.array([float(gold_per_unit.get(item, 0.0)) for item in panel.items])
     return dict(options, gold_per_unit=gold_per_unit)
@@ -1313,6 +1329,7 @@ class Portfolio:
             self.capital, sum(s.fills for s in sims), sum(s.bought for s in sims), sum(s.sold for s in sims),
             np.sum([s.realized for s in sims], axis=0), self.panel.names, {}, sims[0].benchmark(), total("gold"),
             holdings=total("holdings"), risk=total("risk"), capital=total("capital"), members=members,
+            unpriced=[self.panel.names[i] for i in sorted(set().union(*(s.unpriced for s in sims)))],
         )
 
 

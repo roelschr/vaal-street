@@ -153,8 +153,11 @@ def test_cli_ladder_uses_the_gold_fees_you_recorded(flat_root, tmp_path, monkeyp
     ledger = Ledger(root)
     ledger.add_trade(NEW, ITEM, "buy", 10, 9.5, gold=50)
     assert ledger.costs(NEW).fee(ITEM)[0] == 5
-    # A sell order wants Chaos or Divines; with no fee table here, your assumed fee prices those.
+    # A sell order wants Chaos or Divines. There is no fee table here, and an assumed fee is per item,
+    # so two sell orders teach them: 1 Gold for each Chaos, and 1 for each Divine, asked for.
     ledger.set("assumed_gold_fee", 1.0)
+    ledger.add_order(NEW, ITEM, "sell", "chaos", 10, 1, 4, gold=40)
+    ledger.add_order(NEW, ITEM, "sell", "divine", 1, 30, 60, gold=2)
     cli.main(["ladder", "--league", NEW, "--from", "25"])
     row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("25 Chaos"))
     assert row.split()[-1] != "-" and float(row.split()[-1].replace(",", "")) > 0

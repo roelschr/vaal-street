@@ -634,6 +634,11 @@ def test_a_fee_table_charges_each_order_for_what_it_asks_for():
     flat = backtest.Simulation(panel, capital=1000, participation=1.0, **backtest._options(panel, {"x": 4.0}))
     assert flat.run(Script(orders)).gold.tolist() == [40, 40, 80, 80, 80]
     assert table.missing(panel) == [] and backtest.FeeTable({CHAOS: 1.0, DIVINE: 1.0}).missing(panel) == ["X"]
+    assert "gold_unpriced" not in result.summary()
+    # A table that does not list the item: its buy order costs nothing, and the run says which item.
+    bare = backtest.FeeTable({CHAOS: 0.5, DIVINE: 20.0})
+    unlisted = backtest.Simulation(panel, capital=1000, participation=1.0, **backtest._options(panel, bare)).run(Script(orders))
+    assert unlisted.gold.tolist() == [0, 0, 47.5, 47.5, 47.5] and unlisted.summary()["gold_unpriced"] == ["X"]
     with pytest.raises(ValueError, match="fees refresh"):
         backtest._options(panel, backtest.FeeTable({"x": 4.0}))
 
