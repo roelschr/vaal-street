@@ -46,6 +46,7 @@ import duckdb
 import numpy as np
 
 from vaalstreet import pricing
+from vaalstreet.ingest import ANCHORS
 from vaalstreet.panel import CORE, HOUR, LEGS, Panel, ffill, rolling, rolling_weighted_quantile
 
 LEG_KEYS = ("r", "b")
@@ -471,6 +472,7 @@ class Simulation:
         whole_lots: bool = False,
         gold_per_unit: float | np.ndarray = 0.0,
         gold_budget: float | None = None,
+        gold_currency: tuple[float, float] | None = None,
         schedule: str | np.ndarray | None = None,
         fill_model: str = "queue",
         wallet: Wallet | None = None,
@@ -492,6 +494,9 @@ class Simulation:
         if (fee < 0).any():
             raise ValueError("Gold per unit cannot be negative.")
         self.gold_fee = fee
+        # (Gold per Chaos, Gold per Divine) a sell order pays for the currency it asks for, as the game
+        # charges it (`FeeTable`). Without it, a sell pays `gold_per_unit` per item, like a buy.
+        self.gold_currency = gold_currency
         self.gold_budget = math.inf if gold_budget is None else float(gold_budget)
         self.gold_spent = 0.0
         if isinstance(schedule, str):
@@ -776,7 +781,8 @@ class Simulation:
                         same = bool(same_limit[i])
                     if same:
                         limit[i] = old_limit[i]  # keep the standing order's price as it was posted
-                    fee = self.gold_fee[i] * (max(units[i] - old_units[i], 0.0) if same else units[i])
+                    fee = self._gold(t, key, side, i, float(limit[i]), unit,
+                                     max(units[i] - old_units[i], 0.0) if same else units[i])
                     if fee > 0 and self.wallet.gold + fee > self.gold_budget + 1e-9:
                         limit[i], units[i], ratio[i], lot[i] = old_limit[i], old_units[i], old_ratio[i], old_lot[i]
                         continue
@@ -793,6 +799,19 @@ class Simulation:
                 setattr(book, f"{side}_ratio", ratio)
                 setattr(book, f"{side}_lot", lot)
                 setattr(book, f"{side}_queue", queue)
+
+    def _gold(self, t: int, key: str, side: str, item: int, limit: float, unit: float, units: float) -> float:
+        """Gold to post `units` of an order. An order pays the fee of what it asks for: a buy the
+        item's fee per item; a sell, when the currencies' fees are known, the fee of each Chaos or
+        Divine it asks for. A sell with no limit asks for what the market pays this hour."""
+        if side == "buy" or self.gold_currency is None:
+            return float(self.gold_fee[item] * units)
+        if not (math.isfinite(limit) and limit > 0):
+            limit = float(self.panel[f"{key}_price"][t, item])
+            if not math.isfinite(limit):
+                limit = float(np.nan_to_num(self.panel["price"][t, item]))
+        asked = units * limit / unit if math.isfinite(unit) and unit > 0 else 0.0  # in the market's own currency
+        return float(asked * self.gold_currency[1 if key == "b" else 0])
 
     def _fit(
         self, side: str, limit: float, units: float, unit: float, cash: float, item: int
@@ -834,7 +853,7 @@ class Simulation:
     def _act(self, t: int, strategy: Strategy, ctx: Context) -> None:
         ctx.t = t
         if self._visit(t):
-            posting = self.whole_lots or bool(self.gold_fee.any()) or self.fill_model == "queue"
+            posting = self.whole_lots or bool(self.gold_fee.any()) or bool(self.gold_currency) or self.fill_model == "queue"
             before = {k: b.copy() for k, b in self.books.items()} if posting else None
             strategy.step(ctx)
             if self.listed is not None:
@@ -1147,7 +1166,34 @@ def _load(con: duckdb.DuckDBPyConnection, league: str, start_day: float, days: f
     return panel, (since - first) // HOUR
 
 
+class FeeTable(dict):
+    """Item id -> Gold, charged the way the game charges it (`desk.Costs`): an order pays the fee of
+    each thing it asks for. A buy pays the item's fee per item; a sell pays the Chaos Orb's or the
+    Divine Orb's fee for each Chaos or Divine it asks for. Pass one as `gold_per_unit`.
+
+    The table is today's (`fees.py`). Fees of past leagues are not kept anywhere, so a backtest of an
+    old league is charged today's fees: a cost assumption, like slippage, not a look into the future
+    of prices. An item the table does not list costs nothing, so say how many were missing
+    (`missing`) when you report a run.
+    """
+
+    def missing(self, panel: Panel) -> list[str]:
+        return [name for item, name in zip(panel.items, panel.names) if item not in self]
+
+
+def describe_options(options: dict) -> dict:
+    """Run options as they are written into a report or a shared file: a fee table is named, not
+    copied out, since the reader's own desk has its own."""
+    return {k: ("fee table" if isinstance(v, FeeTable) else v) for k, v in options.items()}
+
+
 def _options(panel: Panel, gold_per_unit: float | dict[str, float], **options) -> dict:
+    if isinstance(gold_per_unit, FeeTable):
+        chaos, divine = ANCHORS["poe1"]
+        if chaos not in gold_per_unit or divine not in gold_per_unit:
+            raise ValueError("The Gold fee table has no fee for the Chaos Orb or the Divine Orb. "
+                             "Run `python -m vaalstreet fees refresh`.")
+        options = dict(options, gold_currency=(float(gold_per_unit[chaos]), float(gold_per_unit[divine])))
     if isinstance(gold_per_unit, dict):
         gold_per_unit = np.array([float(gold_per_unit.get(item, 0.0)) for item in panel.items])
     return dict(options, gold_per_unit=gold_per_unit)
@@ -1182,7 +1228,8 @@ def run(
 
     `whole_lots` makes orders whole-number ratios the purse can post, filled in whole items.
     `gold_per_unit` is the Gold paid per unit posted: one number for every item, or a mapping
-    from item id to fee (items it leaves out cost nothing). `gold_budget` caps the Gold spent
+    from item id to fee (items it leaves out cost nothing), or a `FeeTable`, which charges each
+    order as the game does. `gold_budget` caps the Gold spent
     on new orders. `schedule` (e.g. "mon-fri 19-22", UTC) limits visits to your play hours.
     `fill_model` is "queue" (the default: a resting order first waits behind the stock published
     on its side when it went up, then takes at most `participation` of the hour's volume) or

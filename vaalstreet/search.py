@@ -271,7 +271,7 @@ def walk_forward(
         "score_means": SCORES[how],
         "grid": grid,
         "settings_tried": len(tried),
-        "options": {k: v for k, v in options.items()},
+        "options": backtest.describe_options(options),
         "folds": out_folds,
         "pooled": {
             "folds": n,

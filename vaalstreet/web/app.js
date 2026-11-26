@@ -964,11 +964,12 @@ async function viewLab(main) {
         <label class="f">Slippage when taking<input type="number" data-o="slippage" value="${lab.slippage}" step="0.01" style="width:auto"></label>
         <label class="f">Start on league day<input type="number" data-o="start_day" value="${lab.start_day}" min="0" style="width:auto"></label>
         <label class="f">Run for days<input type="number" data-o="days" value="${lab.days}" placeholder="to the end" style="width:auto"></label>
-        <label class="f" title="Charged for every unit you post, including re-posts">Gold per unit<input type="number" data-o="gold_per_unit" value="${lab.gold_per_unit}" min="0" step="any" placeholder="none" style="width:auto"></label>
+        <label class="f" title="One flat fee for every unit you post, on buys and sells alike, including re-posts. Not used when the fee table is ticked below">Gold per unit<input type="number" data-o="gold_per_unit" value="${lab.gold_per_unit}" min="0" step="any" placeholder="none" style="width:auto"></label>
         <label class="f" title="Once spent, no new orders go up; standing orders can still fill">Gold budget<input type="number" data-o="gold_budget" value="${lab.gold_budget}" min="0" step="1000" placeholder="no limit" style="width:auto"></label>
       </div>
       <label class="f">When you play (UTC, end hour not included)<input type="text" data-o="schedule" value="${esc(lab.schedule)}" placeholder="e.g. mon-fri 19-22, sat-sun 10-18"></label>
       <div class="f ctl">How resting orders fill<div class="seg" id="fm">${Object.entries(FILL_MODELS).map(([k, [l]]) => `<button type="button" data-fm="${k}" class="${lab.fill_model === k ? 'on' : ''}">${l}</button>`).join('')}</div><span class="muted small" style="color:var(--muted)">${FILL_MODELS[lab.fill_model][1]}</span></div>
+      <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)" title="Each order pays the fee of what it asks for: the item when buying, the Chaos or Divines when selling. These are today’s fees, also for a past league"><input type="checkbox" data-o="fee_table" ${lab.fee_table ? 'checked' : ''}> Gold from the fee table: charge each order as the game does</label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px;color:var(--text)"><input type="checkbox" data-o="whole_lots" ${lab.whole_lots ? 'checked' : ''}> Whole lots: trade whole-number ratios your cash can pay for, like a real purse</label>
       <div id="err" class="down small" role="alert"></div>
       <button class="btn primary" id="run">Run backtest</button></div></section>
@@ -987,7 +988,7 @@ async function viewLab(main) {
   form.querySelectorAll('[data-o]').forEach(i => i.onchange = () => { lab[i.dataset.o] = i.type === 'checkbox' ? i.checked : i.value; });
   form.querySelectorAll('[data-l]').forEach(i => i.onchange = () => { lab.leagues = [...form.querySelectorAll('[data-l]:checked')].map(c => c.dataset.l); });
   const options = () => ({ capital: +lab.capital, participation: +lab.participation, slippage: +lab.slippage, attention: +lab.attention, start_day: +lab.start_day, days: lab.days || null,
-    whole_lots: !!lab.whole_lots, gold_per_unit: +lab.gold_per_unit || 0, gold_budget: lab.gold_budget === '' ? null : +lab.gold_budget, schedule: lab.schedule.trim() || null, fill_model: lab.fill_model });
+    whole_lots: !!lab.whole_lots, fee_table: !!lab.fee_table, gold_per_unit: lab.fee_table ? 0 : +lab.gold_per_unit || 0, gold_budget: lab.gold_budget === '' ? null : +lab.gold_budget, schedule: lab.schedule.trim() || null, fill_model: lab.fill_model });
   const show = () => {
     const out = $('#out', main);
     $('#exp', main).hidden = !(lab.results.length && lab.ran && lab.ran.members.length === 1);

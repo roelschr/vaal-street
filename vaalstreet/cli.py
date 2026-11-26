@@ -546,6 +546,20 @@ def _outside_rows(desk, ledger, share: float) -> list[dict]:
     return desk.outside_conversions(ninja.reward_prices(client, desk.league, desk.meta), share=share)
 
 
+def _gold_option(args: argparse.Namespace):
+    """What a backtest charges in Gold: the flat `--gold-per-unit`, or with `--fee-table` the fee table."""
+    if not getattr(args, "fee_table", False):
+        return args.gold_per_unit
+    from vaalstreet import fees
+
+    if args.gold_per_unit:
+        sys.exit("Give --fee-table or --gold-per-unit, not both.")
+    table = fees.by_item(data_dir())
+    if not table:
+        sys.exit("No Gold fee table yet. Run `python -m vaalstreet fees refresh`.")
+    return backtest.FeeTable(table)
+
+
 def _fees(args: argparse.Namespace) -> None:
     """The Gold fee table: what is cached, a fresh fetch, or the fee of the items whose name matches."""
     from vaalstreet import fees
@@ -778,7 +792,7 @@ def _backtest(args: argparse.Namespace) -> None:
         sys.exit("--export saves one strategy; run it without --portfolio.")
     options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage,
                    start_day=args.start_day, days=args.days, attention=args.attention, compound=args.compound,
-                   whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit, gold_budget=args.gold_budget,
+                   whole_lots=args.whole_lots, gold_per_unit=_gold_option(args), gold_budget=args.gold_budget,
                    schedule=args.schedule, fill_model=args.fill_model, risk_hours=args.risk_hours)
     summaries = []
     for league in leagues:
@@ -795,7 +809,7 @@ def _backtest(args: argparse.Namespace) -> None:
         from vaalstreet import sharing
 
         spec, own = backtest.parse_spec(args.strategy[0])
-        sharing.export(args.export, spec, {**own, **params}, options, summaries)
+        sharing.export(args.export, spec, {**own, **params}, backtest.describe_options(options), summaries)
         print(f"Wrote {args.export}: the strategy, its settings and {len(summaries)} league result(s). Nothing was uploaded.",
               file=sys.stderr)
     if args.json:
@@ -829,14 +843,14 @@ def _search(args: argparse.Namespace) -> None:
     con = connect()
     leagues = [x.strip() for x in args.leagues.split(",") if x.strip()] if args.leagues else None
     options = dict(capital=args.capital, participation=args.participation, slippage=args.slippage, days=args.days,
-                   attention=args.attention, whole_lots=args.whole_lots, gold_per_unit=args.gold_per_unit,
+                   attention=args.attention, whole_lots=args.whole_lots, gold_per_unit=_gold_option(args),
                    schedule=args.schedule, fill_model=args.fill_model)
     report = search.walk_forward(con, args.strategy, args.grid, leagues=leagues, how=args.score, **options)
     if args.export:
         from vaalstreet import sharing
 
         params, _ = search._split(report["next"]["setting"], args.strategy)
-        sharing.export(args.export, args.strategy, params, {**options, **report["next"]["setting"]},
+        sharing.export(args.export, args.strategy, params, backtest.describe_options({**options, **report["next"]["setting"]}),
                        search.export_rows(report), extra={"walk_forward": report})
         print(f"Wrote {args.export}: the setting it would pick next, and the results on leagues it was not tuned on."
               " Nothing was uploaded.", file=sys.stderr)
@@ -1250,7 +1264,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--whole-lots", action="store_true",
                    help="trade like a real purse: whole items, at whole-number ratios you can afford")
     p.add_argument("--gold-per-unit", type=float, default=0.0,
-                   help="Gold you pay per unit each time you post an order (the game does not publish fees)")
+                   help="one flat Gold fee per unit each time you post an order, on buys and sells alike")
+    p.add_argument("--fee-table", action="store_true",
+                   help="charge Gold as the game does, from the fee table (`fees`): each order pays the fee of "
+                        "what it asks for. These are today's fees, also for a past league")
     p.add_argument("--gold-budget", type=float, help="stop posting new orders once this much Gold is spent")
     p.add_argument("--schedule", help='when you play, in UTC, e.g. "mon-fri 19-22; sat,sun 10-14" '
                    "(end hour not included); orders stand while you are away")
@@ -1277,6 +1294,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--days", type=float, help="only the first days of each league, for a quicker search")
     p.add_argument("--whole-lots", action="store_true")
     p.add_argument("--gold-per-unit", type=float, default=0.0)
+    p.add_argument("--fee-table", action="store_true", help="charge Gold from the fee table, as the game does")
     p.add_argument("--schedule")
     p.add_argument("--fill-model", choices=backtest.FILL_MODELS, default="queue")
     p.add_argument("--json", action="store_true")
