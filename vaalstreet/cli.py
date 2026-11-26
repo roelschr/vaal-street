@@ -14,7 +14,7 @@ import sys
 import time
 
 from vaalstreet import archive, backtest, items
-from vaalstreet.db import connect
+from vaalstreet.db import connect, has_data
 from vaalstreet.ingest import ingest
 from vaalstreet.paths import REALMS, data_dir
 
@@ -546,6 +546,40 @@ def _outside_rows(desk, ledger, share: float) -> list[dict]:
     return desk.outside_conversions(ninja.reward_prices(client, desk.league, desk.meta), share=share)
 
 
+def _fees(args: argparse.Namespace) -> None:
+    """The Gold fee table: what is cached, a fresh fetch, or the fee of the items whose name matches."""
+    from vaalstreet import fees
+
+    root = data_dir()
+    league = getattr(args, "league", None)
+    if league is None and has_data(root):
+        try:
+            league = _league(connect(), args)
+        except SystemExit:
+            league = None
+    if args.action == "refresh":
+        table = fees.refresh(root, "poe1", league, url=os.environ.get("GOLD_FEES_URL", fees.DEFAULT_URL), force=True)
+        if table.error:
+            sys.exit(f"Could not fetch the Gold fees: {table.error}"
+                     + (f" The table from {_when(table.fetched)} is kept." if len(table) else ""))
+    else:
+        table = fees.load(root, "poe1", league)
+    if not len(table):
+        sys.exit("No Gold fee table yet. Run `python -m vaalstreet fees refresh`.")
+    print(f"{len(table):,} items - fetched {_when(table.fetched)}" + (f" during {table.league}" if table.league else "")
+          + (" - from an earlier league: run `fees refresh`" if table.stale else "") + f" - {fees.CREDIT}")
+    if args.action == "show":
+        words = " ".join(args.item).casefold()
+        rows = [{"name": name, "gold": gold} for name, gold in sorted(table.fees.items()) if words in name.casefold()]
+        if not rows:
+            sys.exit(f"No item in the table matches {' '.join(args.item)!r}.")
+        _table(rows, [("name", "Item", ""), ("gold", "Gold per item", ",.4g")], len(rows))
+
+
+def _when(t: int | None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t)) if t else "never"
+
+
 def _ninja(args: argparse.Namespace) -> None:
     from datetime import datetime, timezone
 
@@ -991,6 +1025,14 @@ def main(argv: list[str] | None = None) -> None:
                         "status: what is cached and how old it is; on/off: allow or stop poe.ninja requests")
     p.add_argument("--league")
     p.set_defaults(run=_ninja)
+
+    p = commands.add_parser("fees", help="the Gold each item costs on the exchange, from poedb.tw")
+    p.add_argument("action", choices=("status", "refresh", "show"), nargs="?", default="status",
+                   help="status: what is cached and how old it is; refresh: fetch the table again now "
+                        "(the desk does that itself once per league); show: the fee of the items you name")
+    p.add_argument("item", nargs="*", help='with show: part of an item name, e.g. "stacked deck"')
+    p.add_argument("--league")
+    p.set_defaults(run=_fees)
 
     p = commands.add_parser("price", help="latest hourly prices for an item")
     p.add_argument("item", help='item name or ID ending, e.g. "Divine Orb"')
