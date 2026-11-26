@@ -121,6 +121,8 @@ def test_a_failed_fetch_keeps_the_old_table_and_waits(tmp_path, fake):
     get(tmp_path, fake, clock)
     fake.body = "<html>Access denied</html>"
     clock.now += HOUR
+    assert len(get(tmp_path, fake, clock, league="Next")) and len(fake.requests) == 1, "a day between fetches, whatever the league"
+    clock.now += fees.MIN_GAP
     table = get(tmp_path, fake, clock, league="Next")
     # Known answer: the old numbers stand, marked stale, with the reason.
     assert table.get("Divine Orb") == 250 and table.stale and table.league == "New" and "fee table" in table.error
@@ -139,6 +141,25 @@ def test_a_failed_fetch_keeps_the_old_table_and_waits(tmp_path, fake):
     empty = tmp_path / "empty"
     fake.status = 500
     assert not len(get(empty, fake, clock)) and fees.load(empty).error
+
+
+def test_a_disk_that_cannot_be_written_does_not_make_the_desk_ask_again(archive_root, tmp_path, fake, monkeypatch):
+    from vaalstreet.server import App
+
+    monkeypatch.setattr(fees, "MIN_ITEMS", 10)
+
+    def full(path, data):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(fees, "_write", full)
+    assert not len(get(tmp_path, fake, Clock())), "the fetch never raises, whatever the disk does"
+    app = App(archive_root, sync=False, fees_url=fake.url)
+    monkeypatch.setattr(app, "root", tmp_path)
+    monkeypatch.setattr(app, "live_league", lambda: NEW)
+    before = len(fake.requests)
+    for _ in range(3):
+        app.refresh_fees()
+    assert len(fake.requests) == before + 1, "the desk keeps its own wait when the failed try could not be stored"
 
 
 def test_a_newer_reader_reads_the_kept_page_again_without_the_network(tmp_path, fake, monkeypatch):

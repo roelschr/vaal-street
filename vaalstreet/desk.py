@@ -46,6 +46,10 @@ PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cr
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
 SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fill within one
+# A fee your own orders taught wins over the fee table once this many records agree on it, or at
+# once if it is within `FEE_AGREES` times the table's figure (`Costs.fee`).
+CONFIRM_RECORDS = 3
+FEE_AGREES = 1.5
 # Chaos of stake that one Gold counts as when the session plan ranks plans under a Gold budget:
 # 0 is Chaos only, infinity is Gold only, and between them a thousandth to a thousand in half
 # decades (plans cost from a tenth of a Gold to tens of Gold per Chaos staked). Every weight is
@@ -162,7 +166,10 @@ class Costs:
     The fee of a thing comes, in this order, from: your own records (`fees`: item id ->
     {"gold_per_unit", "trades"}, see `Ledger.gold_fees`), the fee table fetched from poedb
     (`table`: item id -> Gold, see `fees.py`), the fee you entered as your assumption (`assumed`),
-    and otherwise it is unknown: every Gold figure built from it is None and the plan stays on the
+    and otherwise it is unknown. Two guards: fewer than `CONFIRM_RECORDS` records that are more than
+    `FEE_AGREES` times away from the table do not replace it (one mistyped sell order would
+    otherwise re-price the sale of every plan; the source then says `disputed`), and the assumption
+    is a fee per item, so it never stands in for the Chaos Orb or the Divine Orb. When unknown: every Gold figure built from it is None and the plan stays on the
     board. Gold is not rounded: lifeforce costs an eighth of one Gold each, and how the game rounds
     an order's total is not known.
 
@@ -181,11 +188,18 @@ class Costs:
     def fee(self, item_id: str) -> tuple[float | None, dict]:
         """(Gold per unit wanted or None, where it came from)."""
         learned = self.fees.get(item_id)
+        listed = self.table.get(item_id)
         if learned and learned.get("gold_per_unit") is not None:
-            return float(learned["gold_per_unit"]), {"source": "your trades", "trades": int(learned.get("trades", 0))}
-        if item_id in self.table:
-            return float(self.table[item_id]), {"source": "fee table"}
-        if self.assumed is not None:
+            paid, trades = float(learned["gold_per_unit"]), int(learned.get("trades", 0))
+            if listed is None or trades >= CONFIRM_RECORDS or listed / FEE_AGREES <= paid <= listed * FEE_AGREES:
+                return paid, {"source": "your trades", "trades": trades}
+            # A record or two far from the table: more likely a typo or a misread than a new fee.
+            return float(listed), {"source": "fee table", "disputed": paid, "trades": trades}
+        if listed is not None:
+            return float(listed), {"source": "fee table"}
+        # The assumption is Gold per item. A Chaos Orb or a Divine Orb asked for in a sale is not an
+        # item you flip: 20 Gold an item would make selling one 100 Chaos item cost 2,000 Gold.
+        if self.assumed is not None and item_id not in (self.ref, self.bridge):
             return float(self.assumed), {"source": "your assumption"}
         return None, {"source": "unknown"}
 
@@ -253,12 +267,12 @@ class Costs:
 
         Each input is bought with its own order, which wants that input. The sale wants Chaos: the
         Chaos the results sell for, times the Chaos fee. A recipe you entered may take several inputs
-        (`inputs`).
+        (`inputs`). A result that is the Divine Orb is not sold: Divines are money here, as Chaos is.
         """
         inputs = [(x["id"], x["units"]) for x in row["inputs"]] if row.get("inputs") else [(row["id"], row["need"])]
         parts = [self.order(item_id, units) for item_id, units in inputs if item_id != chaos_id]
         # A reward with no exchange id (priced from stash listings) is sold outside the exchange.
-        if row["reward_id"] not in (chaos_id, None):
+        if row["reward_id"] not in (chaos_id, self.bridge, None):
             parts.append(self.order(chaos_id, row["proceeds"] or 0))
         gold, sources = self._sum(parts)
         profit = (row["proceeds"] or 0) - (row["cost"] or 0)
@@ -268,7 +282,10 @@ class Costs:
         """Per unit of the first item: buy it, swap along the path, sell the last item for Chaos.
 
         Buying the first item wants it. Each swap wants the next item on the path, in the amount the
-        swap brings (a Divine stop is an order like any other). The sale wants Chaos. A swap with a
+        swap brings (a Divine stop is an order like any other). The sale wants the currency of the
+        market the trip sells in (`sell_market`): Chaos, or the Divines those Chaos are worth at
+        `divine_price` when the dearer market, the one the trip's profit counts on, is the Divine one.
+        A swap with a
         vendor (a price you entered) is not an exchange order and costs no Gold, and Chaos handed to
         a vendor never had to be bought.
         """
@@ -283,7 +300,11 @@ class Costs:
             if via[k] != "vendor":
                 parts.append(self.order(row["path"][k + 1]["id"], units))
         profit = (row["buy"] or 0) * (row["edge"] or 0)  # per unit of the first item
-        parts.append(self.order(chaos_id, (row["buy"] or 0) * (1 + (row["edge"] or 0))))  # the last item, sold
+        proceeds = (row["buy"] or 0) * (1 + (row["edge"] or 0))  # the last item, sold, in Chaos
+        if row.get("sell_market") == "divine" and row.get("divine_price"):
+            parts.append(self.order(self.bridge, proceeds / row["divine_price"]))
+        else:
+            parts.append(self.order(chaos_id, proceeds))
         gold, sources = self._sum(parts)
         per_day = row.get("profit_per_day")
         passes = per_day / profit / DAY if profit > 0 and per_day is not None else None
@@ -1291,11 +1312,12 @@ class Desk:
             if key not in quotes:
                 i = index.get(item_id)
                 legs = (r,) if chaos_only or chaos_here else (r, b)
-                options = [(float(leg.fair[-1, i]), float(leg.flow[i]) * DAY * float(leg.fair[-1, i]))
+                options = [(float(leg.fair[-1, i]), float(leg.flow[i]) * DAY * float(leg.fair[-1, i]), leg is b)
                            for leg in legs if i is not None and self._quotable(leg, i)]
                 if options:
-                    (buy, buy_value), (sell, sell_value) = min(options), max(options)
-                    quotes[key] = (buy, sell, buy_value, sell_value)
+                    (buy, buy_value, _), (sell, sell_value, for_divines) = min(options), max(options)
+                    # The fifth says whether the sale is in the Divine market: it sets the sale's Gold.
+                    quotes[key] = (buy, sell, buy_value, sell_value, for_divines)
                 else:
                     quotes[key] = None
             return quotes[key]
@@ -1371,6 +1393,9 @@ class Desk:
                 "path": [{"id": item_id, "name": self._name(item_id)} for item_id in path],
                 "rates": [_num(rate) for rate in rates],
                 "buy": _num(start[0]), "sell": _num(end[1]), "edge": _num(edge, 4),
+                # The market the last item is sold in, and the Divine's price there: a sale for Divines
+                # pays Gold per Divine asked for, not per Chaos (`Costs.loop`).
+                "sell_market": "divine" if len(end) > 4 and end[4] else "chaos", "divine_price": _num(self.fair(divine)),
                 "first_swap": {"give": give, "get": get},
                 "lot_cost": _num(give * start[0], 4),
                 "value_24h": _num(value), "hours": int(hours),

@@ -80,28 +80,32 @@ def test_an_order_pays_for_what_it_wants():
 
 
 def test_zero_fee_gives_no_ratio_rather_than_infinity(desk):
-    plan = desk.flips(min_margin=0.0, costs=Costs(assumed=0.0))[0]
+    plan = desk.flips(min_margin=0.0, costs=Costs(assumed=0.0, table={CHAOS: 0.0, DIVINE: 0.0}))[0]
     assert plan["gold"] == 0 and plan["chaos_per_1000_gold"] is None
 
 
 def test_conversion_and_round_trip_gold(desk):
-    rows = desk.conversions(costs=Costs(assumed=1.0))
+    # The assumed fee is per item and never prices a currency, so the table gives those: 1 Gold each.
+    one = Costs(assumed=1.0, table={CHAOS: 1.0, DIVINE: 1.0})
+    assert desk.conversions(costs=Costs(assumed=1.0))[0]["gold"] is None, "an assumption alone cannot price the sale"
+    rows = desk.conversions(costs=one)
     card = next(r for r in rows if r["reward_id"] != "chaos")
     # At 1 Gold for anything wanted: the cards bought, and the Chaos the reward is sold for.
     assert card["gold"] == pytest.approx(card["need"] + card["proceeds"], rel=1e-3) and card["orders"] == 2
     assert card["chaos_per_1000_gold"] == pytest.approx(1000 * (card["proceeds"] - card["cost"]) / card["gold"], rel=1e-3)
     assert all(r["gold"] is None for r in desk.conversions())
 
-    loops = desk.loops(costs=Costs(assumed=1.0))
+    loops = desk.loops(costs=one)
     assert loops
     trip = loops[0]
     # Per unit of the first item: buy it (1), then each swap wants what it brings, and the sale
-    # wants the Chaos the trip ends with.
+    # wants the Chaos the trip ends with, or the Divines those are worth when it sells for Divines.
     expected, units = 1.0, 1.0
     for rate in trip["rates"]:
         units *= rate
         expected += units
-    expected += trip["buy"] * (1 + trip["edge"])
+    proceeds = trip["buy"] * (1 + trip["edge"])
+    expected += proceeds / trip["divine_price"] if trip["sell_market"] == "divine" else proceeds
     assert trip["gold"] == pytest.approx(expected, rel=1e-3) and trip["orders"] == len(trip["path"]) + 1
     first = trip["path"][0]["id"]
     partial = desk.loops(costs=Costs({first: {"gold_per_unit": 1.0, "trades": 1}}))
@@ -199,6 +203,37 @@ def test_under_a_gold_budget_a_stake_is_no_bigger_than_its_market_turns_over():
     # wide: the 160 Gold left pays for 160 c, 0.05 x 80 = 4 c an hour.
     assert out["thin"]["stake"] == pytest.approx(40) and out["thin"]["est"] == pytest.approx(2)
     assert out["wide"]["stake"] == pytest.approx(160) and out["wide"]["est"] == pytest.approx(4)
+
+
+def test_a_trip_or_recipe_that_ends_in_divines_pays_the_divine_fee():
+    # Known fees: 10 Gold an item, half a Gold a Chaos, 50 a Divine.
+    costs = Costs(table={"a": 10.0, "b": 10.0, CHAOS: 0.5, DIVINE: 50.0})
+    trip = {"path": [{"id": "a"}, {"id": "b"}], "rates": [2.0], "buy": 100.0, "edge": 0.2, "profit_per_day": 240.0}
+    # Buy one "a" (10), swap it for two "b" (20), sell them for 120 Chaos: 60 Gold when asked for in Chaos.
+    assert costs.loop(trip | {"sell_market": "chaos", "divine_price": 150.0})["gold"] == pytest.approx(90)
+    # The same 120 Chaos asked for as 0.8 Divines at 150 Chaos a Divine: 0.8 x 50 = 40 Gold.
+    assert costs.loop(trip | {"sell_market": "divine", "divine_price": 150.0})["gold"] == pytest.approx(70)
+    # A recipe that gives a Divine Orb: the inputs are bought (3 x 10) and nothing is sold.
+    row = {"id": "a", "need": 3, "reward_id": DIVINE, "proceeds": 150.0, "cost": 120.0, "sets_per_hour": 1.0,
+           "profit_per_hour": 30.0}
+    out = costs.conversion(row, CHAOS)
+    assert out["gold"] == pytest.approx(30) and out["orders"] == 1
+    assert costs.conversion(row | {"reward_id": "b"}, CHAOS)["gold"] == pytest.approx(30 + 75), "any other reward is sold for Chaos"
+
+
+def test_one_odd_record_does_not_replace_the_fee_table():
+    table = {CHAOS: 15.0, "a": 40.0}
+    # A sell order of 7 Chaos typed with 1,050 Gold instead of 105 would teach 150 Gold a Chaos.
+    typo = Costs({CHAOS: {"gold_per_unit": 150.0, "trades": 1}}, table=table)
+    assert typo.fee(CHAOS) == (15.0, {"source": "fee table", "disputed": 150.0, "trades": 1})
+    # Three records that agree are your own evidence and win; so does one close to the table.
+    assert Costs({CHAOS: {"gold_per_unit": 150.0, "trades": 3}}, table=table).fee(CHAOS)[0] == 150
+    assert Costs({"a": {"gold_per_unit": 42.0, "trades": 1}}, table=table).fee("a") == (42.0, {"source": "your trades", "trades": 1})
+    # With no table to compare with, a record stands. And the assumed fee, which is per item, never
+    # prices a Chaos Orb or a Divine Orb.
+    assert Costs({"b": {"gold_per_unit": 9.0, "trades": 1}}).fee("b")[0] == 9
+    alone = Costs(assumed=20.0)
+    assert alone.fee("a")[0] == 20 and alone.fee(CHAOS) == (None, {"source": "unknown"}) and alone.fee(DIVINE)[0] is None
 
 
 def test_free_orders_rank_first_not_as_unknown():

@@ -22,7 +22,8 @@ Rules we follow:
   is.
 - Fees change with game patches, not from hour to hour, so the page is asked for when there is
   no table yet, when the live league is not the one the table was fetched in, or when you ask
-  (`vaalstreet fees refresh`). A failed try waits `RETRY_AFTER` before the next one.
+  (`vaalstreet fees refresh`). A failed try waits `RETRY_AFTER` before the next one, and a good
+  one `MIN_GAP`, so nothing can make the desk ask in a loop.
 - Every request carries the desk's User-Agent (`archive.user_agent`).
 - A page we cannot read never replaces a table we could: the answer must name the Chaos Orb and
   the Divine Orb and hold at least `MIN_ITEMS` items, or the old table stays, marked stale.
@@ -39,6 +40,7 @@ import html
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -55,6 +57,7 @@ CREDIT = "Gold fees from poedb.tw"
 VERSION = 1  # bump when `parse` learns something new: tables are read again from the kept page
 MIN_ITEMS = 200  # the real page lists about a thousand; far fewer means the page changed shape
 RETRY_AFTER = 6 * 3600  # seconds to wait after a failed fetch before asking again
+MIN_GAP = 24 * 3600  # and after a good one, whatever the league: two live leagues must not take turns
 REQUIRED = ("Chaos Orb", "Divine Orb")
 
 # One entry on the page: the item's link, then its Gold in a <span>. Fractions ("1/8") are real:
@@ -125,9 +128,18 @@ def _download(url: str) -> str:
 
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    # Its own temporary name: the desk and `fees refresh` may write at the same moment.
+    handle, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".part")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _save(root: Path, realm: str, stored: dict) -> None:
@@ -188,6 +200,8 @@ def due(root: Path, realm: str, league: str | None, now: float | None = None) ->
     now = time.time() if now is None else now
     if stored.get("error") and now - (stored.get("checked") or 0) < RETRY_AFTER:
         return False
+    if stored.get("fees") and now - (stored.get("fetched") or 0) < MIN_GAP:
+        return False
     return not stored.get("fees") or (league is not None and stored.get("league") != league)
 
 
@@ -201,10 +215,12 @@ def refresh(root: Path, realm: str = "poe1", league: str | None = None, *, url: 
     try:
         page = _download(url)
         found = parse(page, min_items)
-    except Exception as err:  # the network, the page's shape: none of it may stop the desk
-        _save(root, realm, dict(_stored(root, realm), version=VERSION, checked=now, error=str(err) or type(err).__name__))
-        return load(root, realm, league)
-    _write(fees_page(root, realm), gzip.compress(page.encode("utf-8")))
-    _save(root, realm, {"version": VERSION, "source": url, "fetched": now, "checked": now, "league": league,
-                        "error": None, "fees": found})
+        _write(fees_page(root, realm), gzip.compress(page.encode("utf-8")))
+        _save(root, realm, {"version": VERSION, "source": url, "fetched": now, "checked": now, "league": league,
+                            "error": None, "fees": found})
+    except Exception as err:  # the network, the page's shape, the disk: none of it may stop the desk
+        try:
+            _save(root, realm, dict(_stored(root, realm), version=VERSION, checked=now, error=str(err) or type(err).__name__))
+        except OSError:
+            pass  # a disk that cannot be written: the caller's own clock keeps the wait (`App.refresh_fees`)
     return load(root, realm, league)

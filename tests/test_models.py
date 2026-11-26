@@ -542,6 +542,7 @@ def test_your_recipes_are_priced_like_the_built_in_ones(desk):
 
 def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
     from vaalstreet.desk import Costs
+    from vaalstreet.ingest import CHAOS, DIVINE
 
     first = desk.loops(min_value=10)
     size = len(desk._cache)
@@ -555,9 +556,9 @@ def test_answers_are_remembered_per_desk_and_keyed_by_every_argument(desk):
 
     desk.loops(min_value=10, swaps=2)
     assert len(desk._cache) == size + 1, "a different argument is a different question"
-    priced = desk.loops(min_value=10, costs=Costs(assumed=2.0))
+    priced = desk.loops(min_value=10, costs=Costs(assumed=2.0, table={CHAOS: 2.0, DIVINE: 2.0}))
     assert len(desk._cache) == size + 2 and priced[0]["gold"] is not None and first[0]["gold"] is None
-    assert desk.loops(min_value=10, costs=Costs(assumed=3.0))[0]["gold"] != priced[0]["gold"]
+    assert desk.loops(min_value=10, costs=Costs(assumed=3.0, table={CHAOS: 3.0, DIVINE: 3.0}))[0]["gold"] != priced[0]["gold"]
     mine = [{"id": 1, "kind": "recipe", "inputs": [(CARD, 2)], "output": ITEM, "gives": 1}]
     assert len(desk.conversions(fixed=mine)) == len(desk.conversions()) + 1
 
