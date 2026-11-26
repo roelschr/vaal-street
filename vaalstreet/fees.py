@@ -1,8 +1,8 @@
 """The Gold each item costs on the exchange, from poedb's public Currency Exchange page.
 
 Every order costs Gold, and the game charges a fixed number per item: 35 for a Stacked Deck,
-250 for a Divine Orb, 15 for a Chaos Orb. GGG does not publish the list, but the game files carry
-it and poedb.tw shows it on one page (https://poedb.tw/us/Currency_Exchange). The numbers were
+250 for a Divine Orb, 15 for a Chaos Orb. GGG does not publish the list; poedb.tw shows it on one
+page (https://poedb.tw/us/Currency_Exchange), without saying where its numbers come from. They were
 checked against orders placed in game in November 2026: 13 Stacked Decks cost 455 Gold and one
 Eldritch Exalted Orb cost 525, exactly what the page says.
 
@@ -13,7 +13,13 @@ install without asking poedb again.
 
 Rules we follow:
 - One page, and nothing else on the site. poedb's robots.txt (read 2026-11-26) keeps crawlers
-  out of only its edit-history paths.
+  out of only its edit and edit-history paths. Its privacy page and its disclaimer say nothing
+  about automated readers, for or against, and it offers no API.
+- poedb's footer puts its content under CC BY-NC-SA 3.0 (non-commercial, share alike, credit
+  required). This project is MIT, so the table is never part of it: it is fetched at run time
+  into the user's data directory, like GGG's icons, and never committed, bundled, or written into
+  a file the desk exports. Tests use a page written for them. `CREDIT` is shown wherever the table
+  is.
 - Fees change with game patches, not from hour to hour, so the page is asked for when there is
   no table yet, when the live league is not the one the table was fetched in, or when you ask
   (`vaalstreet fees refresh`). A failed try waits `RETRY_AFTER` before the next one.
