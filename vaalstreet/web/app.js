@@ -2270,7 +2270,7 @@ function screenStateLine(sc) {
   if (sc.quiet) return ['down', `The screen check has not been heard from since ${time(sc.seen)}. It has probably stopped: start it again.`];
   if (sc.state === 'off') return ['down', `The screen check is off. ${sc.message || ''}`];
   if (sc.state === 'waiting') return ['muted', `The screen check is not listening yet. ${sc.message || ''}`];
-  if (sc.state === 'reading') return ['gold', 'Key heard: reading the screen… A whole screen takes several seconds.'];
+  if (sc.state === 'reading') return ['gold', 'Key heard: reading the screen… The first reading after a start takes several seconds, later ones a second or two.'];
   return ['gold', `Listening since ${time(sc.t)}. ${keyWords(sc.hotkey)} reads the offer on screen; ${keyWords(sc.record_hotkey)} also records it.${sc.stacks ? ' Ctrl+C in game values the stack under the cursor.' : ''}`];
 }
 function readingsPanel(names, cls = '', compact = false) {

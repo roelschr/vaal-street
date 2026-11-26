@@ -908,8 +908,8 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
 
     def capture_then_tell():
         # The screenshot comes first, so it is of the moment of the press whatever the desk is busy
-        # with. Then the desk hears of the press, before the slow part: a whole screen takes several
-        # seconds to read, and until now the page showed nothing in that time.
+        # with. Then the desk hears of the press, before the slow part: the first reading of a whole
+        # screen takes several seconds, and until now the page showed nothing in that time.
         image = capture()
         tell_state(desk, "reading", **keys)
         return image
