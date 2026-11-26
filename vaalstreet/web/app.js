@@ -17,8 +17,14 @@ async function api(path, body) {
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) throw new Error(data.error || res.statusText);
   practiceFrom(data);
+  // This window wrote to the ledger: it draws itself again, and tells the desk's other windows to look.
+  // Only an answer to a write: the status the page reads also carries the count.
+  if (body && data.writes != null) { state.writes = data.writes; windows?.postMessage('wrote'); }
   return data;
 }
+// The desk's windows (the main one and the hideout) tell each other when one of them wrote, so an
+// order recorded in one shows in the other at once and not at the next hourly refresh.
+const windows = 'BroadcastChannel' in window ? new BroadcastChannel('vaal-street') : null;
 const bankQuery = () => (+state.filters.capital > 0 ? { bankroll: +state.filters.capital } : {});
 const withLeague = (path, extra = {}) => {
   const q = new URLSearchParams({ ...(state.league ? { league: state.league } : {}), ...extra });
@@ -2472,11 +2478,16 @@ async function poll(first) {
   try {
     const s = await api('/api/status');
     const changed = s.generation !== state.generation || s.ready !== state.status?.ready;
+    // Something was recorded elsewhere: another window, or the screen check's record key. The page is
+    // drawn again, but not under a form you are typing in; that waits for the next look.
+    const wrote = state.writes != null && s.writes !== state.writes;
+    const typing = wrote && (!!$('form.pend') || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName));
+    if (!typing) state.writes = s.writes;
     state.status = s; state.league ||= s.league; state.generation = s.generation;
     announce(s.last_event);
     if (changed && state.hideout) pollEvents();  // right after the hourly refresh
     if (changed) showIcons();
-    if (first || changed) await route(); else if (!state.hideout && state.summary) renderTop();
+    if (first || changed || (wrote && !typing)) await route(); else if (!state.hideout && state.summary) renderTop();
     else if (!s.ready) route();
   } catch (err) { if (first) $('#main').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
 }
@@ -2511,5 +2522,6 @@ window.addEventListener('keydown', e => {
 showIcons();
 if (!state.hideout) enterPage();
 poll(true);
-setInterval(poll, state.hideout ? 60000 : 20000);
+setInterval(poll, 20000);
+if (windows) windows.onmessage = () => poll();
 if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
