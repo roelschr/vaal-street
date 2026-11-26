@@ -133,10 +133,10 @@ class FakeListener:
         return self.alive
 
 
-def run_companion(server, tmp_path, monkeypatch, capture):
+def run_companion(server, tmp_path, monkeypatch, capture, recognise=lambda image: GOOD):
     keys = FakeKeys()
     monkeypatch.setattr(screen, "load_libraries", lambda: (None, keys, None))
-    monkeypatch.setattr(screen, "make_recognise", lambda ocr: lambda image: GOOD)
+    monkeypatch.setattr(screen, "make_recognise", lambda ocr: recognise)
     monkeypatch.setattr(screen, "make_capture", lambda mss, area: capture)
     monkeypatch.setattr(screen, "STATE_SECONDS", 0.05)
     gate = screen.PressGate()
@@ -150,12 +150,16 @@ def test_the_companion_says_it_listens_reads_and_stops(server, tmp_path, monkeyp
     reading, go_on, seen = threading.Event(), threading.Event(), []
 
     def capture():
+        seen.append(state_of(server)["state"])  # the screenshot is taken before the desk is told anything
+        return "image"
+
+    def recognise(image):
         reading.set()
         seen.append(state_of(server)["state"])  # what the page shows while the screen is being read
         go_on.wait(10)
-        return "image"
+        return GOOD
 
-    keys, gate, worker = run_companion(server, tmp_path, monkeypatch, capture)
+    keys, gate, worker = run_companion(server, tmp_path, monkeypatch, capture, recognise)
     try:
         state = state_of(server)
         assert (state["hotkey"], state["record_hotkey"], state["stacks"]) == (screen.DEFAULT_HOTKEY, screen.DEFAULT_RECORD_HOTKEY, False)
@@ -163,7 +167,7 @@ def test_the_companion_says_it_listens_reads_and_stops(server, tmp_path, monkeyp
         assert reading.wait(10)
         go_on.set()
         assert wait_for(lambda: call(f"{server}/api/readings")[1]["readings"])
-        assert seen == ["reading"]
+        assert seen == ["listening", "reading"]
         assert wait_for(lambda: state_of(server)["state"] == "listening")
         (row,) = call(f"{server}/api/readings")[1]["readings"]
         assert row["said"] and not row["error"]

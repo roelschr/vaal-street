@@ -906,12 +906,17 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     record_hotkey = record_hotkey or settings.get("record_hotkey") or DEFAULT_RECORD_HOTKEY
     keys = {"hotkey": hotkey, "record_hotkey": record_hotkey, "stacks": bool(stacks or stash)}
 
-    def read(record: bool) -> None:
-        # The desk hears of the press before the slow part: a whole screen takes several seconds to
-        # read, and until now the page showed nothing in that time.
+    def capture_then_tell():
+        # The screenshot comes first, so it is of the moment of the press whatever the desk is busy
+        # with. Then the desk hears of the press, before the slow part: a whole screen takes several
+        # seconds to read, and until now the page showed nothing in that time.
+        image = capture()
         tell_state(desk, "reading", **keys)
+        return image
+
+    def read(record: bool) -> None:
         try:
-            handle_press(capture, recognise, desk, record=record, recent=recent if record else None)
+            handle_press(capture_then_tell, recognise, desk, record=record, recent=recent if record else None)
         finally:
             tell_state(desk, "listening", **keys)
 

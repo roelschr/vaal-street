@@ -74,6 +74,9 @@ class App:
         self._readings: collections.deque[dict] = collections.deque(maxlen=READINGS_KEPT)
         self._reading_id = 0
         self._screen_state: dict | None = None  # what the screen check last said of itself; memory only
+        # Its own lock: `_lock` is held for seconds while a league's desk is built, and neither the
+        # companion's press nor the page's look every two seconds should wait for that.
+        self._screen_lock = threading.Lock()
         if sync:
             threading.Thread(target=self._sync_loop, name="vaal-sync", daemon=True).start()
 
@@ -505,7 +508,7 @@ class App:
         now = int(time.time())
         told = {"state": state, "message": _clip(body.get("message"), 300), "hotkey": _clip(body.get("hotkey"), 60),
                 "record_hotkey": _clip(body.get("record_hotkey"), 60), "stacks": body.get("stacks") is True}
-        with self._lock:
+        with self._screen_lock:
             old = self._screen_state
             same = old is not None and all(old[k] == v for k, v in told.items())
             # `t` is when it came to this state, `seen` when it last said anything.
@@ -514,7 +517,7 @@ class App:
 
     def screen_state(self) -> dict | None:
         """The screen check's own state for the page; `quiet` when it has stopped saying anything."""
-        with self._lock:
+        with self._screen_lock:
             state = dict(self._screen_state) if self._screen_state else None
         if state:
             state["quiet"] = state["state"] != "off" and time.time() - state["seen"] > SCREEN_QUIET_SECONDS
