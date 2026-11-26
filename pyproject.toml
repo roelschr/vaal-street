@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaalstreet"
-version = "2.0.1"
+version = "2.1.0"
 description = "Pricing models, flips, arbitrage, league-start analytics and backtests for the Path of Exile Currency Exchange"
 readme = "README.md"
 license = { text = "MIT" }
