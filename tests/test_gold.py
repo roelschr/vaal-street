@@ -156,6 +156,51 @@ def test_session_plan_under_a_gold_budget_for_the_session():
     assert cut["stake"] == pytest.approx(15) and cut["gold_to_post"] == pytest.approx(300), "cut at a known total"
 
 
+def test_a_gold_budget_buys_the_most_chaos_an_hour_not_the_cheapest_orders():
+    # Covens in miniature: four plans that cost little Gold and earn little, and one that earns
+    # twenty times as much but is dear to post. With 1,000 Chaos a full stake is 250.
+    # - "t1".."t4": margin 2%, 100 c per 1,000 Gold -> 0.2 Gold per Chaos staked, 50 Gold a stake,
+    #   and 0.02 x 250 / 2 = 2.5 c an hour each.
+    # - "h": margin 40%, 4 c per 1,000 Gold -> 100 Gold per Chaos staked, 25,000 Gold a stake,
+    #   and 0.40 x 250 / 2 = 50 c an hour. One lot (10 c) costs 1,000 Gold.
+    cheap = [plan(f"t{n}", 0.02, 10, 1000, 100) for n in range(1, 5)]
+    plans = cheap + [plan("h", 0.40, 10, 1000, 4)]
+    # Known answer, roomy budget: "h" and three cheap plans, 50 + 7.5 c an hour for 25,150 Gold.
+    # Taken by Chaos per 1,000 Gold alone, the four cheap plans would use all the Chaos: 10 c an hour.
+    roomy = session_plan(plans, 1000, gold_budget=30_000)
+    assert sorted(p["id"] for p in roomy["flips"]) == ["h", "t1", "t2", "t3"]
+    assert roomy["expected_per_hour"] == pytest.approx(57.5) and roomy["gold_used"] == pytest.approx(25_150)
+    # Known answer, tight budget: not even one lot of "h" can be posted, so the four cheap plans.
+    tight = session_plan(plans, 1000, gold_budget=500)
+    assert sorted(p["id"] for p in tight["flips"]) == ["t1", "t2", "t3", "t4"]
+    assert tight["expected_per_hour"] == pytest.approx(10) and tight["gold_used"] == pytest.approx(200)
+    # In between, "h" gets the stake the Gold pays for: 10,000 / 100 = 100 c, 20 c an hour.
+    between = session_plan(plans, 1000, gold_budget=10_000)
+    assert between["expected_per_hour"] == pytest.approx(20) and between["gold_used"] == pytest.approx(10_000)
+    # More Gold never earns less here, the budget is never overspent, and enough Gold for everything
+    # earns what the plan without a budget earns.
+    earned = []
+    for budget in (0, 100, 500, 2_000, 10_000, 30_000, 1_000_000):
+        out = session_plan(plans, 1000, gold_budget=budget)
+        assert out["gold_used"] <= budget + 1e-9
+        earned.append(out["expected_per_hour"])
+    assert earned == sorted(earned) and earned[0] == 0
+    assert earned[-1] == pytest.approx(session_plan(plans, 1000)["expected_per_hour"])
+
+
+def test_under_a_gold_budget_a_stake_is_no_bigger_than_its_market_turns_over():
+    # "thin" trades 20 c an hour and a round takes 2 hours, so 40 c is all it can turn over. Without
+    # a budget it still gets a quarter (250 c), as before. Under one, staking 250 c would cost
+    # 250 Gold to earn what 40 Gold earns, so it gets 40 c and the rest of the Gold goes to "wide".
+    thin, wide = plan("thin", 0.10, 10, 20, 100), plan("wide", 0.05, 10, 1000, 50)
+    assert session_plan([thin, wide], 1000)["flips"][0]["stake"] == 250
+    out = {p["id"]: p for p in session_plan([thin, wide], 1000, gold_budget=200)["flips"]}
+    # Known answer: both cost 1 Gold per Chaos staked. thin: 40 c, 40 Gold, 0.10 x 20 = 2 c an hour.
+    # wide: the 160 Gold left pays for 160 c, 0.05 x 80 = 4 c an hour.
+    assert out["thin"]["stake"] == pytest.approx(40) and out["thin"]["est"] == pytest.approx(2)
+    assert out["wide"]["stake"] == pytest.approx(160) and out["wide"]["est"] == pytest.approx(4)
+
+
 def test_free_orders_rank_first_not_as_unknown():
     free = plan("f", 0.05, 10, 1000, None, gold=0)
     out = session_plan([plan("a", 0.10, 10, 1000, 5), free], 100, gold_budget=10)

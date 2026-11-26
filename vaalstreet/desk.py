@@ -46,6 +46,11 @@ PLAN_MARKETS = {"chaos": ("chaos", "chaos"), "divine": ("divine", "divine"), "cr
 REPLAY_DAYS = 7
 REPLAY_STAKE = 1000.0
 SESSION_HOURS = 6  # a sitting; a lot bigger than a quarter of the purse must fill within one
+# Chaos of stake that one Gold counts as when the session plan ranks plans under a Gold budget:
+# 0 is Chaos only, infinity is Gold only, and between them a thousandth to a thousand in half
+# decades (plans cost from a tenth of a Gold to tens of Gold per Chaos staked). Every weight is
+# tried (`session_plan`). They do not depend on the budget, so a bigger budget tries the same orders.
+GOLD_WEIGHTS = (0.0, *(10 ** (k / 2) for k in range(-6, 7)), math.inf)
 # Orders fill in whole lots. A plan whose share of the trade needs longer than this to fill one lot is not
 # offered: its levels were read off the last SWING_WINDOW hours, and over those hours its share of what
 # traded there would not have made a single lot, so nothing says the order ever fills.
@@ -355,65 +360,112 @@ def session_plan(plans: list[dict], bankroll: float, gold_budget: float | None =
     margin x min(flow value, S / cycle hours) an hour: the purse turns over at most once per
     buy-then-sell, and that takes as long as the two markets take to reach the levels.
 
-    Without a Gold budget, plans are taken by Chaos earned per Chaos staked. With `gold_budget`
-    (Gold to spend this session), they are taken by Chaos per 1,000 Gold. Gold is charged when an
-    order is posted, so a plan's Gold against the budget is posting its buy and sell orders once at
-    the size of its stake: stake / buy price units, times the Gold per unit flipped (both sides).
+    Without a Gold budget, plans are taken by Chaos earned per Chaos staked.
+
+    With `gold_budget` (Gold to spend this session) there are two purses, and the plan is the one
+    that earns the most Chaos an hour within both. Gold is charged when an order is posted, so a
+    plan's Gold against the budget is posting its buy and sell orders once at the size of its
+    stake: stake / buy price units, times the Gold per unit flipped (both sides). Two things
+    change against the plan without a budget:
+    - A stake is no bigger than its markets can turn over (flow value x cycle hours, never less
+      than one lot). Chaos beyond that earns nothing, and under a budget it would still cost Gold.
+    - Plans are taken by what they earn for what they use of the two purses:
+      earnings / (stake + w x Gold), where `w` says how many Chaos of stake one Gold counts as.
+      No single weight is right: with plenty of Gold the Chaos is what runs out (w = 0, the rule
+      without a budget), with little Gold the Gold is (w large, which is Chaos per 1,000 Gold).
+      So the desk builds the plan for each weight in `GOLD_WEIGHTS`, with and without the stake
+      limit above, and keeps the one that earns the most. That is a search over a few orders, not
+      a proof of the best plan, but it is never worse than either rule alone. Taking plans by
+      Chaos per 1,000 Gold alone, as the desk once did, let four cheap-to-post plans use up the
+      Chaos while most of the Gold stayed unspent.
     A stake is shrunk to what the remaining Gold pays for (skipped if not even one lot fits).
-    Plans whose Gold is unknown cannot be ranked that way; they are listed in `gold_unknown`.
+    Plans whose Gold is unknown cannot be counted against the budget; they are listed in
+    `gold_unknown`.
     """
     def earns(r: dict, stake: float) -> float:
         flow = r.get("flow_value")
         return r["margin"] * min(flow if flow is not None else math.inf, stake / cycle_hours(r))
+
+    def per_chaos(r: dict) -> float:
+        """Gold to post one Chaos of stake, both orders."""
+        return (r.get("gold") or 0) / r["buy"] if r.get("buy") else 0.0
 
     quarter = bankroll / 4
     eligible = [r for r in plans if (r.get("lot_cost") or 0) > 0 and r["lot_cost"] <= bankroll
                 and (r["lot_cost"] <= quarter or lot_hours(r) <= SESSION_HOURS)
                 and r.get("margin") is not None and r.get("replay")
                 and (r["replay"].get("sales") or 0) >= 2]
-    def per_gold(r: dict) -> float | None:
-        """Chaos per 1,000 Gold; a plan whose orders cost no Gold at all ranks first."""
-        if r.get("gold") == 0:
-            return math.inf
-        return r.get("chaos_per_1000_gold")
 
-    sized = [(r, s, earns(r, s)) for r in eligible for s in [max(r["lot_cost"], quarter)]]
-    # Judged at the stake it would get: a thin market's replay used only part of its 1,000 Chaos,
-    # and the Divine's rise is charged on the whole stake, idle or not.
-    trailing = [r for r, s, _ in sized if (r["replay"].get("return") or 0) > 0 and (replayed_rate(r["replay"], s) or 0) <= 0]
-    sized = [x for x in sized if (replayed_rate(x[0]["replay"], x[1]) or 0) > 0]
+    def sizes(useful: bool) -> list[tuple[dict, float, float]]:
+        """(plan, stake, Chaos an hour at that stake) for every eligible plan."""
+        out = []
+        for r in eligible:
+            stake = quarter
+            if useful and r.get("flow_value") is not None:
+                stake = min(stake, r["flow_value"] * cycle_hours(r))
+            stake = max(r["lot_cost"], stake)
+            out.append((r, stake, earns(r, stake)))
+        return out
+
+    def take(order: list[tuple[dict, float, float]]) -> tuple[list[tuple[dict, float, float | None]], float, float | None]:
+        """Walk `order`, giving each plan its stake while Chaos and Gold last."""
+        chosen, taken = [], set()
+        left, gold_left = bankroll, gold_budget
+        for r, stake, _ in order:
+            if len(chosen) >= max_picks:
+                break
+            if r["id"] in taken or r["lot_cost"] > left:
+                continue
+            stake = min(stake, left)
+            posted = None
+            if gold_left is not None:
+                posted = stake * per_chaos(r)
+                if posted > gold_left + 1e-9:
+                    # Like Chaos running short: shrink the stake to what the Gold left pays to post.
+                    stake = gold_left / per_chaos(r)
+                    if stake < r["lot_cost"]:
+                        continue
+                    posted = gold_left
+                gold_left -= posted
+            taken.add(r["id"])
+            left -= stake
+            chosen.append((r, stake, posted))
+        return chosen, left, gold_left
+
+    # Judged at the stake it would get without a budget: a thin market's replay used only part of
+    # its 1,000 Chaos, and the Divine's rise is charged on the whole stake, idle or not.
+    full = sizes(False)
+    trailing = [r for r, s, _ in full if (r["replay"].get("return") or 0) > 0 and (replayed_rate(r["replay"], s) or 0) <= 0]
+    beat = {id(r) for r, s, _ in full if (replayed_rate(r["replay"], s) or 0) > 0}
     unknown: list[dict] = []
-    if gold_budget is not None:
-        unknown = [r for r, _, _ in sized if per_gold(r) is None]
-        sized = [x for x in sized if per_gold(x[0]) is not None]
-        sized.sort(key=lambda x: (-per_gold(x[0]), -x[2]))
-    else:
+    if gold_budget is None:
+        sized = [x for x in full if id(x[0]) in beat]
         sized.sort(key=lambda x: (-x[2] / x[1], -x[2]))  # most earned per Chaos tied up
-    picks, taken = [], set()
-    left, gold_left = bankroll, gold_budget
-    for r, stake, _ in sized:
-        if len(picks) >= max_picks:
-            break
-        if r["id"] in taken or r["lot_cost"] > left:
-            continue
-        stake = min(stake, left)
-        posted = None
-        if gold_left is not None:
-            per_chaos = (r.get("gold") or 0) / r["buy"] if r.get("buy") else 0.0  # Gold per Chaos staked
-            posted = stake * per_chaos
-            if posted > gold_left + 1e-9:
-                # Like Chaos running short: shrink the stake to what the Gold left pays to post.
-                stake = gold_left / per_chaos
-                if stake < r["lot_cost"]:
-                    continue
-                posted = gold_left
-            gold_left -= posted
+        chosen, left, gold_left = take(sized)
+    else:
+        unknown = [r for r, _, _ in full if id(r) in beat and r.get("gold") is None]
+        best = None
+        for useful in (True, False):
+            sized = [x for x in sizes(useful) if id(x[0]) in beat and x[0].get("gold") is not None]
+            for weight in GOLD_WEIGHTS:
+                def worth(x, weight=weight):
+                    r, stake, est = x
+                    gold = stake * per_chaos(r)
+                    if weight == math.inf:
+                        return est / gold if gold > 0 else math.inf  # orders that cost no Gold go first
+                    return est / (stake + weight * gold)
+                tried = take(sorted(sized, key=lambda x: (-worth(x), -x[2], x[0]["id"], x[0]["kind"])))
+                total = sum(earns(r, stake) for r, stake, _ in tried[0])
+                # The first plan found wins a tie, so the answer does not depend on float noise.
+                if best is None or total > best[0] * (1 + 1e-12) + 1e-12:
+                    best = (total, tried)
+        chosen, left, gold_left = best[1]
+    picks = []
+    for r, stake, posted in chosen:
         est = earns(r, stake)
-        ratio = per_gold(r)
+        ratio = math.inf if r.get("gold") == 0 else r.get("chaos_per_1000_gold")
         # Informative only: Gold an hour at this stake's expected fills.
         gold_hour = None if ratio is None else 0.0 if ratio == math.inf else est * 1000 / ratio
-        taken.add(r["id"])
-        left -= stake
         picks.append({"id": r["id"], "name": r["name"], "category": r.get("category"), "kind": r["kind"],
                       "buy_order": r["buy_order"], "sell_order": r["sell_order"], "margin": r["margin"],
                       "lot_cost": r["lot_cost"], "replay": r["replay"], "reach": r.get("reach"),
