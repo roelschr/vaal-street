@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vaalstreet import archive, backtest, basket, calibrate, check, db, export, items, ninja, screen, search, searchstring, wealth
+from vaalstreet import archive, backtest, basket, calibrate, check, db, export, fees, items, ninja, screen, search, searchstring, wealth
 from vaalstreet.desk import PATIENCE, Costs, Desk, _num, session_plan
 from vaalstreet.ingest import ANCHORS, ingest
 from vaalstreet.leagues import LeagueBook
@@ -46,9 +46,10 @@ class App:
     """Shared state: one DuckDB over the Parquet files, cached desks, the ledger, the sync thread."""
 
     def __init__(self, root: Path | None = None, *, sync: bool = True, bootstrap_days: int = 14,
-                 ninja_base_url: str = ninja.DEFAULT_BASE_URL) -> None:
+                 ninja_base_url: str = ninja.DEFAULT_BASE_URL, fees_url: str = fees.DEFAULT_URL) -> None:
         self.root = root or data_dir()
         self.ninja_base_url = ninja_base_url
+        self.fees_url = fees_url
         self._ninja: ninja.Ninja | None = None
         # Kept apart from sync_state: a poe.ninja failure must not hold up the exchange sync.
         self.ninja_state = {"last_run": None, "league_id": None, "types": [], "errors": []}
@@ -133,10 +134,25 @@ class App:
         chosen = self.ledger.get("league")
         if chosen and any(l["league"] == chosen for l in leagues):
             return chosen
+        return self._busiest_live(leagues)
+
+    @staticmethod
+    def _busiest_live(leagues: list[dict]) -> str:
         newest = max(l["last_hour"] for l in leagues)
         live = [l for l in leagues if l["last_hour"] >= newest - 6 * HOUR]
         challenge = [l for l in live if l["family"] == "challenge"] or live
         return max(challenge, key=lambda l: l["value"] / max(l["hours"], 1))["league"]
+
+    def live_league(self) -> str | None:
+        """The challenge league running now, whatever league you chose to look at and whether or not a
+        rehearsal runs. Game facts such as the Gold fee table follow this one."""
+        was = getattr(self._thread, "live", False)
+        self._thread.live = True  # read the live archive, as the sync thread does
+        try:
+            leagues = self.leagues()
+        finally:
+            self._thread.live = was
+        return self._busiest_live(leagues) if leagues else None
 
     def desk(self, league: str | None = None) -> Desk:
         practice = self._practice()
@@ -163,6 +179,7 @@ class App:
         while not self._stop.is_set():
             self.sync_once()
             self.refresh_ninja()  # at most hourly per category; the client enforces it
+            self.refresh_fees()  # once per league; `fees.due` decides
             if self._reach_league_start():
                 continue  # keep going back, a fortnight at a time, until the live league's first hour is on disk
             self._wake.wait(timeout=300)
@@ -193,6 +210,21 @@ class App:
         finally:
             self.sync_state.update(running=False)
         return not self._stop.is_set()
+
+    def refresh_fees(self) -> None:
+        """Fetch the Gold fee table when there is none, or when the live league is a new one. Never raises."""
+        try:
+            fees.refresh(self.root, REALM, self.live_league(), url=self.fees_url)
+        except Exception:
+            pass  # no league yet: the next round of the sync loop tries again
+
+    def fees_status(self) -> dict:
+        """What the desk knows about the Gold fee table, for the status line. Reads the cache only."""
+        try:
+            league = self.live_league()
+        except Exception:
+            league = None
+        return fees.load(self.root, REALM, league).status()
 
     def ninja(self) -> ninja.Ninja:
         with self._lock:
@@ -512,6 +544,7 @@ class App:
             "generation": self._generation,
             "ready": db.has_data(self.root, REALM),
             "ninja": self.ninja_status(),
+            "fees": self.fees_status(),
         }
         if out["ready"]:
             try:

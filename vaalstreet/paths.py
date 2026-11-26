@@ -33,6 +33,16 @@ def items_file(root: Path, realm: str) -> Path:
     return root / "items" / f"{realm}.json"
 
 
+def fees_file(root: Path, realm: str) -> Path:
+    """The Gold each item costs on the exchange, read from poedb's page. Rebuildable: one fetch."""
+    return root / "fees" / f"{realm}.json"
+
+
+def fees_page(root: Path, realm: str) -> Path:
+    """poedb's page as it was served, gzipped, so the table can be read again without a fetch."""
+    return root / "fees" / f"{realm}.html.gz"
+
+
 def icons_dir(root: Path) -> Path:
     return root / "icons"
 

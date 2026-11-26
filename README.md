@@ -2,7 +2,7 @@
 
 A local trading desk for the Path of Exile Currency Exchange. It mirrors the exchange's public hourly history, turns it into prices you can trust, and answers the questions a trader actually has: what is this worth, what can I flip right now, what converts into something dearer, what did this item do at this point of past leagues, and would my strategy have made money.
 
-Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export, item icons and, unless you turn it off, poe.ninja's public price lists for the few card rewards the exchange does not trade (at most once an hour per list). Every request names this project and its address, and nothing about you is sent. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game; if you turn on its stack check, it also reads the clipboard once each time you press the game's copy key.
+Everything runs on your machine. The only network traffic is read-only requests for the public exchange digests, an item-name export, item icons, one page of poedb.tw that lists what each item costs in Gold on the exchange (once per league) and, unless you turn it off, poe.ninja's public price lists for the few card rewards the exchange does not trade (at most once an hour per list). Every request names this project and its address, and nothing about you is sent. No account, no tokens, no in-game automation. The optional screen check reads your screen once per key press and sends nothing to the game; if you turn on its stack check, it also reads the clipboard once each time you press the game's copy key.
 
 PoE 1 is the focus. The data layer also mirrors PoE 2, but the desk and models are built and tested against PoE 1.
 
@@ -226,6 +226,7 @@ python -m vaalstreet ratio 9.5                   # the whole-number ratio to typ
 python -m vaalstreet export trades -o trades.csv # trades, positions, orders, made or stash as a CSV file
 python -m vaalstreet arb --swaps 3               # sets against their rewards, and round trips
 python -m vaalstreet ninja refresh               # prices from poe.ninja for card rewards the exchange lacks (status: what is cached)
+python -m vaalstreet fees show stacked deck      # the Gold an item costs to order (fees refresh: fetch the table again)
 python -m vaalstreet recipe add --give "5 Some Card" --get "1 Some Orb"   # a recipe of your own
 python -m vaalstreet recipe add --vendor --give "3 Chaos Orb" --get "Some Shard"   # a vendor price
 python -m vaalstreet ladder --from 25 --hours 6  # what each purse size can run, and when to switch plans
@@ -356,6 +357,7 @@ data/parquet/markets|prices/...            derived, rebuilt from raw at any time
 data/items/poe1.json                       item names, categories, set recipes
 data/icons/                                item icons, cached on first view
 data/ninja.sqlite                          poe.ninja answers, cached; safe to delete
+data/fees/poe1.json, poe1.html.gz          Gold fee per item and the poedb page it was read from; safe to delete
 data/strategies/                           strategy code you imported with `strategy import`
 data/screen.json                           the screen check's rectangle, if you use it
 data/desk.sqlite                           your ledger, orders, sessions, recipe checks, watchlist, alerts, stash, snapshots, baskets — the only file worth backing up
@@ -388,6 +390,7 @@ vaalstreet/search.py    strategy search, judged walk-forward on later leagues
 vaalstreet/research.py  experiments with pass rules fixed in advance
 vaalstreet/report.py    league report pages, one per league day
 vaalstreet/ninja.py     poe.ninja client and card-reward prices
+vaalstreet/fees.py      Gold fee per item, fetched from poedb.tw once per league
 vaalstreet/rehearsal.py replaying a past league hour by hour, with its own practice ledger
 ```
 
@@ -403,5 +406,6 @@ The code is released under the [MIT License](LICENSE). That license does not cov
 - Exchange history comes from GGG's documented [Currency Exchange API](https://www.pathofexile.com/developer/docs/reference).
 - Item metadata comes from the community [RePoE](https://repoe-fork.github.io/) export of the game's data files.
 - Prices for card rewards the exchange does not trade come from [poe.ninja](https://poe.ninja)'s public economy API ([reference](https://poe.ninja/docs/api)), shown with the credit "prices from poe.ninja". The desk sends poe.ninja only the league and the price list it wants, with this project's User-Agent; poe.ninja is not affiliated with this project.
+- The Gold each item costs on the exchange comes from [poedb.tw](https://poedb.tw/us/Currency_Exchange)'s Currency Exchange page, shown with the credit "Gold fees from poedb.tw". The desk asks for that one page once per league, with this project's User-Agent; poedb is not affiliated with this project.
 - Geist, Geist Mono and Cinzel are distributed under the font licenses in `vaalstreet/web/fonts/`.
 - The desk's frames, buttons and logo are drawn in CSS and SVG for this project. They take after the game's look but copy none of its art.

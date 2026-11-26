@@ -154,6 +154,14 @@ function ninjaLine() {
   const what = state.practice ? 'not used in practice (its prices are today’s)' : !n.on ? 'off' : n.last_run ? `${n.from_cache ? 'last fetched' : 'fetched'} ${ago(n.last_run)}${n.errors?.length ? ' <span class="gold" title="' + esc(n.errors.join('; ')) + '">(last try failed)</span>' : ''}` : 'on, not fetched yet';
   return `<span title="Prices for card rewards the exchange does not trade">poe.ninja: ${what}</span><br>`;
 }
+// The Gold fee table, as quietly: how many items it lists and when it was fetched.
+function feesLine() {
+  const f = state.status?.fees;
+  if (!f) return '';
+  const failed = f.error ? ` <span class="gold" title="${esc(f.error)}">(last try failed)</span>` : '';
+  const what = f.items ? `${f.items.toLocaleString()} items, fetched ${ago(f.fetched)}${f.stale ? ' (from an earlier league)' : ''}${failed}` : `not fetched yet${failed}`;
+  return `<span title="What each item costs in Gold to order on the exchange. Fetched once per league.">Gold fees (poedb.tw): ${what}</span><br>`;
+}
 // The menu can fold into a rail of icons, which leaves the tables more room. Labels and the footer
 // stay a hover away, and the choice is remembered on this machine.
 const railOn = () => { try { return localStorage.navRail === '1'; } catch { return false; } };
@@ -166,7 +174,7 @@ function renderNav(page) {
     <span class="spacer"></span>
     <button class="railbtn" id="railBtn" title="${rail ? 'Show the menu labels' : 'Fold the menu into icons'}" aria-label="${rail ? 'Show the menu labels' : 'Fold the menu into icons'}">${FOLD}<span class="lb">Fold the menu</span></button>
     <div class="footwrap"><button class="info" aria-label="Shortcuts and credits" title="Shortcuts and credits">${INFO}</button>
-    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}Not affiliated with Grinding Gear Games.</div></div>`;
+    <div class="foot"><kbd>/</kbd> search &nbsp; <kbd>H</kbd> hideout<br><kbd>C</kbd> check an offer<br><kbd>?</kbd> <a href="#" id="tourLink">tour of the desk</a><br>${ninjaLine()}${feesLine()}Not affiliated with Grinding Gear Games.</div></div>`;
   $('#tourLink').onclick = e => { e.preventDefault(); openTour(); };
   $('#railBtn').onclick = () => { try { localStorage.navRail = rail ? '0' : '1'; } catch { /* stays as it is */ } renderNav(page); };
 }
