@@ -46,6 +46,7 @@ def companion(url: str, root: Path, gate: screen.PressGate, options: dict,
         except RuntimeError as err:
             if not told:
                 say(f"The screen check starts once the desk has market data ({err})")
+                screen.tell_state(client, "waiting", "It starts once the desk has market data.")
                 told = True
             gate.stopped.wait(pause)
     else:
@@ -54,8 +55,10 @@ def companion(url: str, root: Path, gate: screen.PressGate, options: dict,
         screen.run(root, url, gate=gate, **options)
     except SystemExit as err:  # the optional libraries are missing
         say(f"The screen check is off. {err}")
+        screen.tell_state(client, "off", str(err))
     except Exception as err:
         say(f"The screen check is off: {type(err).__name__}: {err}")
+        screen.tell_state(client, "off", f"{type(err).__name__}: {err}")
 
 
 def _watch(stream, done: threading.Event) -> None:

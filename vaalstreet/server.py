@@ -34,6 +34,8 @@ HOUR = 3600
 REALM = "poe1"
 PASTE_LIMIT = 200_000  # characters in a pasted stash list: thousands of lines, and far under the request limit
 READINGS_KEPT = 10  # the screen check's last readings, kept in memory only
+SCREEN_STATES = ("waiting", "listening", "reading", "off")  # what the screen check says of itself
+SCREEN_QUIET_SECONDS = 90  # it says so every 20 seconds; silent for this long, it is taken to be gone
 
 
 class ApiError(Exception):
@@ -71,6 +73,7 @@ class App:
         # only: recognised text is not worth keeping, and it is gone when the desk restarts.
         self._readings: collections.deque[dict] = collections.deque(maxlen=READINGS_KEPT)
         self._reading_id = 0
+        self._screen_state: dict | None = None  # what the screen check last said of itself; memory only
         if sync:
             threading.Thread(target=self._sync_loop, name="vaal-sync", daemon=True).start()
 
@@ -488,18 +491,49 @@ class App:
             self._readings.append(row)
         return {"ok": True, "id": row["id"]}
 
+    def api_screen_state(self, body: dict) -> dict:
+        """Keep what the screen check says of itself, in memory, for the page.
+
+        A press used to show nothing until its reading was done, and a screen check that had turned
+        itself off said so only in a console the Windows app does not have. So the companion says
+        when it waits for market data, listens, reads, or is off and why, and repeats it every few
+        seconds. Only these words, its two keys and one clipped sentence are kept: nothing it read.
+        """
+        state = body.get("state")
+        if state not in SCREEN_STATES:
+            raise ApiError(f"Bad request: state must be one of {', '.join(SCREEN_STATES)}.")
+        now = int(time.time())
+        told = {"state": state, "message": _clip(body.get("message"), 300), "hotkey": _clip(body.get("hotkey"), 60),
+                "record_hotkey": _clip(body.get("record_hotkey"), 60), "stacks": body.get("stacks") is True}
+        with self._lock:
+            old = self._screen_state
+            same = old is not None and all(old[k] == v for k, v in told.items())
+            # `t` is when it came to this state, `seen` when it last said anything.
+            self._screen_state = told | {"t": old["t"] if same else now, "seen": now}
+        return {"ok": True}
+
+    def screen_state(self) -> dict | None:
+        """The screen check's own state for the page; `quiet` when it has stopped saying anything."""
+        with self._lock:
+            state = dict(self._screen_state) if self._screen_state else None
+        if state:
+            state["quiet"] = state["state"] != "off" and time.time() - state["seen"] > SCREEN_QUIET_SECONDS
+        return state
+
     def api_readings(self, q: dict) -> dict:
-        """The screen check's last readings, newest first, and your corrections.
+        """The screen check's last readings, newest first, your corrections, and its own state.
 
         Each understood screen reading carries `order`: the "Posted this order…" form's prefill
         (`posted_prefill`). With `since` equal to the newest reading's id the answer is only that
         nothing changed, so the page can look often without the desk working out plans each time.
+        The state (`screen`, see `api_screen_state`) comes with every answer: it changes without a
+        new reading.
         """
         with self._lock:
             rows = [dict(r) for r in reversed(self._readings)]
         last = rows[0]["id"] if rows else 0
         if q.get("since") not in (None, "") and str(q["since"]) == str(last):
-            return {"readings": None, "last": last}
+            return {"readings": None, "last": last, "screen": self.screen_state()}
         plans: dict[str | None, dict] = {}
         for row in rows:
             row["order"] = None
@@ -515,7 +549,8 @@ class App:
             reading = row["reading"]
             row["order"] = posted_prefill(reading, item, desk._name(item),
                                           plans[desk.league].get((item, reading["side"], reading["market"])))
-        return {"readings": rows, "last": last, "corrections": self.ledger.screen_corrections()}
+        return {"readings": rows, "last": last, "corrections": self.ledger.screen_corrections(),
+                "screen": self.screen_state()}
 
     def api_screen_correction(self, body: dict) -> dict:
         """Save "when the screen check reads this text, it means that item", or delete one by its key."""
@@ -1733,6 +1768,8 @@ def make_handler(app: App):
                 self._json(app.api_event(body))
             elif url.path == "/api/reading":
                 self._json(app.api_reading(body))
+            elif url.path == "/api/screen_state":
+                self._json(app.api_screen_state(body))
             elif url.path == "/api/screen_correction":
                 self._json(app.api_screen_correction(body))
             elif url.path == "/api/stash":
