@@ -249,7 +249,7 @@ def _fills(args: argparse.Namespace) -> None:
 
 
 def _ladder(args: argparse.Namespace) -> None:
-    from vaalstreet import ladder
+    from vaalstreet import fees, ladder
     from vaalstreet.desk import Desk
     from vaalstreet.ledger import Ledger
 
@@ -257,7 +257,7 @@ def _ladder(args: argparse.Namespace) -> None:
     desk = Desk.build(con, _league(con, args))
     ledger = Ledger(data_dir())  # the same Gold fees, recipes and vendor prices the desk in the browser uses
     out = ladder.plan(desk, args.start, hours=args.hours, target=args.target, share=args.share,
-                      costs=ledger.costs(desk.league), fixed=ledger.fixed_conversions())
+                      costs=ledger.costs(desk.league, fees.by_item(data_dir())), fixed=ledger.fixed_conversions())
     print(f"{desk.league} - Divine {desk.bridge:.1f}c\n")
     rows = []
     for r in out["ladder"]:

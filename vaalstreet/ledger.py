@@ -25,8 +25,9 @@ missing and new columns are added if missing (`_migrate`). Nothing is rewritten 
 
 Gold is recorded where it was paid and nowhere else. A trade typed in by hand may carry
 the Gold it cost; an order carries the Gold paid to post it, and the trade its fill creates
-carries none, so no Gold is ever counted twice. GGG does not publish the fee schedule, so
-the ledger only learns fees from what you recorded (`gold_fees`) and says nothing otherwise.
+carries none, so no Gold is ever counted twice. What you recorded teaches the desk fees
+(`gold_fees`), and those win over the fee table fetched from poedb (`fees.py`): an order pays
+for the thing it wants, so a buy teaches the item's fee and a sell its market currency's.
 
 The stash is what you say you hold, typed in by hand: it is separate from the positions the
 trades build, so you can value loot you never recorded buying.
@@ -61,8 +62,8 @@ from typing import Callable
 
 from vaalstreet.paths import ledger_file
 
-# Your own assumptions, kept in the ledger. No fee is assumed until you enter one: GGG does not
-# publish the schedule. Minutes per order is a rough guess at your clicking speed.
+# Your own assumptions, kept in the ledger. No fee is assumed until you enter one; it is used only
+# for an item neither your records nor the fee table know. Minutes per order is a rough guess at your clicking speed.
 # `ninja_prices`: 1 lets the desk fetch prices from poe.ninja for card rewards the exchange does
 # not trade (uniques, gems, base types); 0 turns that off. On unless you turn it off.
 # `auto_snapshots`: 1 lets the desk take a picture of what you hold after every new hour (see `wealth.py`).
@@ -411,25 +412,38 @@ class Ledger:
     def settings(self) -> dict:
         return {key: self.get(key, default) for key, default in SETTINGS.items()}
 
-    def costs(self, league: str):
-        """Gold fees learned from your records, your assumed fee and minutes per order, as `desk.Costs`.
+    def costs(self, league: str, table: dict[str, float] | None = None):
+        """Gold fees learned from your records, the fee `table` (item id -> Gold, from `fees.by_item`),
+        your assumed fee and minutes per order, as `desk.Costs`.
         Read fresh on every call, so a newly recorded trade counts at once."""
         from vaalstreet.desk import Costs  # desk pulls in duckdb and numpy; the ledger stays light without it
 
         settings = self.settings()
-        return Costs(self.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"])
+        return Costs(self.gold_fees(league), settings["assumed_gold_fee"], settings["minutes_per_order"], table or {})
 
     def gold_fees(self, league: str) -> dict[str, dict]:
-        """item -> {gold_per_unit, trades}: the median Gold paid per unit over your own records.
+        """thing wanted -> {gold_per_unit, trades}: the median Gold paid per unit over your own records.
 
-        Both trades and orders count, each once (see the module docstring). Items you never
-        recorded Gold for have no entry: the fee schedule is not published, and we do not guess it.
+        An order pays for what it wants (`desk.Costs`). A buy wants the item, so its Gold over its
+        units is the item's fee. A sell order wants its market's currency, so its Gold over the Chaos
+        or Divines it asks for is that currency's fee, filed under the Chaos Orb or the Divine Orb.
+        A sale typed in by hand does not say which market it was in, so it teaches nothing.
+        Both trades and orders count, each once (see the module docstring).
         """
+        from vaalstreet.ingest import ANCHORS  # the ids of the Chaos Orb and the Divine Orb
+
+        chaos, divine = ANCHORS["poe1"]
         samples: dict[str, list[float]] = {}
-        for row in self._all("SELECT item, gold, units FROM trades WHERE league = ? AND gold IS NOT NULL "
-                             "UNION ALL SELECT item, gold, units FROM orders WHERE league = ? AND gold IS NOT NULL",
-                             (league, league)):
+        for row in self._all("SELECT item, gold, units FROM trades WHERE league = ? AND gold IS NOT NULL AND side = 'buy'",
+                             (league,)):
             samples.setdefault(row["item"], []).append(row["gold"] / row["units"])
+        for row in self._all("SELECT item, side, market, currency_units, item_units, gold, units FROM orders "
+                             "WHERE league = ? AND gold IS NOT NULL", (league,)):
+            if row["side"] == "buy":
+                samples.setdefault(row["item"], []).append(row["gold"] / row["units"])
+            else:
+                asked = row["units"] * row["currency_units"] / row["item_units"]
+                samples.setdefault(divine if row["market"] == "divine" else chaos, []).append(row["gold"] / asked)
         return {item: {"gold_per_unit": statistics.median(values), "trades": len(values)}
                 for item, values in samples.items()}
 
@@ -538,7 +552,7 @@ class Ledger:
         self._run("DELETE FROM orders WHERE id = ?", (int(order_id),))
 
     def advise_orders(self, league: str, prices: dict[str, dict], plans: dict[str, dict],
-                      bridge: float) -> list[dict]:
+                      bridge: float, costs=None) -> list[dict]:
         """Each open, part-filled or filled order with advice: keep, re-price, cancel or collect.
 
         `prices` is item -> {"fair": combined fair value, "chaos": Chaos-market price, "divine":
@@ -564,7 +578,7 @@ class Ledger:
         re-post would cost. An order on the wrong side of its market is cancelled whatever the Gold:
         every fill would lose money, and the Gold it cost is gone either way.
         """
-        costs = self.costs(league)
+        costs = costs or self.costs(league)
         out = []
         for order in self.orders(league):
             price = order["currency_units"] / order["item_units"] * (bridge if order["market"] == "divine" else 1.0)
@@ -586,9 +600,10 @@ class Ledger:
                 continue
             buying = order["side"] == "buy"
             past = price / market - 1 if buying else 1 - price / market
-            fee, _ = costs.fee(order["item"])
             open_units = max(float(order["units"]) - float(order["filled"] or 0), 0.0)
-            repost = None if fee is None else fee * open_units
+            # A re-post is a new order: it pays again for what it wants (the item, or the currency of a sale).
+            repost = costs.posted(order["item"], order["side"], order["market"], open_units,
+                                  order["currency_units"] / order["item_units"])
             if past > WRONG_SIDE_TOLERANCE and not near_plan:
                 row["advice"] = "cancel"
                 row["reason"] = (f"You are {'paying' if buying else 'asking'} {abs(past):.0%} "

@@ -274,8 +274,12 @@ def test_api_gold_fields_settings_and_session_plan(flat_server):
     assert call(f"{server}/api/trade", {"item": ITEM, "side": "buy", "units": 10, "price": 9, "gold": 50})[0] == 200
     flips = call(f"{server}/api/flips?min_margin=0.01&bankroll=5000&gold_budget=1000000")[1]
     mine = next(p for p in flips["flips"] if p["id"] == ITEM)
-    assert mine["gold"] == 10 and mine["gold_sources"][0]["source"] == "your trades", "a learned fee beats the assumption"
-    assert all(p["gold"] == 6 for p in flips["flips"] if p["id"] != ITEM) and mine["minutes"] == 4
+    # The buy order wants the item: 5 Gold from your trade, 3 where you only assume. The sell order
+    # wants Chaos or Divines, which nothing but your assumption prices here: 3 for each one asked for.
+    assert mine["gold_buy"] == 5 and mine["gold_sources"][0]["source"] == "your trades", "a learned fee beats the assumption"
+    asked = mine["sell_order"]["currency_units"] / mine["sell_order"]["item_units"]
+    assert mine["gold"] == pytest.approx(5 + 3 * asked, rel=1e-3) and mine["minutes"] == 4
+    assert all(p["gold_buy"] == 3 for p in flips["flips"] if p["id"] != ITEM)
     session = flips["session"]
     assert session["gold_budget"] == 1000000 and session["gold_unknown"] == []
     assert session["flips"] and all(p["chaos_per_1000_gold"] for p in session["flips"])

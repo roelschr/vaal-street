@@ -140,15 +140,26 @@ def _memo(method):
 class Costs:
     """What a plan costs besides Chaos: the Gold its orders take, and your own time.
 
-    Every order on the exchange costs Gold, and GGG does not publish the schedule. `fees` is
-    item id -> {"gold_per_unit", "trades"} as learned from your own records (`Ledger.gold_fees`);
-    `assumed` is a Gold-per-unit you entered for items with no record yet (`Ledger.costs` builds both from your ledger). A learned fee always
-    wins. With neither, the fee is unknown and every Gold figure built from it is None - the plan
-    stays on the board, we just cannot price its Gold. We never guess a schedule.
+    The rule. The exchange window has two sides, "I want" and "I have". An order costs
+    (how many you want) x (the fee of the thing you want), and nothing for what you give. The fee
+    is a fixed number per item, whatever its price: 35 Gold for a Stacked Deck, 15 for a Chaos Orb,
+    250 for a Divine Orb. So:
+    - buying 13 Stacked Decks with Chaos costs 13 x 35 = 455 Gold (seen in game, as was one
+      Eldritch Exalted Orb for 525);
+    - selling an item for Chaos is an order that wants Chaos: 15 Gold for every Chaos it asks for.
+      Selling for Divines costs 250 for every Divine asked for, which per Chaos of proceeds is far
+      less. This is the rule applied: both orders seen in game were buys. It is assumed until a
+      sell order's Gold is recorded (the ledger then learns the currency's fee from it);
+    - a swap of one item for another costs the fee of the item received. Assumed in the same way.
+    Nobody published this rule; it is read off those two orders and what players report. One function,
+    `order`, holds it, so a correction lands in one place.
 
-    Gold is charged per unit of the item an order buys or sells, on each order. The ledger records
-    no Gold for item-for-item swaps, so for round trips we *assume* each swap costs the fee of the
-    item given up, the same as selling it would.
+    The fee of a thing comes, in this order, from: your own records (`fees`: item id ->
+    {"gold_per_unit", "trades"}, see `Ledger.gold_fees`), the fee table fetched from poedb
+    (`table`: item id -> Gold, see `fees.py`), the fee you entered as your assumption (`assumed`),
+    and otherwise it is unknown: every Gold figure built from it is None and the plan stays on the
+    board. Gold is not rounded: lifeforce costs an eighth of one Gold each, and how the game rounds
+    an order's total is not known.
 
     Time: every order is `minutes_per_order` of your time (an assumption you set; 1 by default).
     A plan is run as one batch of orders per hour of market time, sized to that hour's expected
@@ -158,15 +169,42 @@ class Costs:
     fees: dict[str, dict] = field(default_factory=dict)
     assumed: float | None = None
     minutes_per_order: float = 1.0
+    table: dict[str, float] = field(default_factory=dict)
+    ref: str = ANCHORS["poe1"][0]  # Chaos: what a Chaos-market sell order wants
+    bridge: str = ANCHORS["poe1"][1]  # Divine: what a Divine-market sell order wants
 
     def fee(self, item_id: str) -> tuple[float | None, dict]:
-        """(Gold per unit or None, where it came from)."""
+        """(Gold per unit wanted or None, where it came from)."""
         learned = self.fees.get(item_id)
         if learned and learned.get("gold_per_unit") is not None:
             return float(learned["gold_per_unit"]), {"source": "your trades", "trades": int(learned.get("trades", 0))}
+        if item_id in self.table:
+            return float(self.table[item_id]), {"source": "fee table"}
         if self.assumed is not None:
             return float(self.assumed), {"source": "your assumption"}
         return None, {"source": "unknown"}
+
+    def order(self, want_id: str, units: float) -> tuple[float | None, dict]:
+        """(Gold to post an order that wants `units` of `want_id`, where the fee came from). The rule."""
+        fee, source = self.fee(want_id)
+        return (None if fee is None else units * fee), {"id": want_id, **source}
+
+    def posted(self, item_id: str, side: str, market: str, units: float, currency_per_item: float) -> float | None:
+        """Gold to post an order for `units` of an item as the ledger records one: a buy wants the
+        item, a sell wants its market's currency."""
+        if side == "buy":
+            return self.order(item_id, units)[0]
+        return self.order(self.bridge if market == "divine" else self.ref, units * currency_per_item)[0]
+
+    @staticmethod
+    def _sum(parts: list[tuple[float | None, dict]]) -> tuple[float | None, list[dict]]:
+        """Total Gold (None if any part is unknown) and each fee's source, once per item."""
+        gold = None if any(g is None for g, _ in parts) else sum(g for g, _ in parts)
+        sources: list[dict] = []
+        for _, src in parts:
+            if src not in sources:
+                sources.append(src)
+        return gold, sources
 
     def _fields(self, gold: float | None, profit: float | None, passes_per_hour: float | None,
                 orders: int, profit_per_hour: float | None, sources: list[dict]) -> dict:
@@ -185,64 +223,66 @@ class Costs:
         }
 
     def flip(self, plan: dict) -> dict:
-        """Gold and time for a flip: one pass buys one unit and sells it; two orders a batch."""
-        fee, source = self.fee(plan["id"])
+        """Gold and time for a flip: one pass buys one unit and sells it; two orders a batch.
+
+        The buy order wants the item: its fee, once. The sell order wants its market's currency: the
+        Chaos or Divines one item is sold for, at the order's own whole-number ratio, times that
+        currency's fee. `gold_buy` and `gold_sell` keep the two apart.
+        """
+        buy = self.order(plan["id"], 1.0)
+        asked = plan.get("sell_order") or {}
+        if asked.get("item_units") and asked.get("currency_units"):
+            per_item = asked["currency_units"] / asked["item_units"]
+            sell = self.order(self.bridge if kind_currency(plan, "sell") else self.ref, per_item)
+        else:
+            sell = (None, {"id": self.ref, "source": "unknown"})
+        gold, sources = self._sum([buy, sell])
         edge = (plan["sell"] or 0) - (plan["buy"] or 0)
         # Units flipped per hour, from the same (possibly bankroll-capped) profit the plan shows.
         units = (plan["profit_per_hour"] or 0) / edge if edge > 0 else plan.get("units_per_hour")
-        return plan | self._fields(2 * fee if fee is not None else None, edge, units, 2,
-                                   plan["profit_per_hour"], [{"id": plan["id"], **source}])
+        return (plan | self._fields(gold, edge, units, 2, plan["profit_per_hour"], sources)
+                | {"gold_buy": _num(buy[0], 4), "gold_sell": _num(sell[0], 4)})
 
     def conversion(self, row: dict, chaos_id: str) -> dict:
-        """Buy `need` inputs, sell `gives` results; Chaos needs no order on either side.
+        """Buy `need` inputs, sell `gives` results for Chaos; Chaos itself needs no order on either side.
 
-        A recipe you entered may take several inputs (`inputs`): each is bought with its own order.
+        Each input is bought with its own order, which wants that input. The sale wants Chaos: the
+        Chaos the results sell for, times the Chaos fee. A recipe you entered may take several inputs
+        (`inputs`).
         """
         inputs = [(x["id"], x["units"]) for x in row["inputs"]] if row.get("inputs") else [(row["id"], row["need"])]
-        sources, orders, gold = [], 0, 0.0
-        for item_id, units in inputs:
-            if item_id == chaos_id:
-                continue
-            fee_in, src_in = self.fee(item_id)
-            sources.append({"id": item_id, **src_in})
-            orders += 1
-            gold = None if gold is None or fee_in is None else gold + units * fee_in
+        parts = [self.order(item_id, units) for item_id, units in inputs if item_id != chaos_id]
         # A reward with no exchange id (priced from stash listings) is sold outside the exchange.
         if row["reward_id"] not in (chaos_id, None):
-            fee_out, src_out = self.fee(row["reward_id"])
-            sources.append({"id": row["reward_id"], **src_out})
-            orders += 1
-            gold = None if gold is None or fee_out is None else gold + row["gives"] * fee_out
+            parts.append(self.order(chaos_id, row["proceeds"] or 0))
+        gold, sources = self._sum(parts)
         profit = (row["proceeds"] or 0) - (row["cost"] or 0)
-        return row | self._fields(gold, profit, row["sets_per_hour"], orders, row["profit_per_hour"], sources)
+        return row | self._fields(gold, profit, row["sets_per_hour"], len(parts), row["profit_per_hour"], sources)
 
     def loop(self, row: dict, chaos_id: str | None = None) -> dict:
-        """Per unit of the first item: buy it, give each item along the path, sell the last.
+        """Per unit of the first item: buy it, swap along the path, sell the last item for Chaos.
 
-        A Divine stop is an order like any other. A swap with a vendor (a price you entered) is not an
-        exchange order and costs no Gold, and Chaos handed to a vendor never had to be bought.
+        Buying the first item wants it. Each swap wants the next item on the path, in the amount the
+        swap brings (a Divine stop is an order like any other). The sale wants Chaos. A swap with a
+        vendor (a price you entered) is not an exchange order and costs no Gold, and Chaos handed to
+        a vendor never had to be bought.
         """
-        units, gold, sources, orders = 1.0, 0.0, [], 0
+        chaos_id = chaos_id or self.ref
+        units, parts = 1.0, []
         via = row.get("via") or ["swap"] * len(row["rates"])
-        for k, step in enumerate(row["path"]):
-            last = k == len(row["path"]) - 1
-            bought = k == 0 and step["id"] != chaos_id  # the first item is bought on the exchange
-            given = last or via[k] != "vendor"  # given up in a swap order, or sold at the end
-            charged = (1.0 if bought else 0.0) + (units if given else 0.0)
-            orders += int(bought) + int(given)
-            if charged:
-                fee, source = self.fee(step["id"])
-                sources.append({"id": step["id"], **source})
-                if fee is None:
-                    gold = None
-                elif gold is not None:
-                    gold += charged * fee
-            if not last:
-                units *= row["rates"][k] or 0
+        first = row["path"][0]["id"]
+        if first != chaos_id:
+            parts.append(self.order(first, 1.0))  # the first item is bought on the exchange
+        for k, rate in enumerate(row["rates"]):
+            units *= rate or 0
+            if via[k] != "vendor":
+                parts.append(self.order(row["path"][k + 1]["id"], units))
         profit = (row["buy"] or 0) * (row["edge"] or 0)  # per unit of the first item
+        parts.append(self.order(chaos_id, (row["buy"] or 0) * (1 + (row["edge"] or 0))))  # the last item, sold
+        gold, sources = self._sum(parts)
         per_day = row.get("profit_per_day")
         passes = per_day / profit / DAY if profit > 0 and per_day is not None else None
-        out = self._fields(gold, profit, passes, orders,
+        out = self._fields(gold, profit, passes, len(parts),
                            per_day / DAY if per_day is not None else None, sources)
         out["gold_per_day"] = _num(out["gold_per_hour"] * DAY, 4) if out["gold_per_hour"] is not None else None
         return row | out
