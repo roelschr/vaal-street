@@ -66,6 +66,7 @@ CHAOS, DIVINE = "Chaos Orb", "Divine Orb"
 DEFAULT_HOTKEY = "<ctrl>+<alt>+<f9>"
 DEFAULT_RECORD_HOTKEY = "<ctrl>+<alt>+<f10>"
 RECORD_AGAIN_SECONDS = 60.0  # the same order read again this soon is the same press repeated, not a second order
+STATE_SECONDS = 20.0  # how often the companion tells the desk it is still there
 DEFAULT_DESK = "http://localhost:3000"
 SETTINGS_FILE = "screen.json"
 # A name is accepted only if it is this close to a known item, and clearly closer than the next
@@ -447,6 +448,10 @@ class DeskClient:
                                          "market": reading.market, "item_units": items // common,
                                          "currency_units": money // common, "units": items, "gold": reading.gold})
 
+    def state(self, state: str, message: str | None = None, **keys) -> dict:
+        """Tell the desk what the screen check is doing: waiting, listening, reading, or off and why."""
+        return self._call("/api/screen_state", {"state": state, "message": message, **keys})
+
     def reading(self, report: dict) -> dict:
         """Tell the desk what one press read (`reading_report`); it keeps the last few in memory."""
         return self._call("/api/reading", report)
@@ -472,6 +477,24 @@ def tell_desk(desk, report: dict) -> bool:
     try:
         send(report)
     except RuntimeError:
+        return False
+    return True
+
+
+def tell_state(desk, state: str, message: str | None = None, **keys) -> bool:
+    """Tell the desk the screen check's own state, for the page; True if it took it.
+
+    The page is the only place the Windows app can show it: there is no console there. Like
+    `tell_desk`, a desk that cannot take it is not told, and nothing else changes. That covers any
+    failure, a desk that answers too late or drops the connection included: this is only a notice,
+    and it must never end the thread that repeats it or stand in for a press's own error.
+    """
+    send = getattr(desk, "state", None)
+    if send is None:
+        return False
+    try:
+        send(state, message, **keys)
+    except Exception:
         return False
     return True
 
@@ -519,8 +542,13 @@ def handle_press(capture: Callable[[], object], recognise: Callable[[object], li
     player can see a misread on the page; the screenshot itself is never sent. With `record` (the
     record key) the order read is also written to the Ledger (`record_order`).
     """
-    image = capture()
-    lines = recognise(image)
+    try:
+        image = capture()
+        lines = recognise(image)
+    except Exception as err:
+        # Before this the page showed nothing at all for such a press, and the app has no console.
+        tell_desk(desk, reading_report([], None, f"The screen could not be read ({type(err).__name__}: {err}).", ""))
+        raise
     del image
     league, names = desk.names()
     try:
@@ -584,6 +612,10 @@ class PressGate:
         self._job = job
         self._pressed.set()
         return True
+
+    def busy(self) -> bool:
+        """True while a press is being worked on."""
+        return self._busy.locked()
 
     def stop(self) -> None:
         self.stopped.set()
@@ -873,17 +905,32 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     print(f"Each press of {hotkey} takes one screenshot of {where}, reads its text, and checks the offer.")
     print("The screenshot stays in memory and is dropped after the check. Nothing is sent to the game.")
     gate = gate or PressGate()
+    record_hotkey = record_hotkey or settings.get("record_hotkey") or DEFAULT_RECORD_HOTKEY
+    keys = {"hotkey": hotkey, "record_hotkey": record_hotkey, "stacks": bool(stacks or stash)}
+
+    def capture_then_tell():
+        # The screenshot comes first, so it is of the moment of the press whatever the desk is busy
+        # with. Then the desk hears of the press, before the slow part: the first reading of a whole
+        # screen takes several seconds, and until now the page showed nothing in that time.
+        image = capture()
+        tell_state(desk, "reading", **keys)
+        return image
+
+    def read(record: bool) -> None:
+        try:
+            handle_press(capture_then_tell, recognise, desk, record=record, recent=recent if record else None)
+        finally:
+            tell_state(desk, "listening", **keys)
 
     def work():
         print("\nReading the screen…")
-        handle_press(capture, recognise, desk)
+        read(False)
 
-    record_hotkey = record_hotkey or settings.get("record_hotkey") or DEFAULT_RECORD_HOTKEY
     recent: dict = {}
 
     def work_and_record():
         print("\nReading the screen to record the order…")
-        handle_press(capture, recognise, desk, record=True, recent=recent)
+        read(True)
 
     hotkeys = {hotkey: gate.press, record_hotkey: lambda: gate.press(work_and_record)}
     print(f"Each press of {record_hotkey} does the same and also records the order shown, with the amounts you "
@@ -917,6 +964,18 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     print("Press Ctrl+C here to stop.")
     listener = keyboard.GlobalHotKeys(hotkeys)
     listener.start()
+    tell_state(desk, "listening", **keys)
+
+    def still_here() -> None:
+        # Said again every few seconds, so the page can tell a companion that is gone from one that
+        # waits. A listener that has ended hears no key; that is said instead of "listening".
+        while not gate.stopped.wait(STATE_SECONDS):
+            if not listener.is_alive():
+                tell_state(desk, "off", "Its key listener stopped. Start the screen check again; in the Windows app, quit the app and open it again.", **keys)
+            elif not gate.busy():
+                tell_state(desk, "listening", **keys)
+
+    threading.Thread(target=still_here, name="vaal-screen-state", daemon=True).start()
     try:
         gate.serve(work)
     except KeyboardInterrupt:
@@ -924,3 +983,4 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
     finally:
         gate.stop()
         listener.stop()
+        tell_state(desk, "off", "It was stopped.", **keys)

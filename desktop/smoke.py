@@ -10,6 +10,7 @@ check to come up, which proves its libraries and their model files are inside th
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
@@ -67,6 +68,12 @@ def main() -> None:
             assert "Test Orb" in names, "the desk does not answer from the archive"
             if want_screen:
                 wait_for("Press Ctrl+C here to stop.", 180, bad="screen check is off")
+                # The page must hear that it listens: in the app this line is all a player sees of it.
+                end, state = time.monotonic() + 30, None
+                while time.monotonic() < end and (state or {}).get("state") != "listening":
+                    state = json.loads(urllib.request.urlopen(url + "/api/readings", timeout=30).read())["screen"]
+                    time.sleep(0.5)
+                assert (state or {}).get("state") == "listening", f"the screen check told the desk {state}"
             child.stdin.close()
             code = child.wait(timeout=30)
             assert code == 0, f"exit code {code} after its input closed"

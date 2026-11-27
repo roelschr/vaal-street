@@ -2309,8 +2309,23 @@ function ringControls() {
 // this, it means that item", saved in your ledger and used by the companion from its next press. An
 // understood reading can open the "posted" form (askPosted) with what the desk worked out: your own
 // amounts, the flip plan's order or the market ratio, in that order (`order` from the server).
+// A key as the companion names it, in the words on a keyboard: "<ctrl>+<alt>+<f9>" is Ctrl+Alt+F9.
+const keyWords = k => String(k || '').split('+').map(x => x.replace(/[<>]/g, '')).filter(Boolean).map(x => x.length > 1 ? x[0].toUpperCase() + x.slice(1) : x.toUpperCase()).join('+');
+// What the screen check says of itself (`screen` from the server): the one place the Windows app can
+// show that a press was heard, that a reading is on its way, or why there will be none.
+function screenStateLine(sc) {
+  const time = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (!sc) return ['muted', 'The screen check has not started yet. In the Windows app it starts with the desk, once the first market data is in.'];
+  if (sc.quiet) return ['down', `The screen check has not been heard from since ${time(sc.seen)}. It has probably stopped. Start it again; in the Windows app, quit the app and open it again.`];
+  if (sc.state === 'off') return ['down', `The screen check is off. ${sc.message || ''}`];
+  if (sc.state === 'waiting') return ['muted', `The screen check is not listening yet. ${sc.message || ''}`];
+  if (sc.state === 'reading') return ['gold', 'Key heard: reading the screen… The first reading after a start takes several seconds, later ones a second or two.'];
+  return ['gold', `Listening since ${time(sc.t)}. ${keyWords(sc.hotkey)} reads the offer on screen; ${keyWords(sc.record_hotkey)} also records it.${sc.stacks ? ' Ctrl+C in game values the stack under the cursor.' : ''}`];
+}
 function readingsPanel(names, cls = '', compact = false) {
   const p = panel('What the screen check read', cls, '<button type="button" class="btn ghost small" data-rr title="Look for new readings">Refresh</button>');
+  const status = document.createElement('div'); status.className = 'body small'; status.style.paddingBottom = '0'; p.append(status);
+  const showState = sc => { const [tone, text] = screenStateLine(sc); status.innerHTML = `<span class="${tone}">●</span> <span class="${tone === 'down' ? 'down' : 'muted'}">${esc(text)}</span>`; };
   const body = document.createElement('div'); body.className = 'body small readings'; p.append(body);
   const known = [...new Set(['Chaos Orb', 'Divine Orb', ...names])];
   let last = null, data = null;
@@ -2334,12 +2349,17 @@ function readingsPanel(names, cls = '', compact = false) {
       <div class="muted" style="margin-top:8px">${d.corrections.length ? 'Names you taught it:' : 'No names taught yet.'} <span class="dim">Kept in your ledger; the screen check uses them from its next press.</span></div>
       ${d.corrections.map(c => `<div class="rdc">When it reads <code>${esc(c.text)}</code>, it means <b>${esc(c.item)}</b> <button type="button" class="btn ghost small" data-uncorrect="${esc(c.key)}" title="Delete this">✕</button></div>`).join('')}`}`;
   };
+  let asking = false;  // one look at a time: a slow answer must not pile up more of them
   const load = async force => {
-    if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
-    // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
-    const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
-    if (!d.readings || body.querySelector('form.teach')) return;  // a form opened while this was on its way
-    last = d.last; data = d; draw();
+    if (asking && !force) return;
+    asking = true;
+    try {
+      // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
+      const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
+      showState(d.screen);  // the state line stays true even while a correction is being typed
+      if (!d.readings || body.querySelector('form.teach')) return;  // never redraw under a correction being typed
+      last = d.last; data = d; draw();
+    } finally { asking = false; }
   };
   const teach = (id, text) => {
     body.querySelector('form.teach')?.remove();
@@ -2375,9 +2395,10 @@ function readingsPanel(names, cls = '', compact = false) {
     teach(r.id, line ? bare(r.lines[+line.dataset.line]) : (r.unmatched || ''));
   });
   load(true).catch(err => { body.innerHTML = `<div class="down">${esc(err.message)}</div>`; });
-  // A press posts a reading at any moment, and this window redraws only on a new hour; look every few
-  // seconds while the panel is on the page. The desk answers from memory.
-  const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => {}); }, 5000);
+  // A press posts a reading at any moment, and this window redraws only on a new hour; look every two
+  // seconds while the panel is on the page, so "key heard" shows while the press is still being read.
+  // The desk answers from memory.
+  const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => { status.innerHTML = '<span class="down">●</span> <span class="down">The desk does not answer, so this cannot say what the screen check is doing.</span>'; }); }, 2000);
   return p;
 }
 // A panel of the hideout window that closes to its header with a click, so the ones you do not need

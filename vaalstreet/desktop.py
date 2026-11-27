@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -38,15 +39,19 @@ def companion(url: str, root: Path, gate: screen.PressGate, options: dict,
     the screen check off and says why; the desk carries on without it.
     """
     client = screen.DeskClient(url)
-    told = False
+    told = None  # when the desk last heard that this waits
     while not gate.stopped.is_set():
         try:
             client.names()
             break
         except RuntimeError as err:
-            if not told:
+            if told is None:
                 say(f"The screen check starts once the desk has market data ({err})")
-                told = True
+            # Said again like every other state: a first download can take minutes, and a companion
+            # that says nothing for that long is taken to have stopped.
+            if told is None or time.monotonic() - told >= screen.STATE_SECONDS:
+                screen.tell_state(client, "waiting", "It starts once the desk has market data.")
+                told = time.monotonic()
             gate.stopped.wait(pause)
     else:
         return
@@ -54,8 +59,10 @@ def companion(url: str, root: Path, gate: screen.PressGate, options: dict,
         screen.run(root, url, gate=gate, **options)
     except SystemExit as err:  # the optional libraries are missing
         say(f"The screen check is off. {err}")
+        screen.tell_state(client, "off", str(err))
     except Exception as err:
         say(f"The screen check is off: {type(err).__name__}: {err}")
+        screen.tell_state(client, "off", f"{type(err).__name__}: {err}")
 
 
 def _watch(stream, done: threading.Event) -> None:
