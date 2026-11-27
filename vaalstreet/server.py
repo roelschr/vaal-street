@@ -1238,7 +1238,8 @@ class App:
             order["then_sell"] = sell_after.get((order["item"], order["market"])) if order["side"] == "buy" else None
             order.update(self._order_history(order, now))
             order.update(self._proposed_fill(desk, order, learned, share))
-        return orders
+        # Newest first: the order you just posted is the one you look for, and it must not sit under a long list.
+        return orders[::-1]
 
     @staticmethod
     def _proposed_fill(desk, order: dict, learned: dict, share: float) -> dict:
