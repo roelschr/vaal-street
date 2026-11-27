@@ -108,6 +108,37 @@ def test_a_desk_that_takes_no_state_changes_nothing():
     assert screen.tell_state(object(), "listening") is False
 
 
+def test_a_desk_that_answers_too_late_or_hangs_up_never_breaks_the_notice():
+    # urllib wraps only some failures; a timeout or a dropped connection comes through as it is. One
+    # of those used to end the thread that repeats the state, and the page then said "stopped".
+    class SlowDesk:
+        def __init__(self, error):
+            self.error = error
+
+        def state(self, state, message=None, **keys):
+            raise self.error
+
+    for error in (TimeoutError("timed out"), ConnectionResetError("hung up"), ValueError("not JSON")):
+        assert screen.tell_state(SlowDesk(error), "listening") is False
+
+
+def test_listening_since_is_not_reset_by_a_press(archive_root, monkeypatch):
+    app = server_module.App(archive_root, sync=False)
+    try:
+        now = [1000.0]
+        monkeypatch.setattr(server_module.time, "time", lambda: now[0])
+        app.api_screen_state({"state": "listening"})
+        for state in ("reading", "listening"):  # one press: it has listened all along
+            now[0] += 5
+            app.api_screen_state({"state": state})
+        assert app.screen_state()["t"] == 1000 and app.screen_state()["seen"] == 1010
+        now[0] += 5
+        app.api_screen_state({"state": "off", "message": "It was stopped."})
+        assert app.screen_state()["t"] == 1015
+    finally:
+        app._stop.set()
+
+
 class FakeKeys:
     """Stands in for pynput's keyboard module: keeps the keys it was given, hears nothing by itself."""
 
@@ -179,6 +210,22 @@ def test_the_companion_says_it_listens_reads_and_stops(server, tmp_path, monkeyp
     assert (state_of(server)["state"], state_of(server)["message"]) == ("off", "It was stopped.")
 
 
+def test_a_reading_that_fails_does_not_leave_the_page_on_reading(server, tmp_path, monkeypatch):
+    def recognise(image):
+        raise ValueError("the recognition broke")
+
+    keys, gate, worker = run_companion(server, tmp_path, monkeypatch, lambda: "image", recognise)
+    try:
+        keys.listener.hotkeys[screen.DEFAULT_HOTKEY]()
+        assert wait_for(lambda: call(f"{server}/api/readings")[1]["readings"])  # the press shows, with its reason
+        assert wait_for(lambda: state_of(server)["state"] == "listening")
+        keys.listener.hotkeys[screen.DEFAULT_HOTKEY]()  # and the next press is still heard
+        assert wait_for(lambda: len(call(f"{server}/api/readings")[1]["readings"]) == 2)
+    finally:
+        gate.stop()
+        worker.join(10)
+
+
 def test_a_key_listener_that_ended_is_reported_as_off(server, tmp_path, monkeypatch):
     keys, gate, worker = run_companion(server, tmp_path, monkeypatch, lambda: "image")
     try:
@@ -207,11 +254,17 @@ def test_missing_libraries_show_on_the_page_as_off(server, tmp_path, monkeypatch
 def test_waiting_for_market_data_shows_on_the_page(tmp_path, monkeypatch):
     desk = server_module.start(0, tmp_path, sync=False)  # an empty folder: no market data yet
     gate = screen.PressGate()
+    told, tell = [], screen.tell_state
+    monkeypatch.setattr(screen, "STATE_SECONDS", 0.05)
+    monkeypatch.setattr(screen, "tell_state", lambda desk, state, *a, **k: told.append(state) or tell(desk, state, *a, **k))
     worker = threading.Thread(target=desktop.companion, args=(desk.url, tmp_path, gate, {}, lambda _: None, 0.05))
     try:
         worker.start()
         assert wait_for(lambda: (state_of(desk.url) or {}).get("state") == "waiting")
         assert "market data" in state_of(desk.url)["message"]
+        # It says so again while it waits: a first download takes minutes, and a companion that has
+        # said nothing for longer than the quiet time is shown as stopped.
+        assert wait_for(lambda: len(told) >= 3)
     finally:
         gate.stop()
         worker.join(5)

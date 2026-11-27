@@ -2267,7 +2267,7 @@ const keyWords = k => String(k || '').split('+').map(x => x.replace(/[<>]/g, '')
 function screenStateLine(sc) {
   const time = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (!sc) return ['muted', 'The screen check has not started yet. In the Windows app it starts with the desk, once the first market data is in.'];
-  if (sc.quiet) return ['down', `The screen check has not been heard from since ${time(sc.seen)}. It has probably stopped: start it again.`];
+  if (sc.quiet) return ['down', `The screen check has not been heard from since ${time(sc.seen)}. It has probably stopped. Start it again; in the Windows app, quit the app and open it again.`];
   if (sc.state === 'off') return ['down', `The screen check is off. ${sc.message || ''}`];
   if (sc.state === 'waiting') return ['muted', `The screen check is not listening yet. ${sc.message || ''}`];
   if (sc.state === 'reading') return ['gold', 'Key heard: reading the screen… The first reading after a start takes several seconds, later ones a second or two.'];
@@ -2300,13 +2300,17 @@ function readingsPanel(names, cls = '', compact = false) {
       <div class="muted" style="margin-top:8px">${d.corrections.length ? 'Names you taught it:' : 'No names taught yet.'} <span class="dim">Kept in your ledger; the screen check uses them from its next press.</span></div>
       ${d.corrections.map(c => `<div class="rdc">When it reads <code>${esc(c.text)}</code>, it means <b>${esc(c.item)}</b> <button type="button" class="btn ghost small" data-uncorrect="${esc(c.key)}" title="Delete this">✕</button></div>`).join('')}`}`;
   };
+  let asking = false;  // one look at a time: a slow answer must not pile up more of them
   const load = async force => {
-    if (body.querySelector('form.teach')) return;  // never redraw under a correction being typed
-    // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
-    const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
-    showState(d.screen);
-    if (!d.readings || body.querySelector('form.teach')) return;  // a form opened while this was on its way
-    last = d.last; data = d; draw();
+    if (asking && !force) return;
+    asking = true;
+    try {
+      // With the newest id it has, the desk answers only "nothing new", without working out the order forms.
+      const d = await api('/api/readings' + (!force && data ? `?since=${last}` : ''));
+      showState(d.screen);  // the state line stays true even while a correction is being typed
+      if (!d.readings || body.querySelector('form.teach')) return;  // never redraw under a correction being typed
+      last = d.last; data = d; draw();
+    } finally { asking = false; }
   };
   const teach = (id, text) => {
     body.querySelector('form.teach')?.remove();
@@ -2345,7 +2349,7 @@ function readingsPanel(names, cls = '', compact = false) {
   // A press posts a reading at any moment, and this window redraws only on a new hour; look every two
   // seconds while the panel is on the page, so "key heard" shows while the press is still being read.
   // The desk answers from memory.
-  const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => {}); }, 2000);
+  const timer = setInterval(() => { if (!p.isConnected) clearInterval(timer); else load().catch(() => { status.innerHTML = '<span class="down">●</span> <span class="down">The desk does not answer, so this cannot say what the screen check is doing.</span>'; }); }, 2000);
   return p;
 }
 // A panel of the hideout window that closes to its header with a click, so the ones you do not need

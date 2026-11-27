@@ -485,14 +485,16 @@ def tell_state(desk, state: str, message: str | None = None, **keys) -> bool:
     """Tell the desk the screen check's own state, for the page; True if it took it.
 
     The page is the only place the Windows app can show it: there is no console there. Like
-    `tell_desk`, a desk that cannot take it is not told, and nothing else changes.
+    `tell_desk`, a desk that cannot take it is not told, and nothing else changes. That covers any
+    failure, a desk that answers too late or drops the connection included: this is only a notice,
+    and it must never end the thread that repeats it or stand in for a press's own error.
     """
     send = getattr(desk, "state", None)
     if send is None:
         return False
     try:
         send(state, message, **keys)
-    except RuntimeError:
+    except Exception:
         return False
     return True
 
@@ -969,7 +971,7 @@ def run(root: Path, desk_url: str = DEFAULT_DESK, hotkey: str | None = None, lea
         # waits. A listener that has ended hears no key; that is said instead of "listening".
         while not gate.stopped.wait(STATE_SECONDS):
             if not listener.is_alive():
-                tell_state(desk, "off", "Its key listener stopped. Start the screen check again.", **keys)
+                tell_state(desk, "off", "Its key listener stopped. Start the screen check again; in the Windows app, quit the app and open it again.", **keys)
             elif not gate.busy():
                 tell_state(desk, "listening", **keys)
 

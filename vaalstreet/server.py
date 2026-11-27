@@ -74,8 +74,9 @@ class App:
         self._readings: collections.deque[dict] = collections.deque(maxlen=READINGS_KEPT)
         self._reading_id = 0
         self._screen_state: dict | None = None  # what the screen check last said of itself; memory only
-        # Its own lock: `_lock` is held for seconds while a league's desk is built, and neither the
-        # companion's press nor the page's look every two seconds should wait for that.
+        # Its own lock, for the readings and the state: `_lock` is held for seconds while a league's desk
+        # is built, and neither the companion's press nor the page's look every two seconds should wait
+        # for that.
         self._screen_lock = threading.Lock()
         if sync:
             threading.Thread(target=self._sync_loop, name="vaal-sync", daemon=True).start()
@@ -488,7 +489,7 @@ class App:
                 row["reading"], row["said"] = {"item": item, "units": units}, f"{units:,g} {item}"
         except (KeyError, ValueError, TypeError, AttributeError) as err:
             raise ApiError(f"Bad request: {err}") from err
-        with self._lock:
+        with self._screen_lock:
             self._reading_id += 1
             row = {"id": self._reading_id, "t": int(time.time())} | row
             self._readings.append(row)
@@ -510,7 +511,10 @@ class App:
                 "record_hotkey": _clip(body.get("record_hotkey"), 60), "stacks": body.get("stacks") is True}
         with self._screen_lock:
             old = self._screen_state
-            same = old is not None and all(old[k] == v for k, v in told.items())
+            # A press goes from listening to reading and back; it has listened all along.
+            awake = ("listening", "reading")
+            same = old is not None and (all(old[k] == v for k, v in told.items())
+                                        or (old["state"] in awake and state in awake))
             # `t` is when it came to this state, `seen` when it last said anything.
             self._screen_state = told | {"t": old["t"] if same else now, "seen": now}
         return {"ok": True}
@@ -532,7 +536,7 @@ class App:
         The state (`screen`, see `api_screen_state`) comes with every answer: it changes without a
         new reading.
         """
-        with self._lock:
+        with self._screen_lock:  # not `_lock`: the look for "nothing new" must not wait for a desk being built
             rows = [dict(r) for r in reversed(self._readings)]
         last = rows[0]["id"] if rows else 0
         if q.get("since") not in (None, "") and str(q["since"]) == str(last):
