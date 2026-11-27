@@ -121,3 +121,25 @@ def test_a_ratio_the_ratio_rules_refuse_still_reaches_the_page():
     (report,) = desk.readings
     assert report["reading"] is None and "more than zero" in report["error"] and report["lines"] == lines
     assert desk.checks == [] and desk.events == []
+
+
+def test_every_ledger_write_is_counted_so_other_windows_can_redraw(server):
+    # A second window of the desk, and the page when the record key wrote an order, see only the
+    # desk's status: its count of writes must move with each one, and the writer is told the new count.
+    before = call(f"{server}/api/status")[1]["writes"]
+    status, out = call(f"{server}/api/order", {"league": "New", "item": "Test Orb", "side": "buy", "market": "chaos",
+                                               "currency_units": 19, "item_units": 2, "units": 4})
+    assert status == 200 and out["writes"] == before + 1
+    assert call(f"{server}/api/status")[1]["writes"] == before + 1
+    assert call(f"{server}/api/order", {"league": "New", "item": "Test Orb", "side": "sideways"})[0] == 400
+    assert call(f"{server}/api/status")[1]["writes"] == before + 1  # a refused write is not one
+
+
+def test_the_ledger_lists_the_order_posted_last_first(server):
+    # The order just recorded is the one the player looks for, so it leads the Orders table.
+    for units in (3, 5, 7):
+        assert call(f"{server}/api/order", {"league": "New", "item": "Test Orb", "side": "buy", "market": "chaos",
+                                            "currency_units": 19, "item_units": 2, "units": units})[0] == 200
+    orders = call(f"{server}/api/ledger?league=New")[1]["orders"]
+    assert [o["units"] for o in orders[:3]] == [7, 5, 3]
+    assert [o["id"] for o in orders] == sorted((o["id"] for o in orders), reverse=True)

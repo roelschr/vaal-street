@@ -17,8 +17,16 @@ async function api(path, body) {
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) throw new Error(data.error || res.statusText);
   practiceFrom(data);
+  // This window wrote to the ledger: it draws itself again, and tells the desk's other windows to look.
+  // Only an answer to a write: the status the page reads also carries the count.
+  // The count is taken only when this write is the one it counts: if something else wrote in between
+  // (the screen check's record key, say), the next look at the status still sees a change and redraws.
+  if (body && data.writes != null) { if (state.writes == null || data.writes === state.writes + 1) state.writes = data.writes; windows?.postMessage('wrote'); }
   return data;
 }
+// The desk's windows (the main one and the hideout) tell each other when one of them wrote, so an
+// order recorded in one shows in the other at once and not at the next hourly refresh.
+const windows = 'BroadcastChannel' in window ? new BroadcastChannel('vaal-street') : null;
 const bankQuery = () => (+state.filters.capital > 0 ? { bankroll: +state.filters.capital } : {});
 const withLeague = (path, extra = {}) => {
   const q = new URLSearchParams({ ...(state.league ? { league: state.league } : {}), ...extra });
@@ -505,7 +513,7 @@ const checkCell = r => `<span title="${esc(r.check_note || (r.check === 'uncheck
 // One click handler per panel, because the tables re-render on sort.
 const onCheck = host => host.addEventListener('click', async e => {
   const b = e.target.closest('[data-ck]'); if (!b) return;
-  const note = prompt(b.dataset.st === 'confirmed' ? 'It worked. A note? (optional)' : 'It did not work. What went wrong? (optional)', '');
+  const note = await (b.dataset.st === 'confirmed' ? askLine('It worked in game', 'A note (optional)', '', { button: 'Save' }) : askLine('It did not work in game', 'What went wrong? (optional)', '', { button: 'Save' }));
   if (note === null) return;
   try { await api('/api/recipe_check', { key: b.dataset.ck, status: b.dataset.st, note }); route(); } catch (err) { toast(err.message, true); }
 });
@@ -1068,9 +1076,33 @@ function lootNote(profit, loot, inline = false) {
   return inline ? `<i class="muted">${text}</i>` : `<div class="muted small">${text}</div>`;
 }
 
+// One typed answer, asked on the page. The browser's own prompt() does not exist in the Windows app
+// (its engine refuses it), so nothing that needs an answer may depend on it. Resolves with the text
+// typed, or null when the form is closed. `number` asks for a count above zero.
+let closeLine = null;  // closes the open askLine form with "no answer", so whoever asked is not left waiting
+function askLine(title, label, value = '', { number = false, button = 'OK', note = '' } = {}) {
+  closeLine?.(); $('.posted')?.remove();  // one form at a time: both sit at the same place on the page
+  return new Promise(resolve => {
+    const box = document.createElement('form'); box.className = 'panel pend posted askline'; box.autocomplete = 'off';
+    box.innerHTML = `<header><h2>${esc(title)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
+      <div class="body"><div class="bar" style="margin:0">
+        <label class="f" style="flex:1">${esc(label)}<input name="answer" ${number ? 'type="number" min="0" step="any" required style="width:140px"' : 'type="text" style="width:100%"'} value="${esc(value)}"></label>
+        <button class="btn primary">${esc(button)}</button></div>
+        ${note ? `<p class="muted small" style="margin:8px 0 0">${esc(note)}</p>` : ''}</div>`;
+    const done = answer => { closeLine = null; box.remove(); resolve(answer); };
+    closeLine = () => done(null);
+    box.onsubmit = e => { e.preventDefault(); done(box.elements.answer.value); };
+    box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } });
+    box.querySelector('[data-x]').onclick = () => done(null);
+    document.body.append(box);
+    box.elements.answer.select();
+  });
+}
+
 // ---------------------------------------------------------- "I posted this"
 // A plan carries the item, the side, the market and the ratio of each of its orders. So recording
-// that you posted one asks only how many items, and the Gold if you want the desk to learn the fee.
+// that you posted one needs only how many items, and the Gold if you want the desk to learn the fee;
+// the ratio is filled in and can be changed.
 // `mine` is the orders you recorded that are still on the exchange (`orders` from the server): a
 // plan you posted already says so, which keeps a second click from recording it twice.
 const itemCount = v => (+(+v).toFixed(2)).toLocaleString('en-US');  // 40, 1,250, 2.5: a count, not a price
@@ -1088,42 +1120,57 @@ function postedLine(r, side, mine = []) {
   const open = mine.filter(x => x.item === r.id && x.side === side && x.market === market);
   const left = open.reduce((n, x) => n + x.units - x.filled, 0);
   const ratios = [...new Set(open.map(x => `${x.item_units} for ${x.currency_units}`))].join(', ');
-  return `<div class="post">${open.length ? `<span class="muted small" title="You recorded ${open.length === 1 ? 'an order' : `${open.length} orders`} here (${esc(ratios)} ${esc(o.currency)}), with ${itemCount(left)} still to fill. The Ledger says whether to keep, re-price, cancel or collect.">✓ ${itemCount(left)} posted</span> ` : ''}<button class="btn ghost small" data-post="${esc(JSON.stringify(ask))}" title="Posted this order in game? Record it without typing the item, the market or the ratio.">${open.length ? 'Posted more…' : 'Posted…'}</button></div>`;
+  return `<div class="post">${open.length ? `<span class="muted small" title="You recorded ${open.length === 1 ? 'an order' : `${open.length} orders`} here (${esc(ratios)} ${esc(o.currency)}), with ${itemCount(left)} still to fill. The Ledger says whether to keep, re-price, cancel or collect.">✓ ${itemCount(left)} posted</span> ` : ''}<button class="btn ghost small" data-post="${esc(JSON.stringify(ask))}" title="Posted this order in game? Record it without typing the item or the market. The ratio and the count start from the plan's, and you can change both.">${open.length ? 'Posted more…' : 'Posted…'}</button></div>`;
 }
 // `o` is the order as the desk knows it: item, name, side, market, currency, currency_units, item_units
 // and units. Optional: `lead` (a sentence shown first), `title` (the heading before the item's name),
-// `editable` (the desk is not sure of the ratio, so its two numbers can be changed; `units` may then
-// be left out and must be typed) and `extra` (fields added to the request, for a caller that records
-// more than a plain new order).
+// `editable` (the desk is not sure of the ratio: `units` may then be left out and must be typed, and
+// typing starts at the count, or at the ratio when the count is known) and `extra` (fields added to the request, for a caller that
+// records more than a plain new order).
+// The ratio's two numbers can always be changed: a plan's ratio is the desk's proposal, and the order
+// in game is often a step away from it. Under the fields the form says what the order comes to on the
+// currency side, so both amounts of the game's window ("I want", "I have") can be checked at a glance.
 function askPosted(o) {
-  $('.posted')?.remove();
+  closeLine?.(); $('.posted')?.remove();
   const box = document.createElement('form'); box.className = 'panel pend posted'; box.autocomplete = 'off';
   const heading = o.title || (o.lead ? 'The sell order for what you bought' : `${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted`);
   const num = (name, value) => `<input type="number" name="${name}" min="1" step="1" value="${value ?? ''}" required style="width:74px">`;
   // The ratio as the game words it: what you pay for how many (buying), how many for what you get (selling).
-  const ratio = !o.editable ? order(o, o.side === 'buy') : o.side === 'buy'
+  const ratio = o.side === 'buy'
     ? `${num('cu', o.currency_units)} ${curWord(o.currency)} <span class="dim">for</span> ${num('iu', o.item_units)}`
     : `${num('iu', o.item_units)} <span class="dim">for</span> ${num('cu', o.currency_units)} ${curWord(o.currency)}`;
   box.innerHTML = `<header><h2>${esc(heading)}: ${esc(o.name)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
     <div class="body">${o.lead ? `<p style="margin:0 0 10px">${esc(o.lead)}</p>` : ''}<div class="bar" style="margin:0">
-      <div class="f ctl">Ratio<span class="num" style="${o.editable ? 'display:flex;gap:6px;align-items:center;' : 'padding:6px 0;'}color:var(--text)">${ratio}</span></div>
+      <div class="f ctl">Ratio<span class="num" style="display:flex;gap:6px;align-items:center;color:var(--text)">${ratio}</span></div>
       <label class="f">Items in all<input type="number" name="units" min="1" step="1" value="${o.units ?? ''}" required style="width:110px"></label>
       <label class="f" title="The Gold the order cost you. The desk learns each item's fee from these.">Gold paid<input type="number" name="gold" min="0" step="any" placeholder="optional" value="${o.gold ?? ''}" style="width:110px"></label>
       <button class="btn primary">Record</button></div>
-      <p class="muted small" style="margin:8px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. ${o.editable ? 'Change the ratio to the one you posted.' : 'If you posted a different ratio, record the order on the Ledger page instead.'}</p></div>`;
+      <p class="small" data-sum style="margin:8px 0 0;min-height:1.4em"></p>
+      <p class="muted small" style="margin:4px 0 0">This writes the order to your Ledger, so the desk can say when to re-price, cancel or collect it. Nothing is sent to the game. Change the ratio and the count to what you posted.</p></div>`;
+  // The order in the game's own terms: all the items on one side, all the currency on the other.
+  const sum = () => {
+    const cu = +box.elements.cu.value, iu = +box.elements.iu.value, units = +box.elements.units.value, out = box.querySelector('[data-sum]');
+    if (!(cu > 0 && iu > 0 && units > 0)) { out.innerHTML = ''; return; }
+    const lots = units / iu, total = `${itemCount(lots * cu)} ${curWord(o.currency)}`;
+    out.className = 'small' + (Number.isInteger(lots) ? '' : ' down');
+    out.innerHTML = Number.isInteger(lots)
+      ? (o.side === 'buy' ? `In all: you pay ${total} for ${itemCount(units)} ${esc(o.name)}.` : `In all: you give ${itemCount(units)} ${esc(o.name)} for ${total}.`)
+      : `${itemCount(units)} is not a whole number of lots of ${iu}: an order at this ratio holds ${lots > 1 ? `${itemCount(Math.floor(lots) * iu)} or ` : ''}${itemCount(Math.ceil(lots) * iu)} items.`;
+  };
+  box.addEventListener('input', sum); sum();
   box.onsubmit = async e => {
     e.preventDefault();
     if (box.dataset.busy) return;  // a second click or Enter while the first is on its way must not record twice
     box.dataset.busy = '1';
     const units = +box.elements.units.value;
-    const currency_units = o.editable ? +box.elements.cu.value : o.currency_units, item_units = o.editable ? +box.elements.iu.value : o.item_units;
+    const currency_units = +box.elements.cu.value, item_units = +box.elements.iu.value;
     try {
       await api('/api/order', { league: state.league, item: o.item, side: o.side, market: o.market, currency_units, item_units, units, gold: optional(box.elements.gold.value), ...(o.extra || {}) });
     } catch (err) { delete box.dataset.busy; return toast(err.message, true); }
     box.remove();
     toast(o.extra?.repost
       ? `Recorded the re-post: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name} at ${ratioWords(o.side, item_units, currency_units, o.currency)}. The old order is marked cancelled.`
-      : `Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name}. See it under Orders in the Ledger.`);
+      : `Recorded: ${o.side === 'buy' ? 'buying' : 'selling'} ${itemCount(units)} ${o.name} at ${ratioWords(o.side, item_units, currency_units, o.currency)}. See it under Orders in the Ledger.`);
     // Draw the page again so the plan says it is posted, and the item's panel too when it shows this item.
     const drawer = $('#drawer');
     if (drawer && !drawer.hidden && drawer.dataset.item === o.item) openItem(o.item);
@@ -1676,15 +1723,17 @@ async function viewLedger(main) {
       : `<button class="btn ghost" data-fill="${r.id}" data-side="${r.side}" data-left="${r.proposed_fill > 0 ? r.proposed_fill : r.units - r.filled}" title="Record a fill; the matching trade is added">Filled…</button>${repostButton(r)}<button class="btn ghost" data-cancel="${r.id}" title="You cancelled it in game">Cancel</button>`)
       + sellButton(r) },
   ], d.orders, { empty: 'Record the orders you post, and the desk says which to keep, re-price, cancel or collect.' });
-  ot.onclick = e => {
+  ot.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.close) post('/api/order', { id: +b.dataset.close, status: 'closed' });
     if (b.dataset.cancel) post('/api/order', { id: +b.dataset.cancel, status: 'cancelled' });
     if (b.dataset.fill) {
-      const n = prompt('How many items filled?', b.dataset.left);
-      const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
       const row = d.orders.find(r => r.id === +b.dataset.fill);
-      if (n) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => {
+      const n = await askLine(`Filled: ${row.name}`, 'How many items filled?', b.dataset.left, { number: true, button: 'Record',
+        note: `Your order ${row.side === 'buy' ? 'buying' : 'selling'} at ${ratioWords(row.side, row.item_units, row.currency_units, row.market === 'divine' ? 'Divine' : 'Chaos')}. The matching trade is added to your Ledger.` });
+      const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
+      if (n != null && !(+n > 0)) toast('Nothing recorded: a fill needs a count above zero.', true);
+      if (+n > 0) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => {
         saleToast(a.trade); route();
         // A buy just filled: offer the plan's sell order for what is now held, ready to record.
         const s = row?.side === 'buy' && a.trade ? sellAfter(row, +n) : null;
@@ -2435,11 +2484,20 @@ async function poll(first) {
   try {
     const s = await api('/api/status');
     const changed = s.generation !== state.generation || s.ready !== state.status?.ready;
+    // Something was recorded elsewhere: another window, or the screen check's record key. The page is
+    // drawn again, but not under a form you are typing in; that waits for the next look. Only a field
+    // that takes typing holds it back: a list or a tick box keeps the focus after a click, and the
+    // window would then show nothing new until the next hour.
+    const wrote = state.writes != null && s.writes !== state.writes;
+    const at = document.activeElement;
+    const field = at?.tagName === 'TEXTAREA' || (at?.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button', 'submit', 'file', 'color'].includes(at.type));
+    const typing = wrote && (!!$('form.pend') || field);
+    if (!typing) state.writes = s.writes;
     state.status = s; state.league ||= s.league; state.generation = s.generation;
     announce(s.last_event);
     if (changed && state.hideout) pollEvents();  // right after the hourly refresh
     if (changed) showIcons();
-    if (first || changed) await route(); else if (!state.hideout && state.summary) renderTop();
+    if (first || changed || (wrote && !typing)) await route(); else if (!state.hideout && state.summary) renderTop();
     else if (!s.ready) route();
   } catch (err) { if (first) $('#main').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
 }
@@ -2474,5 +2532,6 @@ window.addEventListener('keydown', e => {
 showIcons();
 if (!state.hideout) enterPage();
 poll(true);
-setInterval(poll, state.hideout ? 60000 : 20000);
+setInterval(poll, 20000);
+if (windows) windows.onmessage = () => poll();
 if (state.hideout) { pollEvents(); setInterval(pollEvents, 60000); }
