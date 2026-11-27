@@ -19,7 +19,9 @@ async function api(path, body) {
   practiceFrom(data);
   // This window wrote to the ledger: it draws itself again, and tells the desk's other windows to look.
   // Only an answer to a write: the status the page reads also carries the count.
-  if (body && data.writes != null) { state.writes = data.writes; windows?.postMessage('wrote'); }
+  // The count is taken only when this write is the one it counts: if something else wrote in between
+  // (the screen check's record key, say), the next look at the status still sees a change and redraws.
+  if (body && data.writes != null) { if (state.writes == null || data.writes === state.writes + 1) state.writes = data.writes; windows?.postMessage('wrote'); }
   return data;
 }
 // The desk's windows (the main one and the hideout) tell each other when one of them wrote, so an
@@ -1077,8 +1079,9 @@ function lootNote(profit, loot, inline = false) {
 // One typed answer, asked on the page. The browser's own prompt() does not exist in the Windows app
 // (its engine refuses it), so nothing that needs an answer may depend on it. Resolves with the text
 // typed, or null when the form is closed. `number` asks for a count above zero.
+let closeLine = null;  // closes the open askLine form with "no answer", so whoever asked is not left waiting
 function askLine(title, label, value = '', { number = false, button = 'OK', note = '' } = {}) {
-  $('.askline')?.remove();
+  closeLine?.(); $('.posted')?.remove();  // one form at a time: both sit at the same place on the page
   return new Promise(resolve => {
     const box = document.createElement('form'); box.className = 'panel pend posted askline'; box.autocomplete = 'off';
     box.innerHTML = `<header><h2>${esc(title)}</h2><span class="grow"></span><button type="button" class="btn ghost" data-x title="Close (Esc)">✕</button></header>
@@ -1086,7 +1089,8 @@ function askLine(title, label, value = '', { number = false, button = 'OK', note
         <label class="f" style="flex:1">${esc(label)}<input name="answer" ${number ? 'type="number" min="0" step="any" required style="width:140px"' : 'type="text" style="width:100%"'} value="${esc(value)}"></label>
         <button class="btn primary">${esc(button)}</button></div>
         ${note ? `<p class="muted small" style="margin:8px 0 0">${esc(note)}</p>` : ''}</div>`;
-    const done = answer => { box.remove(); resolve(answer); };
+    const done = answer => { closeLine = null; box.remove(); resolve(answer); };
+    closeLine = () => done(null);
     box.onsubmit = e => { e.preventDefault(); done(box.elements.answer.value); };
     box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } });
     box.querySelector('[data-x]').onclick = () => done(null);
@@ -1097,7 +1101,8 @@ function askLine(title, label, value = '', { number = false, button = 'OK', note
 
 // ---------------------------------------------------------- "I posted this"
 // A plan carries the item, the side, the market and the ratio of each of its orders. So recording
-// that you posted one asks only how many items, and the Gold if you want the desk to learn the fee.
+// that you posted one needs only how many items, and the Gold if you want the desk to learn the fee;
+// the ratio is filled in and can be changed.
 // `mine` is the orders you recorded that are still on the exchange (`orders` from the server): a
 // plan you posted already says so, which keeps a second click from recording it twice.
 const itemCount = v => (+(+v).toFixed(2)).toLocaleString('en-US');  // 40, 1,250, 2.5: a count, not a price
@@ -1120,13 +1125,13 @@ function postedLine(r, side, mine = []) {
 // `o` is the order as the desk knows it: item, name, side, market, currency, currency_units, item_units
 // and units. Optional: `lead` (a sentence shown first), `title` (the heading before the item's name),
 // `editable` (the desk is not sure of the ratio: `units` may then be left out and must be typed, and
-// the ratio is where typing starts) and `extra` (fields added to the request, for a caller that
+// typing starts at the count, or at the ratio when the count is known) and `extra` (fields added to the request, for a caller that
 // records more than a plain new order).
 // The ratio's two numbers can always be changed: a plan's ratio is the desk's proposal, and the order
 // in game is often a step away from it. Under the fields the form says what the order comes to on the
 // currency side, so both amounts of the game's window ("I want", "I have") can be checked at a glance.
 function askPosted(o) {
-  $('.posted')?.remove();
+  closeLine?.(); $('.posted')?.remove();
   const box = document.createElement('form'); box.className = 'panel pend posted'; box.autocomplete = 'off';
   const heading = o.title || (o.lead ? 'The sell order for what you bought' : `${o.side === 'buy' ? 'Buy' : 'Sell'} order you posted`);
   const num = (name, value) => `<input type="number" name="${name}" min="1" step="1" value="${value ?? ''}" required style="width:74px">`;
@@ -1145,11 +1150,11 @@ function askPosted(o) {
   // The order in the game's own terms: all the items on one side, all the currency on the other.
   const sum = () => {
     const cu = +box.elements.cu.value, iu = +box.elements.iu.value, units = +box.elements.units.value, out = box.querySelector('[data-sum]');
-    if (!(cu > 0 && iu > 0 && units > 0)) { out.textContent = ''; return; }
-    const lots = units / iu, total = `${itemCount(lots * cu)} ${o.currency}`;
+    if (!(cu > 0 && iu > 0 && units > 0)) { out.innerHTML = ''; return; }
+    const lots = units / iu, total = `${itemCount(lots * cu)} ${curWord(o.currency)}`;
     out.className = 'small' + (Number.isInteger(lots) ? '' : ' down');
-    out.textContent = Number.isInteger(lots)
-      ? (o.side === 'buy' ? `In all: you pay ${total} for ${itemCount(units)} ${o.name}.` : `In all: you give ${itemCount(units)} ${o.name} for ${total}.`)
+    out.innerHTML = Number.isInteger(lots)
+      ? (o.side === 'buy' ? `In all: you pay ${total} for ${itemCount(units)} ${esc(o.name)}.` : `In all: you give ${itemCount(units)} ${esc(o.name)} for ${total}.`)
       : `${itemCount(units)} is not a whole number of lots of ${iu}: an order at this ratio holds ${lots > 1 ? `${itemCount(Math.floor(lots) * iu)} or ` : ''}${itemCount(Math.ceil(lots) * iu)} items.`;
   };
   box.addEventListener('input', sum); sum();
@@ -1727,6 +1732,7 @@ async function viewLedger(main) {
       const n = await askLine(`Filled: ${row.name}`, 'How many items filled?', b.dataset.left, { number: true, button: 'Record',
         note: `Your order ${row.side === 'buy' ? 'buying' : 'selling'} at ${ratioWords(row.side, row.item_units, row.currency_units, row.market === 'divine' ? 'Divine' : 'Chaos')}. The matching trade is added to your Ledger.` });
       const merge = b.dataset.side !== 'sell' || !!$('#ofm', ord)?.checked;
+      if (n != null && !(+n > 0)) toast('Nothing recorded: a fill needs a count above zero.', true);
       if (+n > 0) api('/api/order', { league: state.league, fill: +b.dataset.fill, units: +n, merge }).then(a => {
         saleToast(a.trade); route();
         // A buy just filled: offer the plan's sell order for what is now held, ready to record.
@@ -2479,9 +2485,13 @@ async function poll(first) {
     const s = await api('/api/status');
     const changed = s.generation !== state.generation || s.ready !== state.status?.ready;
     // Something was recorded elsewhere: another window, or the screen check's record key. The page is
-    // drawn again, but not under a form you are typing in; that waits for the next look.
+    // drawn again, but not under a form you are typing in; that waits for the next look. Only a field
+    // that takes typing holds it back: a list or a tick box keeps the focus after a click, and the
+    // window would then show nothing new until the next hour.
     const wrote = state.writes != null && s.writes !== state.writes;
-    const typing = wrote && (!!$('form.pend') || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName));
+    const at = document.activeElement;
+    const field = at?.tagName === 'TEXTAREA' || (at?.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button', 'submit', 'file', 'color'].includes(at.type));
+    const typing = wrote && (!!$('form.pend') || field);
     if (!typing) state.writes = s.writes;
     state.status = s; state.league ||= s.league; state.generation = s.generation;
     announce(s.last_event);
