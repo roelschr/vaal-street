@@ -65,6 +65,11 @@ class App:
         self._desks: dict[str, Desk] = {}
         self._book: LeagueBook | None = None
         self._generation = 0
+        # Counts the changes made through the desk's write requests (orders, trades, the watchlist,
+        # settings), from the page or the screen check, so every open window can redraw. Its own lock:
+        # `_lock` is held for seconds while a league's desk is built.
+        self._writes = 0
+        self._writes_lock = threading.Lock()
         self.sync_state = {"running": False, "message": "idle", "last_run": None, "error": None, "backfill": False}
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -596,6 +601,7 @@ class App:
             "last_hour": max(have) if have else None,
             "archive_start": archive.FIRST_HOUR[REALM],
             "generation": self._generation,
+            "writes": self._writes,
             "ready": db.has_data(self.root, REALM),
             "ninja": self.ninja_status(),
             "fees": self.fees_status(),
@@ -972,7 +978,9 @@ class App:
             # because too few of your records disagree with it by too much (`Costs.fee`).
             "gold_fees": [{"id": k, "name": desk._name(k), **v, "table": costs.table.get(k),
                            "disputed": "disputed" in costs.fee(k)[1]} for k, v in sorted(fees.items())],
-            "orders": self._advise(desk, share), "sessions": self.ledger.sessions(desk.league),
+            # Newest first on the page: the order you just posted is the one you look for, and it must not
+            # sit under a long list. The alert check keeps the order they were posted in.
+            "orders": self._advise(desk, share)[::-1], "sessions": self.ledger.sessions(desk.league),
             # For the "Record items you made" form: what each item is made from, by name.
             "made_from": {desk._name(out): [{"inputs": [[desk._name(i), n] for i, n in r["inputs"]], "gives": r["gives"]}
                                             for r in rs] for out, rs in self._merge_recipes(desk, for_sale=False).items()},
@@ -1478,7 +1486,12 @@ class App:
                 raise ApiError("Unknown endpoint.", 404)
         except (KeyError, ValueError, TypeError) as err:
             raise ApiError(f"Bad request: {err}") from err
-        return {"ok": True, **answer}
+        # The window that wrote draws itself again. Another window of the desk, or the page when the
+        # screen check's record key wrote the order, learns of it from this count in `/api/status`.
+        with self._writes_lock:
+            self._writes += 1
+            writes = self._writes
+        return {"ok": True, "writes": writes, **answer}
 
     # ------------------------------------------------------------- rehearsal
     def rehearsal_banner(self) -> dict | None:
@@ -1586,8 +1599,9 @@ def posted_prefill(reading: dict, item: str, name: str, plan_order: dict | None)
     The ratio and the count come from, in this order: the amounts you typed into the window, if the
     screen check read both (reduced to lowest terms; the count is the item amount); else the flip plan's
     order for this item, side and market; else the market ratio read off the window, which is the
-    market's suggestion, not your order. In the last two cases the ratio can be changed in the form, the
-    count is left empty, and the lead sentence says where the numbers came from.
+    market's suggestion, not your order. In the last two cases (`editable`) the count is left empty,
+    typing starts there, and the lead sentence says where the numbers came from. The form lets
+    the ratio be changed in every case.
     """
     side, market = reading["side"], reading["market"]
     currency = "Divine" if market == "divine" else "Chaos"

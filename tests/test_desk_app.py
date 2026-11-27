@@ -486,7 +486,7 @@ def test_a_buy_order_knows_the_sell_order_its_plan_pairs_it_with(server):
     assert all(p["id"] != CARD for p in flips), "the test card has no flip plan in this archive"
     assert call(f"{server}/api/order", {"item": CARD, "side": "buy", "market": "chaos", "currency_units": 2,
                                         "item_units": 1, "units": 5})[0] == 200
-    bought, sold, other = call(f"{server}/api/ledger")[1]["orders"]
+    other, sold, bought = call(f"{server}/api/ledger")[1]["orders"]  # the order posted last comes first
     sell = plan["sell_order"]
     assert bought["then_sell"] == sell | {"market": "chaos" if plan["kind"] == "chaos" else "divine", "kind": plan["kind"]}
     assert sold["then_sell"] is None and other["then_sell"] is None
